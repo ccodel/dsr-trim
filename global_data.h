@@ -129,6 +129,12 @@ extern int *subst_mappings;
 extern long *subst_taut; // Used for tautology checking when reducing under subst
 extern int alpha_subst_alloc_size;
 
+// The "generation bumping" used for tautology checking is independent from the
+// global "current_generation," since tautology may be found on non-RAT clauses,
+// and the taut generation array needs to be cleared after each check.
+// TODO: Overflow possibility? Perhaps use ulong, or initially set to LONG_MIN.
+extern long taut_generation;
+
 // Maximum 0-indexed variable ID parsed so far. Used for resizing arrays.
 extern int max_var;
 

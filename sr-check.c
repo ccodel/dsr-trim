@@ -16,28 +16,14 @@
 #include "global_data.h"
 #include "xmalloc.h"
 #include "cnf_parser.h"
+#include "sr_parser.h"
 
-#define RESIZE_AND_SET_ARRAY(arr, alloc_size, size, data_size, filler)  do {   \
-    if (size >= alloc_size) {                                                  \
-      int old_alloc_size_abcdefg = alloc_size;                                 \
-      alloc_size = RESIZE(size);                                               \
-      arr = xrealloc(arr, alloc_size * data_size);                             \
-      memset(arr + old_alloc_size_abcdefg, filler,                             \
-        (alloc_size - old_alloc_size_abcdefg) * data_size);                    \
-    }                                                                          \
-  } while (0)
+#define DELETION_LINE     (10)
+#define ADDITION_LINE     (20)
 
-#define DELETION_LINE     10
-#define ADDITION_LINE     20
-      
 ////////////////////////////////////////////////////////////////////////////////
 
 static int max_line_id = 0; // Max line identifier checked/parsed.
-
-/** Place to store SR lines. */
-static int *witness = NULL;
-static int witness_size = 0;
-static int witness_alloc_size = 0;
 
 // The clause ID tokens from the SR file. Not 0-indexed, negatives mark RAT hints.
 static int *hints = NULL;
@@ -46,83 +32,26 @@ static int hints_alloc_size = 0;
 
 // Metadata about the SR proof line
 static int num_RAT_hints = 0;
-
-/** @brief Minimum clause to check during RAT clause checking.
- * 
- *  If a witness doesn't reduce a clause, it can be ignored during checking,
- *  since assuming its negation would provably lead to contradiction. Thus,
- *  when the SR witness is parsed, the literals set/mapped in the witness
- *  determine the min/max range of clause IDs to check. Anything outside this
- *  range is not reduced by the witness, and so can be ignored.
- * 
- *  Note that the min and max clauses are adjusted based on the literals
- *  "touched" by the witness, not their outputs under the substitution. 
- *  So for example, if (2 -> 3), then the min/max values for literal 2 are 
- *  included in the calculation, but not for literal 3.
- */
-static int min_clause_to_check = 0;
-static int max_clause_to_check = 0;
-static int subst_pair_incomplete = 0;
-
-static int new_clause_size = 0;
-static int pivot = 0;
 static int derived_empty_clause = 0;
-
-// Witnesses in SR can have both literals set to true/false, as in LRAT/LPR,
-// or they can set variables to other literals. The point at which the witness
-// switches from LPR to substitution is updated when an SR proof line is parsed.
-static int subst_index = 0;
 
 static FILE *sr_file = NULL;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void print_usage(void) {
+static void print_usage(void) {
   printf("c Usage: ./sr-check <cnf-file> <sr-file>\n");
 }
 
 // Initializes check-specific data structures. Call after parsing the CNF file.
-void init_sr_data(void) {
-  witness_alloc_size = max_var * 2;
-  witness_size = 0;
-  witness = xmalloc(witness_alloc_size * sizeof(int));
-
+static void init_sr_check_data(void) {
   hints_alloc_size = formula_size * 10;
   hints_size = 0;
   hints = xmalloc(hints_alloc_size * sizeof(int));
 }
 
-static void set_min_and_max_clause_to_check(int lit) {
-  update_first_last_clause(lit);
-  if (lits_first_clause[lit] != -1) {
-    min_clause_to_check = MIN(min_clause_to_check, lits_first_clause[lit]); 
-    max_clause_to_check = MAX(max_clause_to_check, lits_last_clause[lit]);
-  }
-}
-
-static void insert_witness_lit(int lit) {
-  // Resize if inserting the literal would exceed the allocated size
-  RESIZE_ARR(witness, witness_alloc_size, witness_size, sizeof(int));
-  witness[witness_size] = lit;
-  witness_size++;
-
-  // If we are reading in UP literals, or the first half of a subst mapping
-  if (subst_index == INT_MAX) {
-    // Since a UP literal is set to true in the witness, clauses with the
-    // negation of the literal get reduced, so must be checked
-    int neg_lit = NEGATE_LIT(lit);
-    set_min_and_max_clause_to_check(neg_lit);
-  } else if (subst_pair_incomplete) {
-    // If a mapping, we need to check both lit and its negation
-    int neg_lit = NEGATE_LIT(lit);
-    set_min_and_max_clause_to_check(lit);
-    set_min_and_max_clause_to_check(neg_lit);
-  }
-}
-
 /** Inserts a clause ID hint into the hints array.
- *  Unlike for the literals, we leave the clause IDs as-is, no remapping
- *  That way, we can still tell where the RAT hints start
+ *  Unlike for the literals, we leave the clause IDs as-is, no remapping.
+ *  That way, we can still tell where the RAT hints start.
  */
 static void insert_hint(int clause_id) {
   RESIZE_ARR(hints, hints_alloc_size, hints_size, sizeof(int));
@@ -175,30 +104,51 @@ static int reduce_subst_mapped(int clause_index) {
   int *end = get_clause_start(clause_index + 1);
   int size = end - start;
 
-  for (; start < end; start++) {
-    int lit = *start;
-    int mapped_lit = get_lit_from_subst(lit);
-    switch (mapped_lit) {
-      case SUBST_TT: return SATISFIED_OR_MUL;
-      case SUBST_FF: falsified_lits++; break;
-      case SUBST_UNASSIGNED: mapped_lit = lit;
-      default:
-        if (mapped_lit == lit) {
-          id_mapped_lits++;
-        }
+  // TODO: Pull out into separate helper function and change in check_line()?
+  // If there are no substitutions in the witness, evaluate under alpha
+  if (subst_index < witness_size) {
+    for (; start < end; start++) {
+      int lit = *start;
+      switch (peval_lit_under_taut(lit)) {
+        case FF: falsified_lits++; break;
+        case TT: return SATISFIED_OR_MUL;
+        case UNASSIGNED: id_mapped_lits++; break;
+        default: PRINT_ERR_AND_EXIT("Corrupted tautology evaluation.");
+      }
+    }
+  } else {
+    // Since the clause might become a tautology, we clear the subst_taut array
+    taut_generation++;
 
-        // Check for tautology
-        // TODO: Alternatively, write a set_lit_for_taut operation that
-        // returns whether tautology happens. In most cases, tautology doesn't
-        // happen, so the fast path should be simple checking
-        switch (peval_lit_under_taut(mapped_lit)) {
-          case UNASSIGNED: // Not encountered mapped_lit or negation before
-            set_lit_for_taut(mapped_lit, current_generation);
-            break;
-          case FF: return SATISFIED_OR_MUL; // Negation encountered before
-          case TT: break; // Encountered mapped_lit before, so ignore
-          default: PRINT_ERR_AND_EXIT("Corrupted tautology evaluation.");
-        }
+    // Evaluate the literals under the substitution first
+    for (; start < end; start++) {
+      int lit = *start;
+      int mapped_lit = get_lit_from_subst(lit);
+      switch (mapped_lit) {
+        case SUBST_TT: return SATISFIED_OR_MUL;
+        case SUBST_FF: falsified_lits++; break;
+        case SUBST_UNASSIGNED: mapped_lit = lit;
+        default:
+          if (mapped_lit == lit) {
+            id_mapped_lits++;
+          }
+
+          // Check for tautology if the witness includes a substitution
+          // TODO: Alternatively, write a set_lit_for_taut operation that
+          // returns whether tautology happens. In most cases, tautology doesn't
+          // happen, so the fast path should be simple checking
+          if (subst_index < witness_size) {
+            switch (peval_lit_under_taut(mapped_lit)) {
+              case UNASSIGNED: // Not encountered mapped_lit or negation before
+                // TODO: Remove taut_generation as argument, since always taut_generation
+                set_lit_for_taut(mapped_lit, taut_generation);
+                break;
+              case FF: return SATISFIED_OR_MUL; // Negation encountered before
+              case TT: break; // Encountered mapped_lit before, so ignore
+              default: PRINT_ERR_AND_EXIT("Corrupted tautology evaluation.");
+            }
+          }
+      }
     }
   }
 
@@ -247,9 +197,6 @@ static int unit_propagate(int *hint_ptr, long gen) {
 static int parse_line(void) {
   int line_id, token, res;
   witness_size = hints_size = num_RAT_hints = new_clause_size = 0;
-  min_clause_to_check = INT_MAX;
-  max_clause_to_check = 0;
-  subst_pair_incomplete = 0;
   subst_index = INT_MAX;
 
   READ_NUMERICAL_TOKEN(res, sr_file, &line_id); // Grab line id. Should be positive
@@ -283,57 +230,15 @@ static int parse_line(void) {
     delete_clause(formula_size - 1);
   }
 
-  /* Now consume the rest of the line. The literals for the candidate clause are
-     stored in the lits_db array. We can add eagerly add the literals in the 
-     clause because if the clause is redundant, we'd add it to the formula 
-     anyway, and if the clause doesn't check, then we stop the proof.
-     Store the witness and hints in the appropriate arrays, too.  */
-  int lit, clause, num_times_found_pivot = 0;
-  int zeros_left = 2;  // Two zeroes are expected in a well-formed SR proof line
-  while (zeros_left > 0) {
+  // Read in the clause and witness portions of the SR proof line
+  parse_sr_clause_and_witness(sr_file);
+
+  // Now consume the rest of the line. The hints are stored in the hints array,
+  // keeping the clause IDs as-is so we can tell where the RAT hints start.
+  READ_NUMERICAL_TOKEN(res, sr_file, &token);
+  while (token != 0) {
+    insert_hint(token);
     READ_NUMERICAL_TOKEN(res, sr_file, &token);
-
-    if (token == 0) {
-      zeros_left--;
-      continue;
-    }
-
-    // Lemma: token != 0. What part of the line are we at?
-    switch (zeros_left) {
-      case 2: // We're reading in the clause/witness - but which part?
-        lit = FROM_DIMACS_LIT(token);
-        if (num_times_found_pivot == 0) {
-          pivot = lit; // First lit in a nonempty candidate clause is the pivot
-          num_times_found_pivot++;
-        } else if (lit == pivot) {
-          num_times_found_pivot++;
-        }
-
-        // The pivot demarcates different areas of the clause + witness part
-        switch (num_times_found_pivot) {
-          case 1: // We're reading in the clause
-            insert_lit_no_first_last_update(lit);
-            new_clause_size++;
-            break;
-          case 3: // We're reading in the substitution part of the witness (waterfall!)
-            subst_index = (subst_index == INT_MAX) ? witness_size : subst_index;
-            subst_pair_incomplete = !subst_pair_incomplete;
-          case 2: // We're reading in the LPR part of the witness
-            insert_witness_lit(lit);
-            break;
-          default: PRINT_ERR_AND_EXIT("Seen pivot more than 3 times.");
-        }
-
-        break;
-      case 1: // We're reading in the UP/RAT hints 
-        insert_hint(token); break;
-      case 0: break;
-      default: PRINT_ERR_AND_EXIT("Corrupted zeros_left value.");
-    }
-  }
-
-  if (subst_pair_incomplete) {
-    PRINT_ERR_AND_EXIT("Missing second half of subst mapping pair.");
   }
 
   // printf("c Checking addition line %d, expecting %d RAT hints among %d hints for gen %ld\n", 
@@ -464,7 +369,8 @@ int main(int argc, char *argv[]) {
   }
 
   parse_cnf(argv[1]);
-  init_sr_data();
+  init_sr_parser();
+  init_sr_check_data();
 
   printf("c CNF formula claims to have %d clauses and %d variables.\n", formula_size, max_var);
 

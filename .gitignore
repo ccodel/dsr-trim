@@ -1,3 +1,7 @@
+# Project-specific files
+sr-trim
+sr-check
+
 # CNF and proof files
 *.cnf
 *.drat

@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -DLONGTYPE -std=c99 -O3
 
-OFILES = xmalloc.o xio.o cnf_parser.o global_data.o
+OFILES = xmalloc.o xio.o cnf_parser.o sr_parser.o global_data.o
 FILES = xmalloc.c xio.c cnf_parser.c global_data.c
 EXES  = sr-trim sr-check
 
@@ -21,6 +21,9 @@ xio.o: xio.c
 
 cnf_parser.o: cnf_parser.c
 	$(CC) $(CFLAGS) -c cnf_parser.c
+
+sr_parser.o: sr_parser.c
+	$(CC) $(CFLAGS) -c sr_parser.c
 
 global_data.o: global_data.c
 	$(CC) $(CFLAGS) -c global_data.c

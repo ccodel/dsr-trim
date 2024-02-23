@@ -23,6 +23,7 @@
 /** Sets the sign bit for the clause index value to logically delete it. */
 #define DELETE_CLAUSE(x)          ((x) | HIGH_BIT)
 
+// TODO: Instead of floating point, use numerator and denominator.
 #define DELETION_GC_THRESHOLD     (0.3)
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -56,6 +57,7 @@ long *subst_generations = NULL;
 int *subst_mappings = NULL;
 long *subst_taut = NULL;
 int alpha_subst_alloc_size = 0;
+long taut_generation = 0;
 
 int max_var = 0;
 long current_generation = 0;
@@ -150,8 +152,8 @@ inline void set_lit_for_taut(int lit, long gen) {
 
 inline peval_t peval_lit_under_taut(int lit) {
   long gen = subst_taut[VAR_FROM_LIT(lit)];
-  if (ABS(gen) >= current_generation) {
-    return ((gen >= current_generation) ^ (IS_POS_LIT(lit))) ? FF : TT;
+  if (ABS(gen) >= taut_generation) {
+    return ((gen >= taut_generation) ^ (IS_POS_LIT(lit))) ? FF : TT;
   } else {
     return UNASSIGNED;
   }
@@ -261,24 +263,24 @@ static inline void memshift(void *restrict dst, const void *restrict src, size_t
 static inline void gc_lits_db(void) {
   if (lits_db_deleted_size > DELETION_GC_THRESHOLD * lits_db_size) {
     int insert_index = 0;
-    int clause_ptr;
-    int next_clause_ptr = formula[0]; // First loop takes value of next_clause_ptr
+    int clause_idx;
+    int next_clause_idx = formula[0]; // First loop takes value of next_clause_ptr
     for (int i = 0; i < formula_size; i++) {
-      clause_ptr = next_clause_ptr;
-      next_clause_ptr = formula[i + 1]; // Lemma: allowed, b/c one past is allocated
+      clause_idx = next_clause_idx;
+      next_clause_idx = formula[i + 1]; // Lemma: allowed, b/c one past is allocated
 
-      if (IS_DELETED_CLAUSE(clause_ptr)) {
+      if (IS_DELETED_CLAUSE(clause_idx)) {
         // Put the deleted clause's pointer at the insert index, but keep it deleted
         // That way, the previous clause still knows its size
         formula[i] = DELETE_CLAUSE(insert_index);
       } else {
-        if (insert_index == clause_ptr) {
-          insert_index = CLAUSE_IDX(next_clause_ptr); // No moving, bump up insert index
+        if (insert_index == clause_idx) {
+          insert_index = CLAUSE_IDX(next_clause_idx); // No moving, bump up insert index
         } else {
           // Move the literals down and update formula clause pointer
           formula[i] = insert_index;
-          int size = CLAUSE_IDX(next_clause_ptr) - clause_ptr;
-          memshift(lits_db + insert_index, lits_db + clause_ptr, size * sizeof(int));
+          int size = CLAUSE_IDX(next_clause_idx) - clause_idx;
+          memshift(lits_db + insert_index, lits_db + clause_idx, size * sizeof(int));
           insert_index += size;
         }
       }
@@ -286,10 +288,10 @@ static inline void gc_lits_db(void) {
 
     // Finally, update the place to put a new clause, moving "pending" literals if any
     // Lemma: the final clause is not deleted
-    clause_ptr = next_clause_ptr;
+    clause_idx = next_clause_idx;
     formula[formula_size] = insert_index;
-    int size = lits_db_size - clause_ptr;
-    memshift(lits_db + insert_index, lits_db + clause_ptr, size * sizeof(int));
+    int size = lits_db_size - clause_idx;
+    memshift(lits_db + insert_index, lits_db + clause_idx, size * sizeof(int));
     lits_db_size = insert_index + size;
     lits_db_deleted_size = 0;
   }
