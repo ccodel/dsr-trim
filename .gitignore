@@ -16,6 +16,7 @@ sr-check
 *.swp
 *.swo
 *.DS_Store
+.vscode/*
 
 # Object files
 *.o

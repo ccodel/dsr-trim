@@ -88,12 +88,12 @@ void parse_sr_clause_and_witness(FILE *f) {
         insert_lit_no_first_last_update(lit);
         new_clause_size++;
         break;
-      case 2:
-        insert_witness_lit(lit);
-        break;
       case 3: // We're reading the substitution part of the witness (waterfall!)
         subst_index = (subst_index == INT_MAX) ? witness_size : subst_index;
         subst_pair_incomplete = !subst_pair_incomplete;
+      case 2: // We're reading the witness (waterfalls from above)
+        insert_witness_lit(lit);
+        break;
       default: PRINT_ERR_AND_EXIT("Seen pivot more than 3 times.");
     }
 
@@ -107,4 +107,6 @@ void parse_sr_clause_and_witness(FILE *f) {
   if (subst_index == INT_MAX) {
     subst_index = witness_size;
   }
+
+  // TODO: Reject tautologies
 }

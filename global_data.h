@@ -23,6 +23,14 @@
 #define MAX(x, y)  (((x) > (y)) ? (x) : (y))
 #endif
 
+#ifndef MSB
+#define MSB32                     (1  << 31)
+#define MSB64                     (1L << 63)
+
+#define INT_SET_BIT(s)            (1  << (s))
+#define LONG_SET_BIT(s)           (1L << (s))
+#endif
+
 /** DIMACS character that starts a comment line. */
 #define DIMACS_COMMENT_LINE ('c')
 
@@ -174,6 +182,7 @@ int is_clause_deleted(int clause_index);
 // Deletes a clause. Errors if the clause is already deleted.
 void delete_clause(int clause_index);    
 
+int *get_clause_start_unsafe(int clause_index);
 int *get_clause_start(int clause_index);
 int get_clause_size(int clause_index);
 void assume_negated_clause(int clause_index, long gen);

@@ -10,7 +10,7 @@ all: $(EXES)
 sr-trim: sr-trim.c $(OFILES)
 	$(CC) $(CFLAGS) sr-trim.c $(OFILES) -o sr-trim
 
-sr-check: sr-check.c $(FILES)
+sr-check: sr-check.c $(OFILES)
 	$(CC) $(CFLAGS) sr-check.c $(OFILES) -o sr-check
 
 xmalloc.o: xmalloc.c

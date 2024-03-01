@@ -14,14 +14,13 @@
 #include "global_data.h"
 
 /** Determines if the sign bit is set to mark a deleted clause. */
-#define HIGH_BIT                  (1 << 31)
-#define IS_DELETED_CLAUSE(x)      ((x) & HIGH_BIT)
+#define IS_DELETED_CLAUSE(x)      ((x) & MSB32)
 
 /** Removes the sign bit from the clause index value to remove deletion info. */
-#define CLAUSE_IDX(x)             ((x) & (~HIGH_BIT))
+#define CLAUSE_IDX(x)             ((x) & (~MSB32))
 
 /** Sets the sign bit for the clause index value to logically delete it. */
-#define DELETE_CLAUSE(x)          ((x) | HIGH_BIT)
+#define DELETE_CLAUSE(x)          ((x) | MSB32)
 
 // TODO: Instead of floating point, use numerator and denominator.
 #define DELETION_GC_THRESHOLD     (0.3)
@@ -104,8 +103,15 @@ void init_global_data(int num_clauses, int num_vars) {
 // Assumes that VAR_FROM_LIT(lit) < alpha_subst_size
 inline void set_lit_for_alpha(int lit, long gen) {
   if (IS_POS_LIT(lit)) {
+    if (gen < labs(alpha[VAR_FROM_LIT(lit)])) {
+      printf("Moving gen from %ld to %ld for %d\n", alpha[VAR_FROM_LIT(lit)], gen, lit);
+    }
+
     alpha[VAR_FROM_LIT(lit)] = gen;
   } else {
+    if (gen < labs(alpha[VAR_FROM_LIT(lit)])) {
+      printf("Moving gen from %ld to %ld for %d\n", alpha[VAR_FROM_LIT(lit)], gen, lit);
+    }
     alpha[VAR_FROM_LIT(lit)] = -gen;
   }
 }
@@ -197,7 +203,8 @@ void insert_lit(int lit) {
   update_first_last(lit);
 }
 
-// Not inlined and used as helper for insert_lit() because common operation
+// Not inlined, and used as helper for insert_lit() because common operation.
+// Updates max_var and resizes global_data arrays that depend on max_var.
 void insert_lit_no_first_last_update(int lit) {
   // Insert the literal into the literal database
   RESIZE_ARR(lits_db, lits_db_alloc_size, lits_db_size, sizeof(int));
@@ -310,6 +317,10 @@ void delete_clause(int clause_index) {
     formula[clause_index] = DELETE_CLAUSE(clause_ptr);
     gc_lits_db(); // If we deleted too much from `lits_db`, garbage collect
   }
+}
+
+inline int *get_clause_start_unsafe(int clause_index) {
+  return lits_db + formula[clause_index];
 }
 
 inline int *get_clause_start(int clause_index) {

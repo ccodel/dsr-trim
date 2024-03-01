@@ -241,8 +241,6 @@ static int parse_line(void) {
     READ_NUMERICAL_TOKEN(res, sr_file, &token);
   }
 
-  // printf("c Checking addition line %d, expecting %d RAT hints among %d hints for gen %ld\n", 
-    //line_id, num_RAT_hints, hints_size, current_generation);
   return ADDITION_LINE;
 }
 
@@ -260,8 +258,6 @@ static void check_line(void) {
   if (unit_propagate(&hint_index, negated_clause_gen) == CONTRADICTION) {
     goto finish_line;
   }
-
-  // printf("c   Done unit propagating, hint_index = %d\n", hint_index);
 
   // Lemma: hint_index >= 0 and past the UP hints
 
@@ -289,26 +285,23 @@ static void check_line(void) {
   //   - Satisfied, or not reduced, by the witness
   //   - A RAT clause, whose hints derive contradiction
   // We assume that the RAT hints are sorted in order
-  // printf("c   [%d] Checking clauses %d to %d\n", max_line_id, min_clause_to_check, max_clause_to_check);
   int hint = ABS(hints[hint_index]) - 1;
   for (int i = min_clause_to_check; i <= max_clause_to_check; i++) {
     if (is_clause_deleted(i)) {
       continue; // Skip deleted clauses, nothing to prove
     }
 
-    // printf("c     [%d] checking clause %d (hi %d [%d])\n", max_line_id, i + 1, hint_index, hint + 1);
-
     // Check if the clause is the next RAT hint
     // (Assume no RAT hint is omitted, and the RAT hints are ordered by clause ID)
     // Lemma: (hint_index < hints_size) -> (hints[hint_index] < 0)
     if (hint_index < hints_size && i == hint) {
-      // printf("c    [%d] hint_index %d, %d, is RAT\n", max_line_id, hint_index, hint + 1);
       // Assume the negation of the RAT clause and perform unit propagation
-      // We expect CONTRADICTION. If not, error
       int neg_res = assume_negated_clause_under_subst(i, current_generation);
 
-      // TODO: Cayden ask Marijn question
-      // Apparently, RAT clauses can have no RAT hints, and so must be immediately satisfied
+      // RAT clauses can have no RAT hints, and so must be immediately satisfied.
+      // This occurs if the candidate unit propagations set a literal, satisfying the RAT clause.
+      // Notably, this is different than the witness satisfying the clause.
+      // If the RAT clause is satisfied by our prior UPs, then we scan to the next RAT hint.
       if (neg_res == SATISFIED_OR_MUL) {
         // Scan the hint_index forward until the hint is once again negative
         do {
@@ -319,6 +312,7 @@ static void check_line(void) {
       }
       
       hint_index++;
+      // Now perform unit propagation. We expect CONTRADICTION. If not, error
       if (unit_propagate(&hint_index, current_generation) != CONTRADICTION) {
         PRINT_ERR_AND_EXIT("RAT clause UP didn't derive contradiction.");
       }
@@ -329,9 +323,7 @@ static void check_line(void) {
         case NOT_REDUCED:
         case SATISFIED_OR_MUL:
           continue;
-        case REDUCED: 
-          printf("c [%d] Reduced clause %d has not RAT hint\n", max_line_id, i + 1);
-          PRINT_ERR_AND_EXIT("Reduced clause has no RAT hint.");
+        case REDUCED:       PRINT_ERR_AND_EXIT("Reduced clause has no RAT hint.");
         case CONTRADICTION: PRINT_ERR_AND_EXIT("Contradiction derived in non-RAT clause.");
         default: PRINT_ERR_AND_EXIT("Corrupted clause reduction.");
       }

@@ -66,6 +66,7 @@ void parse_cnf(const char *filename) {
         int size = get_clause_size(formula_size);
         void *start = ((void *) get_clause_start(formula_size));
         qsort(start, size, sizeof(int), absintcompare);
+        // TODO: Reject tautologies?
         insert_clause();
       } else {
         int lit = FROM_DIMACS_LIT(parsed_lit);
