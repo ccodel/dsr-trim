@@ -297,8 +297,12 @@ static inline void mark_dependencies(void) {
   }
 }
 
-static void mark_up_derivation(int clause) {
-  mark_entire_clause(clause);
+// Backwards marks the dependencies for the UP derivation.
+// Starts the marking at the clause stored in up_falsified_clause.
+// NOTE: Every marked clause is stored in unit_clauses, except for up_falsified_clause,
+// which is not marked.
+static void mark_up_derivation(void) {
+  mark_entire_clause(up_falsified_clause);
   mark_dependencies();
 }
 
@@ -325,8 +329,8 @@ static inline void assume_unit_literal(int lit) {
 // Then adds the literal to the unit_literals array, to look for more unit clauses later.
 // NOTE: When doing unit propagation, take the negation of the literal in the unit_literals array.
 static void set_unit_clause(int lit, int clause, long gen) {
-   printf("c     [%ld] Clause %d is unit, set lit %d \n",
-    current_line + 1, clause + 1, TO_DIMACS_LIT(lit));
+   // printf("c     [%ld] Clause %d is unit, set lit %d \n",
+    // current_line + 1, clause + 1, TO_DIMACS_LIT(lit));
   set_lit_for_alpha(lit, gen);
   up_reasons[VAR_FROM_LIT(lit)] = clause;
 
@@ -385,7 +389,7 @@ static void remove_wp_for_lit(int lit, int clause) {
 // up_falsified_clause. -1 if not found.
 // Any literals found are set to the provided generation value.
 static void perform_up(long gen) {
-  printf("c   Performing unit propagation on gen %ld\n", gen);
+  // printf("c   Performing unit propagation on gen %ld\n", gen);
   /* The unit propagation algorithm is quite involved and immersed in invariants.
    * Buckle up, cowboys.
    *
@@ -426,7 +430,7 @@ static void perform_up(long gen) {
   // TODO: Better way of doing this, since the size may increase as we do UP?
   up_falsified_clause = -1;
   for (; i < unit_literals_size; i++) {
-    printf("c    [%ld, UP] next lit is %d\n", current_line + 1, TO_DIMACS_LIT(unit_literals[i]));
+    // printf("c    [%ld, UP] next lit is %d\n", current_line + 1, TO_DIMACS_LIT(unit_literals[i]));
     int lit = NEGATE_LIT(unit_literals[i]);
 
     // Iterate through its watch pointers and see if the clause becomes unit
@@ -474,7 +478,7 @@ static void perform_up(long gen) {
 
       // We didn't find a replacement watch pointer. Is the first watch pointer false?
       if (peval_lit_under_alpha(first_wp) == FF) {
-        printf("c       [%ld, UP] Found contradiction in clause %d\n", current_line + 1, clause_id + 1);
+        // printf("c       [%ld, UP] Found contradiction in clause %d\n", current_line + 1, clause_id + 1);
         up_falsified_clause = clause_id;
         return;
       } else {
@@ -495,7 +499,7 @@ static void add_wps_and_perform_up() {
   int *clause, *next_clause = get_clause_start_unsafe(starting_clause);
   int clause_size;
   for (int i = starting_clause; i < formula_size; i++) {
-    printf("c  [awp] %d\n", i);
+    // printf("c  [awp] %d\n", i);
     clause = next_clause;
     next_clause = get_clause_start_unsafe(i + 1);
     clause_size = next_clause - clause;
@@ -509,7 +513,7 @@ static void add_wps_and_perform_up() {
       if (peval_lit_under_alpha(lit) == FF) {
         derived_empty_clause = 1;
         up_falsified_clause = i;
-        mark_up_derivation(i);
+        mark_up_derivation();
         print_lsr_line();
         return;
       } else {
@@ -528,7 +532,7 @@ static void add_wps_and_perform_up() {
   perform_up(GLOBAL_GEN);
   if (up_falsified_clause >= 0) {
     derived_empty_clause = 1;
-    mark_up_derivation(up_falsified_clause);
+    mark_up_derivation();
     print_lsr_line();
     return;
   } else {
@@ -580,7 +584,7 @@ static int assume_candidate_clause_and_perform_up(void) {
 
   // TODO: Find "shortest" UP derivation later
   int satisfied_lit = -1;
-  int satisfying_unit_clause = -1;
+  up_falsified_clause = -1;
 
   for (int i = clause; i < lits_db_size; i++) {
     int lit = lits_db[i];
@@ -605,7 +609,7 @@ static int assume_candidate_clause_and_perform_up(void) {
           break;
         } else {
           satisfied_lit = lit;
-          satisfying_unit_clause = up_reasons[var];
+          up_falsified_clause = up_reasons[var];
         }
         break;
       default: PRINT_ERR_AND_EXIT("Invalid peval_t value.");
@@ -616,18 +620,15 @@ static int assume_candidate_clause_and_perform_up(void) {
   candidate_unit_literals_index = RAT_assumed_literals_index = unit_literals_size;
 
   // If we haven't satisfied the clause, we perform unit propagation
-  if (satisfying_unit_clause == -1) {
+  if (up_falsified_clause == -1) {
     perform_up(ASSUMED_GEN);
     RAT_assumed_literals_index = unit_literals_size;
     RAT_unit_clauses_index = unit_clauses_size;
-    if (up_falsified_clause >= 0) {
-      satisfying_unit_clause = up_falsified_clause;
-    }
   }
 
   // If we have either satisfied the clause, or found a UP derivation, emit it
-  if (satisfying_unit_clause != -1) {
-    mark_up_derivation(satisfying_unit_clause);
+  if (up_falsified_clause != -1) {
+    mark_up_derivation();
     print_lsr_line();
     return -1;
   }
@@ -661,7 +662,7 @@ static int assume_RAT_clause_under_subst(int clause_index) {
             int reason = up_reasons[VAR_FROM_LIT(mapped_lit)];
             if (reason >= 0) {
               up_falsified_clause = reason;
-              mark_up_derivation(reason);
+              mark_up_derivation();
             }
             return SATISFIED_OR_MUL;
           case UNASSIGNED:
@@ -742,7 +743,7 @@ static void check_sr_line(void) {
         // Perform unit propagation
         perform_up(current_generation);
         if (up_falsified_clause >= 0) {
-          mark_up_derivation(up_falsified_clause);
+          mark_up_derivation();
           store_RAT_dependencies();
         } else {
           PRINT_ERR_AND_EXIT("RAT clause did not derive UP contradiction.");
@@ -774,12 +775,12 @@ static void process_sr_certificate(void) {
   state = GLOBAL_UP;
   add_wps_and_perform_up();
 
-  printf("c Successfully added watch pointers and did UP.\n");
+  // printf("c Successfully added watch pointers and did UP.\n");
 
   while (!derived_empty_clause) {
     parse_sr_clause_and_witness(sr_certificate_file);
-    printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
-      current_line + 1, new_clause_size, witness_size);
+    // printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
+      // current_line + 1, new_clause_size, witness_size);
     resize_sr_trim_data(); 
     check_sr_line();
   }
