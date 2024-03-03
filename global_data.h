@@ -64,6 +64,13 @@
     }                                                                          \
   } while (0)
 
+#define READ_LONG_TOKEN(res, f, ptr)            do {                           \
+    res = fscanf(f, "%ld ", ptr);                                              \
+    PRINT_ERR_AND_EXIT_IF(res == 0, "Token was expected to be a number.");     \
+    PRINT_ERR_AND_EXIT_IF(res == EOF, "EOF unexpectedly reached.");            \
+    PRINT_ERR_AND_EXIT_IF(res < 0, "Other error encountered while parsing.");  \
+  } while (0)
+
 #define READ_NUMERICAL_TOKEN(res, f, ptr)       do {                           \
     res = fscanf(f, "%d ", ptr);                                               \
     PRINT_ERR_AND_EXIT_IF(res == 0, "Token was expected to be a number.");     \
@@ -143,6 +150,40 @@ extern int alpha_subst_alloc_size;
 // TODO: Overflow possibility? Perhaps use ulong, or initially set to LONG_MIN.
 extern long taut_generation;
 
+// The witness portion of an SR certificate or proof line.
+extern int *witness;
+extern int witness_size;
+extern int witness_alloc_size;
+
+// If a witness is provided, the first literal of the clause is the pivot.
+extern int pivot;
+
+/** @brief Minimum clause to check during RAT clause checking.
+ * 
+ *  If a witness doesn't reduce a clause, it can be ignored during checking,
+ *  since assuming its negation would provably lead to contradiction. Thus,
+ *  when the SR witness is parsed, the literals set/mapped in the witness
+ *  determine the min/max range of clause IDs to check. Anything outside this
+ *  range is not reduced by the witness, and so can be ignored.
+ * 
+ *  Note that the min and max clauses are adjusted based on the literals
+ *  "touched" by the witness, not their outputs under the substitution. 
+ *  So for example, if (2 -> 3), then the min/max values for literal 2 are 
+ *  included in the calculation, but not for literal 3.
+ */
+extern int min_clause_to_check;
+extern int max_clause_to_check;
+
+// Cached size of the new SR clause. Equal to get_clause_size(formula_size).
+extern int new_clause_size; 
+
+/** Witnesses in SR can have literals set to true/false, as in LRAT/LPR, or
+ *  they can set variables to other literals. The point at which the witness
+ *  switches to substitution is updated when an SR proof line is parsed.
+ *  If no switch occurs, then subst_index is set to witness_size.
+ */
+extern int subst_index;
+
 // Maximum 0-indexed variable ID parsed so far. Used for resizing arrays.
 extern int max_var;
 
@@ -163,7 +204,7 @@ peval_t peval_lit_under_alpha(int lit);
 void set_mapping_for_subst(int lit, int lit_mapping, long gen);
 int get_lit_from_subst(int lit);
 
-void set_lit_for_taut(int lit, long gen);
+void set_lit_for_taut(int lit);
 peval_t peval_lit_under_taut(int lit);
 
 /** Inserts a literal into the database. Handles resizing of the appropriate global_data
@@ -177,16 +218,19 @@ void insert_lit_no_first_last_update(int lit);
 // Caps the current clause and increments the clause count. Clauses can be empty.
 void insert_clause(void);
 void insert_clause_first_last_update(void);
-int is_clause_deleted(int clause_index);
+int  is_clause_deleted(int clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
 void delete_clause(int clause_index);    
 
 int *get_clause_start_unsafe(int clause_index);
 int *get_clause_start(int clause_index);
-int get_clause_size(int clause_index);
+int  get_clause_size(int clause_index);
+
+void assume_subst(long gen);
 void assume_negated_clause(int clause_index, long gen);
-int assume_negated_clause_under_subst(int clause_index, long gen);
+int  assume_negated_clause_under_subst(int clause_index, long gen);
+int  reduce_subst_mapped(int clause_index);
 
 void update_first_last_clause(int lit);
 

@@ -58,6 +58,16 @@ long *subst_taut = NULL;
 int alpha_subst_alloc_size = 0;
 long taut_generation = 0;
 
+int *witness = NULL;
+int witness_size = 0;
+int witness_alloc_size = 0;
+int pivot = 0;
+int new_clause_size = 0;
+int subst_index = 0;
+
+int min_clause_to_check = 0;
+int max_clause_to_check = 0;
+
 int max_var = 0;
 long current_generation = 0;
 
@@ -98,6 +108,10 @@ void init_global_data(int num_clauses, int num_vars) {
   subst_generations = xcalloc(alpha_subst_alloc_size, sizeof(long));
   subst_mappings = xmalloc(alpha_subst_alloc_size * sizeof(int));
   subst_taut = xcalloc(alpha_subst_alloc_size, sizeof(long));
+
+  witness_alloc_size = max_var * 2;
+  witness_size = 0;
+  witness = xmalloc(witness_alloc_size * sizeof(int));
 }
 
 // Assumes that VAR_FROM_LIT(lit) < alpha_subst_size
@@ -148,11 +162,11 @@ inline int get_lit_from_subst(int lit) {
   }
 }
 
-inline void set_lit_for_taut(int lit, long gen) {
+inline void set_lit_for_taut(int lit) {
   if (IS_POS_LIT(lit)) {
-    subst_taut[VAR_FROM_LIT(lit)] = gen;
+    subst_taut[VAR_FROM_LIT(lit)] = taut_generation;
   } else {
-    subst_taut[VAR_FROM_LIT(lit)] = -gen;
+    subst_taut[VAR_FROM_LIT(lit)] = -taut_generation;
   }
 }
 
@@ -340,6 +354,26 @@ inline int get_clause_size(int clause_index) {
   }
 }
 
+// Assumes the substitution witness, if it exists. If it doesn't, it uses
+// the pivot (the first literal in the clause to be added).
+// The clause must be nonempty.
+// Updates the min/max_clause_check_to_check
+void assume_subst(long gen) {
+  // Set the pivot, just in case the witness is empty
+  set_mapping_for_subst(pivot, SUBST_TT, gen);
+
+  min_clause_to_check = MIN(min_clause_to_check, lits_first_clause[pivot]);
+  max_clause_to_check = MAX(max_clause_to_check, lits_last_clause[pivot]);
+  for (int i = 1; i < witness_size; i++) {
+    if (i < subst_index) {
+      set_mapping_for_subst(witness[i], SUBST_TT, gen);
+    } else {
+      set_mapping_for_subst(witness[i], witness[i + 1], gen);
+      i++;
+    }
+  }
+}
+
 void assume_negated_clause(int clause_index, long gen) {
   PRINT_ERR_AND_EXIT_IF(clause_index < 0 || clause_index > formula_size,
     "assume_negated_clause: Clause index was out of bounds.");
@@ -358,6 +392,11 @@ void assume_negated_clause(int clause_index, long gen) {
   }
 }
 
+// Assumes the negation of the clause under the substitution.
+// As the negated literals are read in, they are evaluated against alpha.
+// If the clause is satisfied by alpha, then the assumption stops.
+// Returns SATISFIED_OR_MUL if the clause is satisfied by alpha (or the subst),
+// and 0 otherwise.
 int assume_negated_clause_under_subst(int clause_index, long gen) {
   // TODO: Excludes the clause to be added (at formula_size)
   PRINT_ERR_AND_EXIT_IF(clause_index < 0 || clause_index >= formula_size,
@@ -379,12 +418,67 @@ int assume_negated_clause_under_subst(int clause_index, long gen) {
         switch (peval_lit_under_alpha(mapped_lit)) {
           case FF: break; // Ignore the literal
           case TT: return SATISFIED_OR_MUL;
-          case UNASSIGNED: set_lit_for_alpha(NEGATE_LIT(mapped_lit), gen);
+          case UNASSIGNED: set_lit_for_alpha(NEGATE_LIT(mapped_lit), gen); break;
+          default: PRINT_ERR_AND_EXIT("Corrupted peval value.");
         }
     }
   }
 
   return 0;
+}
+
+// Evaluate the clause under the substitution. SATISFIED_OR_MUL is satisfied only.
+int reduce_subst_mapped(int clause_index) {
+  PRINT_ERR_AND_EXIT_IF(is_clause_deleted(clause_index),
+    "Trying to unit propagate on a deleted clause.");
+
+  int id_mapped_lits = 0, falsified_lits = 0;
+  int *start = get_clause_start(clause_index);
+  int *end = get_clause_start(clause_index + 1);
+  int size = end - start;
+
+  // Do tautology checking if there's a substitution in the witness
+  int do_taut_checking = (subst_index < witness_size) ? 1 : 0;
+  taut_generation += do_taut_checking; // Clear out the taut generation array
+
+  // Evaluate the literals under the substitution first
+  for (; start < end; start++) {
+    int lit = *start;
+    int mapped_lit = get_lit_from_subst(lit);
+    switch (mapped_lit) {
+      case SUBST_TT: return SATISFIED_OR_MUL;
+      case SUBST_FF: falsified_lits++; break;
+      case SUBST_UNASSIGNED: mapped_lit = lit;
+      default:
+        if (mapped_lit == lit) {
+          id_mapped_lits++;
+        }
+
+        // Check for tautology if the witness includes a substitution
+        // TODO: Alternatively, write a set_lit_for_taut operation that
+        // returns whether tautology happens. In most cases, tautology doesn't
+        // happen, so the fast path should be simple checking
+        if (do_taut_checking) {
+          switch (peval_lit_under_taut(mapped_lit)) {
+            case UNASSIGNED: // Not encountered mapped_lit or negation before
+              // TODO: Remove taut_generation as argument, since always taut_generation
+              set_lit_for_taut(mapped_lit);
+              break;
+            case FF: return SATISFIED_OR_MUL; // Negation encountered before
+            case TT: break; // Encountered mapped_lit before, so ignore
+            default: PRINT_ERR_AND_EXIT("Corrupted tautology evaluation.");
+          }
+        }
+    }
+  }
+
+  if (falsified_lits == size) {
+    return CONTRADICTION;
+  } else if (id_mapped_lits == size) {
+    return NOT_REDUCED;
+  } else {
+    return REDUCED;
+  }
 }
 
 void update_first_last_clause(int lit) {

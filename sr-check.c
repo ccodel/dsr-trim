@@ -94,73 +94,6 @@ static int reduce(int clause_index) {
   return (unit_lit == -1) ? CONTRADICTION : unit_lit;
 }
 
-// Evaluate the clause under the substitution. SATISFIED_OR_MUL is satisfied only.
-static int reduce_subst_mapped(int clause_index) {
-  PRINT_ERR_AND_EXIT_IF(is_clause_deleted(clause_index),
-    "Trying to unit propagate on a deleted clause.");
-
-  int id_mapped_lits = 0, falsified_lits = 0;
-  int *start = get_clause_start(clause_index);
-  int *end = get_clause_start(clause_index + 1);
-  int size = end - start;
-
-  // TODO: Pull out into separate helper function and change in check_line()?
-  // If there are no substitutions in the witness, evaluate under alpha
-  if (subst_index < witness_size) {
-    for (; start < end; start++) {
-      int lit = *start;
-      switch (peval_lit_under_taut(lit)) {
-        case FF: falsified_lits++; break;
-        case TT: return SATISFIED_OR_MUL;
-        case UNASSIGNED: id_mapped_lits++; break;
-        default: PRINT_ERR_AND_EXIT("Corrupted tautology evaluation.");
-      }
-    }
-  } else {
-    // Since the clause might become a tautology, we clear the subst_taut array
-    taut_generation++;
-
-    // Evaluate the literals under the substitution first
-    for (; start < end; start++) {
-      int lit = *start;
-      int mapped_lit = get_lit_from_subst(lit);
-      switch (mapped_lit) {
-        case SUBST_TT: return SATISFIED_OR_MUL;
-        case SUBST_FF: falsified_lits++; break;
-        case SUBST_UNASSIGNED: mapped_lit = lit;
-        default:
-          if (mapped_lit == lit) {
-            id_mapped_lits++;
-          }
-
-          // Check for tautology if the witness includes a substitution
-          // TODO: Alternatively, write a set_lit_for_taut operation that
-          // returns whether tautology happens. In most cases, tautology doesn't
-          // happen, so the fast path should be simple checking
-          if (subst_index < witness_size) {
-            switch (peval_lit_under_taut(mapped_lit)) {
-              case UNASSIGNED: // Not encountered mapped_lit or negation before
-                // TODO: Remove taut_generation as argument, since always taut_generation
-                set_lit_for_taut(mapped_lit, taut_generation);
-                break;
-              case FF: return SATISFIED_OR_MUL; // Negation encountered before
-              case TT: break; // Encountered mapped_lit before, so ignore
-              default: PRINT_ERR_AND_EXIT("Corrupted tautology evaluation.");
-            }
-          }
-      }
-    }
-  }
-
-  if (falsified_lits == size) {
-    return CONTRADICTION;
-  } else if (id_mapped_lits == size) {
-    return NOT_REDUCED;
-  } else {
-    return REDUCED;
-  }
-}
-
 // Perform unit propagation starting from a hint index. Stops if end or negative hint.
 // Returns CONTRADICTION if false derived, or 0 otherwise. Updates hint index
 static int unit_propagate(int *hint_ptr, long gen) {
@@ -266,20 +199,7 @@ static void check_line(void) {
   PRINT_ERR_AND_EXIT_IF(new_clause_size == 0, "UP didn't derive contradiction for empty clause.");
   // Lemma: new_clause_size > 0
 
-  // Add the witness, if it exists. It not, set it to the pivot (first lit in new clause)
-  set_mapping_for_subst(pivot, SUBST_TT, negated_clause_gen);
-
-  // TODO: Update the first/last for pivot?
-  min_clause_to_check = MIN(min_clause_to_check, lits_first_clause[pivot]);
-  max_clause_to_check = MAX(max_clause_to_check, lits_last_clause[pivot]);
-  for (int i = 1; i < witness_size; i++) {
-    if (i < subst_index) {
-      set_mapping_for_subst(witness[i], SUBST_TT, negated_clause_gen);
-    } else {
-      set_mapping_for_subst(witness[i], witness[i + 1], negated_clause_gen);
-      i++;
-    }
-  }
+  assume_subst(negated_clause_gen);
 
   // Now for each clause, check that it is either
   //   - Satisfied, or not reduced, by the witness
@@ -361,7 +281,6 @@ int main(int argc, char *argv[]) {
   }
 
   parse_cnf(argv[1]);
-  init_sr_parser();
   init_sr_check_data();
 
   printf("c CNF formula claims to have %d clauses and %d variables.\n", formula_size, max_var);

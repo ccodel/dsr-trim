@@ -86,6 +86,7 @@ static int lsr_line_size = 0;
 static FILE *sr_certificate_file = NULL;
 static long current_line = 0; // For printing the correct line ID
 static long generation_before_line_checking = 0;
+static int up_falsified_clause = -1; // Set by unit propagation, -1 if none found
 
 static FILE *lsr_proof_file = NULL;
 
@@ -159,50 +160,85 @@ static inline void resize_units(void) {
 
 // TODO: Add elsewhere?
 static void print_clause(int clause) {
-  int *clause_ptr = get_clause_start_unsafe(clause);
-  int *clause_end = get_clause_start_unsafe(clause + 1);
-  for (; clause_ptr < clause_end; clause_ptr++) {
-    printf("%d ", *clause_ptr);
+  if (clause == formula_size) {
+    for (int i = formula[formula_size]; i < lits_db_size; i++) {
+      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(lits_db[i]));
+    }
+  } else {
+    int *clause_ptr = get_clause_start_unsafe(clause);
+    int *clause_end = get_clause_start_unsafe(clause + 1);
+    for (; clause_ptr < clause_end; clause_ptr++) {
+      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(*clause_ptr));
+    }
+  }
+}
+
+static void print_witness(void) {
+  for (int i = 0; i < witness_size; i++) {
+    fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
   }
 }
 
 static inline void print_active_dependencies(void) {
-  int stop_index = (state == GLOBAL_UP) ? unit_clauses_size : candidate_unit_clauses_index;
+  int stop_index = (state == RAT_UP) ? RAT_unit_clauses_index : unit_clauses_size;
+
+  /*
   for (int i = 0; i < stop_index; i++) {
-    if (dependency_markings[unit_clauses[i]] >= generation_before_line_checking) {
-      printf("%d ", unit_clauses[i] + 1); // Add 1 to print it in DIMACS
+    //if (dependency_markings[unit_clauses[i]] > generation_before_line_checking) {
+    printf("%d (%ld), ", unit_clauses[i] + 1, dependency_markings[unit_clauses[i]]); // Add 1 to print it in DIMACS
+    //}
+  }
+  printf("\n"); */
+
+  for (int i = 0; i < stop_index; i++) {
+    if (dependency_markings[unit_clauses[i]] > generation_before_line_checking) {
+      fprintf(lsr_proof_file, "%d ", unit_clauses[i] + 1); // Add 1 to print it in DIMACS
     }
   }
 }
 
 // Prints the accumulated LSR line, after computing dependencies
 static void print_lsr_line(void) {
+  FILE *f = lsr_proof_file;
   current_line++;
-  printf("%ld ", current_line);
+  fprintf(f, "%ld ", current_line);
 
   switch (state) {
     case GLOBAL_UP:
+      // printf("c Printing a global UP derivation.\n");
       // We can immediately derive the empty clause
-      printf("0 ");
+      fprintf(f, "0 ");
       print_active_dependencies();
+      fprintf(f, "%d ", up_falsified_clause + 1);
       break;
     case CANDIDATE_UP:
+      // printf("c Printing a candidate UP derivation.\n");
       // Print the clause (with no witness), then the UP hints
       print_clause(formula_size);
-      printf("0 ");
-      print_active_dependencies(); 
+      fprintf(f, "0 ");
+      print_active_dependencies();
+      fprintf(f, "%d ", up_falsified_clause + 1);
       break;
     case RAT_UP:
+      // printf("c Printing a whole RAT line\n");
+      // Print the marked global and candidate clauses, then the RAT dependencies
+      print_clause(formula_size);
+      print_witness();
+      fprintf(f, "0 ");
+      print_active_dependencies();
+
+      for (int i = 0; i < lsr_line_size; i++) {
+        fprintf(f, "%d ", lsr_line[i]);
+      }
       break;
     default: PRINT_ERR_AND_EXIT("Corrupted state.");
   }
 
-  printf("0\n");
+  fprintf(f, "0\n");
 }
 
 static inline void clear_lsr_line(void) {
   lsr_line_size = 0;
-  // TODO?
 }
 
 static inline void add_RAT_clause_to_lsr_line(int clause) {
@@ -266,6 +302,16 @@ static void mark_up_derivation(int clause) {
   mark_dependencies();
 }
 
+static void store_RAT_dependencies() {
+  for (int i = RAT_unit_clauses_index; i < unit_clauses_size; i++) {
+    if (dependency_markings[unit_clauses[i]] == current_generation) {
+      add_clause_to_lsr_line(unit_clauses[i]);
+    }
+  }
+
+  add_clause_to_lsr_line(up_falsified_clause);
+}
+
 // Sets the literal to true, and adds it to the unit_literals array.
 // Infers the correct generation value from state.
 static inline void assume_unit_literal(int lit) {
@@ -279,7 +325,8 @@ static inline void assume_unit_literal(int lit) {
 // Then adds the literal to the unit_literals array, to look for more unit clauses later.
 // NOTE: When doing unit propagation, take the negation of the literal in the unit_literals array.
 static void set_unit_clause(int lit, int clause, long gen) {
-  printf("  [%d] set %d to unit at %ld\n", clause, lit, gen);
+   printf("c     [%ld] Clause %d is unit, set lit %d \n",
+    current_line + 1, clause + 1, TO_DIMACS_LIT(lit));
   set_lit_for_alpha(lit, gen);
   up_reasons[VAR_FROM_LIT(lit)] = clause;
 
@@ -334,10 +381,11 @@ static void remove_wp_for_lit(int lit, int clause) {
   // TODO: If below some threshold of size/alloc_sizes, shrink the array
 }
 
-// Performs unit propagation. Returns the clause that caused contradiction, if
-// one is found, and -1 otherwise.
+// Performs unit propagation. Sets the falsified clause (the contradiction) to
+// up_falsified_clause. -1 if not found.
 // Any literals found are set to the provided generation value.
-static int perform_up(long gen) {
+static void perform_up(long gen) {
+  printf("c   Performing unit propagation on gen %ld\n", gen);
   /* The unit propagation algorithm is quite involved and immersed in invariants.
    * Buckle up, cowboys.
    *
@@ -369,14 +417,16 @@ static int perform_up(long gen) {
 
   int i;
   switch (state) {
-    case GLOBAL_UP:    i = 0;
-    case CANDIDATE_UP: i = candidate_assumed_literals_index;
-    case RAT_UP:       i = RAT_assumed_literals_index;
+    case GLOBAL_UP:    i = 0;                                break;
+    case CANDIDATE_UP: i = candidate_assumed_literals_index; break;
+    case RAT_UP:       i = RAT_assumed_literals_index;       break;
     default: PRINT_ERR_AND_EXIT("Corrupted state.");
   }
 
   // TODO: Better way of doing this, since the size may increase as we do UP?
+  up_falsified_clause = -1;
   for (; i < unit_literals_size; i++) {
+    printf("c    [%ld, UP] next lit is %d\n", current_line + 1, TO_DIMACS_LIT(unit_literals[i]));
     int lit = NEGATE_LIT(unit_literals[i]);
 
     // Iterate through its watch pointers and see if the clause becomes unit
@@ -424,14 +474,14 @@ static int perform_up(long gen) {
 
       // We didn't find a replacement watch pointer. Is the first watch pointer false?
       if (peval_lit_under_alpha(first_wp) == FF) {
-        return clause_id; // The clause is falsified, so we have a contradiction
+        printf("c       [%ld, UP] Found contradiction in clause %d\n", current_line + 1, clause_id + 1);
+        up_falsified_clause = clause_id;
+        return;
       } else {
         set_unit_clause(first_wp, clause_id, gen); // Add as a unit literal
       }
     }
   }
-
-  return -1;
 }
 
 // Adds watch pointers / sets units and performs unit propagation
@@ -445,6 +495,7 @@ static void add_wps_and_perform_up() {
   int *clause, *next_clause = get_clause_start_unsafe(starting_clause);
   int clause_size;
   for (int i = starting_clause; i < formula_size; i++) {
+    printf("c  [awp] %d\n", i);
     clause = next_clause;
     next_clause = get_clause_start_unsafe(i + 1);
     clause_size = next_clause - clause;
@@ -457,13 +508,14 @@ static void add_wps_and_perform_up() {
       // Check if it is falsified - if so, then we have a UP derivation
       if (peval_lit_under_alpha(lit) == FF) {
         derived_empty_clause = 1;
+        up_falsified_clause = i;
         mark_up_derivation(i);
         print_lsr_line();
         return;
       } else {
         // Set its one literal globally to true, and add its negation to the UP queue
         // TODO: Possible set up support for deleting a unit clause (but Marijn says this won't happen)
-        set_unit(lit, i, GLOBAL_GEN);
+        set_unit_clause(lit, i, GLOBAL_GEN);
       }
     } else {
       // The clause has at least two literals - make them the watch pointers
@@ -473,10 +525,10 @@ static void add_wps_and_perform_up() {
   }
 
   // We don't have an immediate contradiction, so perform unit propagation
-  int up_res = perform_up(GLOBAL_GEN);
-  if (up_res >= 0) {
+  perform_up(GLOBAL_GEN);
+  if (up_falsified_clause >= 0) {
     derived_empty_clause = 1;
-    mark_up_derivation(up_res);
+    mark_up_derivation(up_falsified_clause);
     print_lsr_line();
     return;
   } else {
@@ -512,11 +564,14 @@ static void unassume_candidate_clause(void) {
       up_reasons[var] ^= MSB32;
     }
   }
+
+  unit_literals_size = candidate_assumed_literals_index;
+  unit_clauses_size = candidate_unit_clauses_index;
 }
 
 // A clone of of assume_negated_clause() from global_data, but with added bookkeeping. 
 // Returns 0 if assumption succeeded, -1 if contradiction found and LSR line emitted.
-static int assume_candidate_clause(void) {
+static int assume_candidate_clause_and_perform_up(void) {
   // TODO: API breaking
   state = CANDIDATE_UP;
   int clause = formula[formula_size];
@@ -557,15 +612,16 @@ static int assume_candidate_clause(void) {
     }
   }
 
+  // TODO: Package up these indexes and invariants in helper functions
   candidate_unit_literals_index = RAT_assumed_literals_index = unit_literals_size;
 
   // If we haven't satisfied the clause, we perform unit propagation
   if (satisfying_unit_clause == -1) {
-    int up_res = perform_up(ASSUMED_GEN);
+    perform_up(ASSUMED_GEN);
     RAT_assumed_literals_index = unit_literals_size;
     RAT_unit_clauses_index = unit_clauses_size;
-    if (up_res >= 0) {
-      satisfying_unit_clause = up_res;
+    if (up_falsified_clause >= 0) {
+      satisfying_unit_clause = up_falsified_clause;
     }
   }
 
@@ -579,28 +635,134 @@ static int assume_candidate_clause(void) {
   return 0;
 }
 
+// This is clone of assume_negated_clause_under_subst(), but with extra bookkeeping.
+// In particular, we add any set literals to the unit_literals array, for UP purposes.
+// Returns the same values as angus().
+// Sets the indexes values appropriately.
+static int assume_RAT_clause_under_subst(int clause_index) {
+  int *clause_ptr = get_clause_start(clause_index);
+  int *end = get_clause_start(clause_index + 1);
+  for (; clause_ptr < end; clause_ptr++) {
+    int lit = *clause_ptr;
+    int mapped_lit = get_lit_from_subst(lit);
+    // Evaluate the lit under the substitution, assuming it won't be satisfied
+    switch (mapped_lit) {
+      case SUBST_TT: return SATISFIED_OR_MUL;
+      case SUBST_FF: break; // Ignore the literal
+      case SUBST_UNASSIGNED: // TODO: See note in get_lit_from_subst
+        mapped_lit = lit;
+      default:
+        // Now evaluate the mapped literal under alpha. If it's unassigned, set it
+        switch (peval_lit_under_alpha(mapped_lit)) {
+          case FF: break; // Ignore the literal
+          case TT:;
+            // To satisfy the clause, we needed to have derived the truth value of
+            // the mapped_lit. Mark the derivation, but do no further checking.
+            int reason = up_reasons[VAR_FROM_LIT(mapped_lit)];
+            if (reason >= 0) {
+              mark_up_derivation(reason);
+            }
+            return SATISFIED_OR_MUL;
+          case UNASSIGNED:
+            assume_unit_literal(NEGATE_LIT(mapped_lit));
+            break;
+          default: PRINT_ERR_AND_EXIT("Corrupted peval value.");
+        }
+    }
+  }
+
+  RAT_unit_literals_index = unit_literals_size;
+  return 0;
+}
+
+static void unassume_RAT_clause(int clause_index) {
+  // Undo the changes we made to the data structures
+  // First, address the unit literals set during new UP
+  for (int i = RAT_unit_literals_index; i < unit_literals_size; i++) {
+    int lit = unit_literals[i];
+    int var = VAR_FROM_LIT(lit);
+
+    // Clear the variable's reason (the generation will clear automatically via bumping)
+    up_reasons[var] = -1;
+  }
+}
+
 static void check_sr_line(void) {
+  // We save the generation at the start of line checking so we can determine
+  // which clauses are marked in the dependency_markings array.
   generation_before_line_checking = current_generation;
+  current_generation++;
   state = CANDIDATE_UP;
+
 
   // TODO: Minimize witness size
 
   // TODO: Replace -1/0 with enum/#define
-  if (assume_candidate_clause() == -1) {
+  if (assume_candidate_clause_and_perform_up() == -1) {
     goto candidate_valid;
   }
 
   // If no UP contradiction, check for RAT clauses
   clear_lsr_line();
 
-  // Do the RAT checking
+  // Since we didn't derive UP contradiction, the clause must be nonempty
+  PRINT_ERR_AND_EXIT_IF(new_clause_size == 0, "Didn't derive empty clause.");
+
+  // Assumes the witness into the substitution data structure.
+  assume_subst(current_generation);
+  RAT_assumed_literals_index = unit_literals_size;
+  RAT_unit_clauses_index = unit_clauses_size;
+
+  // Now do RAT checking
+  int *clause, *next_clause = get_clause_start_unsafe(0);
+  int clause_size;
+  for (int i = min_clause_to_check; i <= max_clause_to_check; i++) { 
+    state = RAT_UP;
+    clause = next_clause;
+    next_clause = get_clause_start_unsafe(i + 1);
+    clause_size = next_clause - clause;
+
+    unit_literals_size = RAT_assumed_literals_index;
+    unit_clauses_size = RAT_unit_clauses_index;
+
+    // Evaluate the clause under the substitution
+    switch (reduce_subst_mapped(i)) {
+      case NOT_REDUCED:
+      case SATISFIED_OR_MUL:
+        continue;
+      case REDUCED:
+        add_RAT_clause_to_lsr_line(i);
+
+        if (assume_RAT_clause_under_subst(i) == SATISFIED_OR_MUL) {
+          break;
+        }
+
+        // The negation of the clause has now been assumed
+        // Perform unit propagation
+        perform_up(current_generation);
+        if (up_falsified_clause >= 0) {
+          mark_up_derivation(up_falsified_clause);
+          store_RAT_dependencies();
+        } else {
+          PRINT_ERR_AND_EXIT("RAT clause did not derive UP contradiction.");
+        }
+
+        unassume_RAT_clause(i);
+        current_generation++;
+        break;
+      case CONTRADICTION:
+        PRINT_ERR_AND_EXIT("RAT contradiction: should have had UP derivation.");
+      default: PRINT_ERR_AND_EXIT("Corrupted reduction value.");
+    }
+  }
+
+  print_lsr_line();
 
   // Congrats - the line checked out! Undo the changes we made to the data structures
 candidate_valid:
   state = CANDIDATE_UP;
   unassume_candidate_clause();
-  current_generation++;
-  insert_clause(); // Officially add the clause to the formula
+  insert_clause_first_last_update(); // Officially add the clause to the formula
   add_wps_and_perform_up();
 }
 
@@ -611,8 +773,12 @@ static void process_sr_certificate(void) {
   state = GLOBAL_UP;
   add_wps_and_perform_up();
 
-  while (!derived_empty_clause) {
+  printf("c Successfully added watch pointers and did UP.\n");
+
+  while (!derived_empty_clause && current_line < 4242) {
     parse_sr_clause_and_witness(sr_certificate_file);
+    printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
+      current_line + 1, new_clause_size, witness_size);
     resize_sr_trim_data(); 
     check_sr_line();
   }
@@ -622,7 +788,7 @@ static void process_sr_certificate(void) {
     fclose(lsr_proof_file);
   }
 
-  printf("s VERIFIED UNSAT [end of parsing]\n");
+  printf("s VERIFIED UNSAT\n");
 }
 
 int main(int argc, char **argv) {
@@ -632,7 +798,6 @@ int main(int argc, char **argv) {
   }
 
   parse_cnf(argv[1]);
-  init_sr_parser();
   init_sr_trim_data();
 
   printf("c CNF formula claims to have %d clauses and %d variables.\n", formula_size, max_var);

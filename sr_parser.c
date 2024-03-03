@@ -16,16 +16,6 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
-int *witness = NULL;
-int witness_size = 0;
-int witness_alloc_size = 0;
-int pivot = 0;
-int new_clause_size = 0;
-int subst_index = 0;
-
-int min_clause_to_check = 0;
-int max_clause_to_check = 0;
-
 static int subst_pair_incomplete = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -45,6 +35,10 @@ static void set_min_and_max_clause_to_check(int lit) {
 }
 
 static void insert_witness_lit(int lit) {
+  // TODO: Can be more restrictive by saving "max_var" before parsing the new clause
+  // Can also restrict the first lit in a subst pair to be a positive val (a var)
+  PRINT_ERR_AND_EXIT_IF(VAR_FROM_LIT(lit) > max_var, "Variable out of range.");
+
   // Resize if inserting the literal would exceed the allocated size
   RESIZE_ARR(witness, witness_alloc_size, witness_size, sizeof(int));
   witness[witness_size] = lit;
