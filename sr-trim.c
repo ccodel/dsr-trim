@@ -660,6 +660,7 @@ static int assume_RAT_clause_under_subst(int clause_index) {
             // the mapped_lit. Mark the derivation, but do no further checking.
             int reason = up_reasons[VAR_FROM_LIT(mapped_lit)];
             if (reason >= 0) {
+              up_falsified_clause = reason;
               mark_up_derivation(reason);
             }
             return SATISFIED_OR_MUL;
@@ -775,7 +776,7 @@ static void process_sr_certificate(void) {
 
   printf("c Successfully added watch pointers and did UP.\n");
 
-  while (!derived_empty_clause && current_line < 4242) {
+  while (!derived_empty_clause) {
     parse_sr_clause_and_witness(sr_certificate_file);
     printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
       current_line + 1, new_clause_size, witness_size);
