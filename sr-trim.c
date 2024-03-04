@@ -91,6 +91,13 @@ static int RAT_unit_literals_index = 0;
 static long *dependency_markings = NULL;
 static int dependencies_alloc_size = 0;
 
+// When assuming the RAT clause under the substitution, we record specially
+// marked variables here for tautology checking. Cleared when a trivial
+// UP derivation is not found, or if one is found not based on a RAT-marked var.
+static int *RAT_marked_vars = NULL;
+static int RAT_marked_vars_alloc_size = 0;
+static int RAT_marked_vars_size = 0;
+
 static int derived_empty_clause = 0;
 
 // We store the RAT derivations as they come in "printable" format.
@@ -139,8 +146,10 @@ static void init_sr_trim_data(void) {
   dependencies_alloc_size = formula_size * 2;
   dependency_markings = xcalloc(dependencies_alloc_size, sizeof(long));
 
+  RAT_marked_vars_alloc_size = max_var;
+  RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
+
   // Allocate space for the printable LSR line, for RAT derivations.
-  lsr_line_size = 0;
   lsr_line_alloc_size = formula_size;
   lsr_line = xmalloc(lsr_line_alloc_size * sizeof(int));
 
@@ -258,7 +267,7 @@ static inline void mark_clause(int clause, int offset) {
     int var = VAR_FROM_LIT(lit);
     int reason = up_reasons[var];
     if (reason >= 0) {
-      dependency_markings[reason] = current_generation;
+      dependency_markings[reason] = alpha_generation;
     }
   }
 }
@@ -275,7 +284,7 @@ static inline void mark_entire_clause(int clause) {
 static inline void mark_dependencies(void) {
   for (int i = unit_clauses_size - 1; i >= 0; i--) {
     int clause = unit_clauses[i];
-    if (dependency_markings[clause] == current_generation) {
+    if (dependency_markings[clause] == alpha_generation) {
       mark_unit_clause(clause);
     }
   }
@@ -285,14 +294,14 @@ static inline void mark_dependencies(void) {
 // Starts the marking at the clause stored in up_falsified_clause.
 // NOTE: Every marked clause is stored in unit_clauses, except for up_falsified_clause,
 // which is not marked.
-static void mark_up_derivation(void) {
+static inline void mark_up_derivation(void) {
   mark_entire_clause(up_falsified_clause);
   mark_dependencies();
 }
 
 static void store_RAT_dependencies() {
   for (int i = RAT_unit_clauses_index; i < unit_clauses_size; i++) {
-    if (dependency_markings[unit_clauses[i]] == current_generation) {
+    if (dependency_markings[unit_clauses[i]] == alpha_generation) {
       add_clause_to_lsr_line(unit_clauses[i]);
     }
   }
@@ -348,7 +357,7 @@ static void decrement_state(void) {
 // Sets the literal to true, and adds it to the unit_literals array.
 // Infers the correct generation value from state.
 static inline void assume_unit_literal(int lit) {
-  long gen = (state == CANDIDATE_UP) ? ASSUMED_GEN : current_generation;
+  long gen = (state == CANDIDATE_UP) ? ASSUMED_GEN : alpha_generation;
   set_lit_for_alpha(lit, gen);
   resize_units();
   unit_literals[unit_literals_size++] = lit;
@@ -664,6 +673,20 @@ static void unassume_candidate_clause(void) {
   decrement_state();
 }
 
+static inline void add_RAT_marked_var(int marked_var) {
+  RESIZE_ARR(RAT_marked_vars, RAT_marked_vars_alloc_size, 
+    RAT_marked_vars_size, sizeof(int));
+  RAT_marked_vars[RAT_marked_vars_size++] = marked_var;
+}
+
+static inline void clear_RAT_marked_vars(void) {
+  for (int i = 0; i < RAT_marked_vars_size; i++) {
+    up_reasons[RAT_marked_vars[i]] ^= MSB32;
+  }
+
+  RAT_marked_vars_size = 0;
+}
+
 // This is clone of assume_negated_clause_under_subst(), but with extra bookkeeping.
 // In particular, we add any set literals to the unit_literals array, for UP purposes.
 // Returns the same values as assume_negated_clause_under_subst().
@@ -674,26 +697,54 @@ static int assume_RAT_clause_under_subst(int clause_index) {
   PRINT_ERR_AND_EXIT_IF(state != CANDIDATE_UP, "state not RAT_UP.");
   increment_state();
 
+  /* If we encounter false literals under alpha, we mark their reasons as assumed
+   * in the typical way, but we record which have been marked as assumed only for
+   * the RAT clause. This allows us to shorten/detect tautology derivations.
+   * However, these markings must be cleared before returning on any code path
+   * and before doing normal UP derivation, since we want to record global and
+   * candidate UP dependencies accurately.
+   * 
+   * We might want to do this work in unassume_RAT_clause(), but then UP would
+   * have to case on an additional MSB32 bit or pass the dependency index to
+   * detect when an assumed variable is a "stopping variable" (global or candidate)
+   * or a "non-stopping variable" (RAT). To simplify matters, we clear the
+   * RAT_marked_vars array before returning on any code path here. */
+  RAT_marked_vars_size = 0;
+
   int *clause_ptr = get_clause_start(clause_index);
   int *end = get_clause_start(clause_index + 1);
   for (; clause_ptr < end; clause_ptr++) {
     int lit = *clause_ptr;
     int mapped_lit = get_lit_from_subst(lit);
-    // Evaluate the lit under the substitution, assuming it won't be satisfied
     switch (mapped_lit) {
-      case SUBST_TT: return SATISFIED_OR_MUL;
+      case SUBST_TT:
+        clear_RAT_marked_vars();
+        return SATISFIED_OR_MUL;
       case SUBST_FF: break; // Ignore the literal
       case SUBST_UNASSIGNED:
         mapped_lit = lit; // waterfall!
-      default:
+      default:;
+        int mapped_var = VAR_FROM_LIT(mapped_lit);
         // Now evaluate the mapped literal under alpha. If it's unassigned, set it
         switch (peval_lit_under_alpha(mapped_lit)) {
-          case FF: break; // Ignore the literal
+          case FF:
+            // We can shorten tautology derivations by marking the reason as assumed.
+            // However, we ignore this assumption when doing RAT UP derivations.
+            // Only mark literals whose reasons are not already marked
+            if (up_reasons[mapped_var] >= 0) {
+              up_reasons[mapped_var] |= MSB32;
+              add_RAT_marked_var(mapped_var);
+            }
+            break;
           case TT:;
             // To satisfy the clause, we needed to have derived the truth value of
             // the mapped_lit. Mark the derivation, but do no further checking.
-            int reason = up_reasons[VAR_FROM_LIT(mapped_lit)];
+            int reason = up_reasons[mapped_var];
+            clear_RAT_marked_vars();
             if (reason >= 0) {
+              // Don't store anything in the LSR line because the derivation only
+              // includes things in the global and candidate UPs.
+              // The RAT check (the caller) will store the (-clause) in the line.
               up_falsified_clause = reason;
               mark_up_derivation();
             }
@@ -706,6 +757,7 @@ static int assume_RAT_clause_under_subst(int clause_index) {
     }
   }
 
+  clear_RAT_marked_vars();
   return 0;
 }
 
@@ -730,8 +782,8 @@ static void unassume_RAT_clause(int clause_index) {
 static void check_sr_line(void) {
   // We save the generation at the start of line checking so we can determine
   // which clauses are marked in the dependency_markings array.
-  generation_before_line_checking = current_generation;
-  current_generation++;
+  generation_before_line_checking = alpha_generation;
+  alpha_generation++;
   subst_generation++;
   clear_lsr_line();
 
@@ -767,7 +819,7 @@ static void check_sr_line(void) {
 
         // If the RAT clause is not satisfied, do unit propagation
         if (assume_RAT_clause_under_subst(i) != SATISFIED_OR_MUL) {
-          perform_up(current_generation);
+          perform_up(alpha_generation);
           PRINT_ERR_AND_EXIT_IF(up_falsified_clause == -1, "No RAT UP contradiction.");
           mark_up_derivation();
           store_RAT_dependencies();
@@ -775,7 +827,7 @@ static void check_sr_line(void) {
 
         // Undo the changes we made by (potentially partially) assuming the RAT clause
         unassume_RAT_clause(i);
-        current_generation++;
+        alpha_generation++;
         break;
       case CONTRADICTION:
         PRINT_ERR_AND_EXIT("RAT contradiction: should have had UP derivation.");
@@ -794,7 +846,7 @@ candidate_valid:
 
 static void process_sr_certificate(void) {
   derived_empty_clause = 0;
-  current_generation = 1;
+  alpha_generation = 1;
 
   state = GLOBAL_UP;
   add_wps_and_perform_up();
@@ -802,7 +854,7 @@ static void process_sr_certificate(void) {
   while (!derived_empty_clause) {
     parse_sr_clause_and_witness(sr_certificate_file);
     // printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
-     // current_line + 1, new_clause_size, witness_size);
+      // current_line + 1, new_clause_size, witness_size);
     resize_sr_trim_data(); 
     check_sr_line();
   }

@@ -54,9 +54,8 @@ int *lits_last_clause = NULL;
 long *alpha = NULL;
 long *subst_generations = NULL;
 int *subst_mappings = NULL;
-long *subst_taut = NULL;
 int alpha_subst_alloc_size = 0;
-long taut_generation = 0;
+long alpha_generation = 0;
 long subst_generation = 0;
 
 int *witness = NULL;
@@ -70,7 +69,6 @@ int min_clause_to_check = 0;
 int max_clause_to_check = 0;
 
 int max_var = 0;
-long current_generation = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -108,7 +106,6 @@ void init_global_data(int num_clauses, int num_vars) {
   alpha = xcalloc(alpha_subst_alloc_size, sizeof(long));
   subst_generations = xcalloc(alpha_subst_alloc_size, sizeof(long));
   subst_mappings = xmalloc(alpha_subst_alloc_size * sizeof(int));
-  subst_taut = xcalloc(alpha_subst_alloc_size, sizeof(long));
 
   witness_alloc_size = max_var * 2;
   witness_size = 0;
@@ -124,11 +121,11 @@ inline void set_lit_for_alpha(int lit, long gen) {
   }
 }
 
-// Compares against current_generation
+// Compares against alpha_generation
 inline peval_t peval_lit_under_alpha(int lit) {
   long gen = alpha[VAR_FROM_LIT(lit)];
-  if (ABS(gen) >= current_generation) {
-    return ((gen >= current_generation) ^ (IS_POS_LIT(lit))) ? FF : TT;
+  if (ABS(gen) >= alpha_generation) {
+    return ((gen >= alpha_generation) ^ (IS_POS_LIT(lit))) ? FF : TT;
   } else {
     return UNASSIGNED;
   }
@@ -159,23 +156,6 @@ inline int get_lit_from_subst(int lit) {
   }
 }
 
-inline void set_lit_for_taut(int lit) {
-  if (IS_POS_LIT(lit)) {
-    subst_taut[VAR_FROM_LIT(lit)] = taut_generation;
-  } else {
-    subst_taut[VAR_FROM_LIT(lit)] = -taut_generation;
-  }
-}
-
-inline peval_t peval_lit_under_taut(int lit) {
-  long gen = subst_taut[VAR_FROM_LIT(lit)];
-  if (ABS(gen) >= taut_generation) {
-    return ((gen >= taut_generation) ^ (IS_POS_LIT(lit))) ? FF : TT;
-  } else {
-    return UNASSIGNED;
-  }
-}
-
 // Updates the first and last appearances of this literal
 static inline void update_first_last(int lit) {
   lits_last_clause[lit] = formula_size;
@@ -198,7 +178,6 @@ void insert_lit(int lit) {
     alpha = xrealloc(alpha, alpha_subst_alloc_size * sizeof(long));
     subst_generations = xrealloc(subst_generations, alpha_subst_alloc_size * sizeof(long));
     subst_mappings = xrealloc(subst_mappings, alpha_subst_alloc_size * sizeof(int));
-    subst_taut = xrealloc(subst_taut, alpha_subst_alloc_size * sizeof(long));
     lits_first_clause = xrealloc(lits_first_clause, alpha_subst_alloc_size * sizeof(int));
     lits_last_clause = xrealloc(lits_last_clause, alpha_subst_alloc_size * sizeof(int));
 
@@ -206,7 +185,6 @@ void insert_lit(int lit) {
     int added_size = alpha_subst_alloc_size - old_size;
     memset(alpha + old_size, 0, added_size * sizeof(long));
     memset(subst_generations + old_size, 0, added_size * sizeof(long));
-    memset(subst_taut + old_size, 0, added_size * sizeof(long));
     memset(lits_first_clause + old_size, 0xff, added_size * sizeof(int));
     memset(lits_last_clause + old_size, 0xff, added_size * sizeof(int));
   }
@@ -230,7 +208,6 @@ void insert_lit_no_first_last_update(int lit) {
     alpha = xrealloc(alpha, alpha_subst_alloc_size * sizeof(long));
     subst_generations = xrealloc(subst_generations, alpha_subst_alloc_size * sizeof(long));
     subst_mappings = xrealloc(subst_mappings, alpha_subst_alloc_size * sizeof(int));
-    subst_taut = xrealloc(subst_taut, alpha_subst_alloc_size * sizeof(long));
     lits_first_clause = xrealloc(lits_first_clause, alpha_subst_alloc_size * sizeof(int));
     lits_last_clause = xrealloc(lits_last_clause, alpha_subst_alloc_size * sizeof(int));
 
@@ -238,7 +215,6 @@ void insert_lit_no_first_last_update(int lit) {
     int added_size = alpha_subst_alloc_size - old_size;
     memset(alpha + old_size, 0, added_size * sizeof(long));
     memset(subst_generations + old_size, 0, added_size * sizeof(long));
-    memset(subst_taut + old_size, 0, added_size * sizeof(long));
     memset(lits_first_clause + old_size, 0xff, added_size * sizeof(int));
     memset(lits_last_clause + old_size, 0xff, added_size * sizeof(int));
   }
@@ -434,11 +410,10 @@ int reduce_subst_mapped(int clause_index) {
   int *end = get_clause_start(clause_index + 1);
   int size = end - start;
 
-  // Do tautology checking if there's a substitution in the witness
-  int do_taut_checking = (subst_index < witness_size) ? 1 : 0;
-  taut_generation += do_taut_checking; // Clear out the taut generation array
-
   // Evaluate the literals under the substitution first
+  // If the witness is a substitution, tautologies can be produced. But we don't
+  // report those here, because when the clause is assumed into alpha, one of
+  // the two literals will either be true, or assumed fresh and set the other to true.
   for (; start < end; start++) {
     int lit = *start;
     int mapped_lit = get_lit_from_subst(lit);
@@ -449,22 +424,6 @@ int reduce_subst_mapped(int clause_index) {
       default:
         if (mapped_lit == lit) {
           id_mapped_lits++;
-        }
-
-        // Check for tautology if the witness includes a substitution
-        // TODO: Alternatively, write a set_lit_for_taut operation that
-        // returns whether tautology happens. In most cases, tautology doesn't
-        // happen, so the fast path should be simple checking
-        if (do_taut_checking) {
-          switch (peval_lit_under_taut(mapped_lit)) {
-            case UNASSIGNED: // Not encountered mapped_lit or negation before
-              // TODO: Remove taut_generation as argument, since always taut_generation
-              set_lit_for_taut(mapped_lit);
-              break;
-            case FF: return SATISFIED_OR_MUL; // Negation encountered before
-            case TT: break; // Encountered mapped_lit before, so ignore
-            default: PRINT_ERR_AND_EXIT("Corrupted tautology evaluation.");
-          }
         }
     }
   }

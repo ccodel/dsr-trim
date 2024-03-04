@@ -181,10 +181,10 @@ static int parse_line(void) {
 
 static void check_line(void) {
   // Now that the line is parsed, set up the negation of the candidate clause
-  // We set each variable's value to current_generation + num_RAT_hints
-  current_generation++;
+  // We set each variable's value to alpha_generation + num_RAT_hints
+  alpha_generation++;
   subst_generation++;
-  long negated_clause_gen = current_generation + num_RAT_hints;
+  long negated_clause_gen = alpha_generation + num_RAT_hints;
 
   // Set the negated literals of the candidate clause to be true
   assume_negated_clause(formula_size, negated_clause_gen);
@@ -219,7 +219,7 @@ static void check_line(void) {
     // Lemma: (hint_index < hints_size) -> (hints[hint_index] < 0)
     if (hint_index < hints_size && i == hint) {
       // Assume the negation of the RAT clause and perform unit propagation
-      int neg_res = assume_negated_clause_under_subst(i, current_generation);
+      int neg_res = assume_negated_clause_under_subst(i, alpha_generation);
 
       // RAT clauses can have no RAT hints, and so must be immediately satisfied.
       // This occurs if the candidate unit propagations set a literal, satisfying the RAT clause.
@@ -236,7 +236,7 @@ static void check_line(void) {
       
       hint_index++;
       // Now perform unit propagation. We expect CONTRADICTION. If not, error
-      if (unit_propagate(&hint_index, current_generation) != CONTRADICTION) {
+      if (unit_propagate(&hint_index, alpha_generation) != CONTRADICTION) {
         PRINT_ERR_AND_EXIT("RAT clause UP didn't derive contradiction.");
       }
       hint = ABS(hints[hint_index]) - 1;
@@ -256,7 +256,7 @@ static void check_line(void) {
   }
 
 finish_line:
-  current_generation = negated_clause_gen;
+  alpha_generation = negated_clause_gen;
   if (new_clause_size == 0) {
     derived_empty_clause = 1;
   } else {

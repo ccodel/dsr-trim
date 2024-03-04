@@ -10,3 +10,4 @@ sr-trim:
     - Substitutions were set using current_generation, but were then cleared after the first RAT clause. Created a new subst_generation value to run separately from current_generation.
         - TODO: Refactor for sr-check
         - TODO: Rename current_generation (to alpha_generation?)
+    - The ret val of get_lit_under_subst() can return SUBST_UNASSIGNED. Taking the up_reason of that variable gives 0 always, because I computed it before re-assigning back to the original lit.

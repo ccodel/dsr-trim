@@ -141,15 +141,10 @@ extern int *lits_last_clause;
 extern long *alpha;
 extern long *subst_generations;
 extern int *subst_mappings;
-extern long *subst_taut; // Used for tautology checking when reducing under subst
 extern int alpha_subst_alloc_size;
 
-// The "generation bumping" used for tautology checking is independent from the
-// global "current_generation," since tautology may be found on non-RAT clauses,
-// and the taut generation array needs to be cleared after each check.
-// TODO: Overflow possibility? Perhaps use ulong, or initially set to LONG_MIN.
-// TODO: Don't make taut_generation visible?
-extern long taut_generation;
+// The generation for alpha. Increase by (1 + RAT steps) for each proof line.
+extern long alpha_generation;
 
 // Generation for substitution. Assume once per SR line, clear by incrementing.
 extern long subst_generation;
@@ -191,9 +186,6 @@ extern int subst_index;
 // Maximum 0-indexed variable ID parsed so far. Used for resizing arrays.
 extern int max_var;
 
-// The current generation. Increase by (1 + RAT steps) for each proof line.
-extern long current_generation;
-
 ////////////////////////////////////////////////////////////////////////////////
 
 int intcompare (const void *a, const void *b);
@@ -207,9 +199,6 @@ peval_t peval_lit_under_alpha(int lit);
 
 void set_mapping_for_subst(int lit, int lit_mapping, long gen);
 int get_lit_from_subst(int lit);
-
-void set_lit_for_taut(int lit);
-peval_t peval_lit_under_taut(int lit);
 
 /** Inserts a literal into the database. Handles resizing of the appropriate global_data
  *  arrays. To mark a clause as finished, call `insert_clause`.
