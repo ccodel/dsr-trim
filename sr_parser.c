@@ -41,8 +41,7 @@ static void insert_witness_lit(int lit) {
 
   // Resize if inserting the literal would exceed the allocated size
   RESIZE_ARR(witness, witness_alloc_size, witness_size, sizeof(int));
-  witness[witness_size] = lit;
-  witness_size++;
+  witness[witness_size++] = lit;
 
   // If we are reading in UP literals, or the first half of a subst mapping
   if (subst_index == INT_MAX) {
@@ -50,7 +49,7 @@ static void insert_witness_lit(int lit) {
     // negation of the literal get reduced, so must be checked
     int neg_lit = NEGATE_LIT(lit);
     set_min_and_max_clause_to_check(neg_lit);
-  } else if (subst_pair_incomplete) {
+  } else if (!subst_pair_incomplete) {
     // If a mapping, we need to check both lit and its negation
     int neg_lit = NEGATE_LIT(lit);
     set_min_and_max_clause_to_check(lit);
@@ -75,6 +74,10 @@ void parse_sr_clause_and_witness(FILE *f) {
       num_times_found_pivot++;
     } else if (lit == pivot) {
       num_times_found_pivot++;
+      if (num_times_found_pivot == 3) {
+        // The third time we see the pivot, it's as a separator
+        goto read_next_token;
+      }
     }
 
     switch (num_times_found_pivot) {
@@ -91,6 +94,7 @@ void parse_sr_clause_and_witness(FILE *f) {
       default: PRINT_ERR_AND_EXIT("Seen pivot more than 3 times.");
     }
 
+read_next_token:
     READ_NUMERICAL_TOKEN(res, f, &token);
   }
 

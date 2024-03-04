@@ -17,6 +17,15 @@
 #include "sr_parser.h"
 #include "xmalloc.h"
 
+/*
+TODOs:
+  - Witness minimization. Will probably have to write a new assume_subst()
+    function that does this.
+  - Candidate clause minimization. When marking clauses, mark literals as well.
+  - To handle future clause deletion, use the "safe" version of get_clause().
+  - Watch pointer de-sizing.
+*/
+
 ////////////////////////////////////////////////////////////////////////////////
 
 #define INIT_LIT_WP_ARRAY_SIZE    (4)
@@ -66,6 +75,12 @@ static int unit_clauses_size = 0;
 
 static int candidate_unit_clauses_index = 0;
 static int RAT_unit_clauses_index = 0;
+
+// Index pointing at the "unprocessed" global UP literals
+static int global_up_literals_index = 0;
+
+// Monotonically increased index into the formula
+static int wp_processed_clauses = 0;
 
 static int candidate_assumed_literals_index = 0;
 static int candidate_unit_literals_index = 0;
@@ -158,80 +173,61 @@ static inline void resize_units(void) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// TODO: Add elsewhere?
-static void print_clause(int clause) {
-  if (clause == formula_size) {
+// Prints the new clause to the LSR file.
+// Doesn't print anything if the empty clause has been derived.
+static void print_clause(void) {
+  if (!derived_empty_clause) {
     for (int i = formula[formula_size]; i < lits_db_size; i++) {
       fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(lits_db[i]));
-    }
-  } else {
-    int *clause_ptr = get_clause_start_unsafe(clause);
-    int *clause_end = get_clause_start_unsafe(clause + 1);
-    for (; clause_ptr < clause_end; clause_ptr++) {
-      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(*clause_ptr));
     }
   }
 }
 
 static void print_witness(void) {
   for (int i = 0; i < witness_size; i++) {
+    // Add the pivot as a separator, if there's a substitution part of the witness
+    if (i == subst_index) {
+      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(pivot));
+    }
     fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
   }
 }
 
 static inline void print_active_dependencies(void) {
-  int stop_index = (state == RAT_UP) ? RAT_unit_clauses_index : unit_clauses_size;
-
-  /*
-  for (int i = 0; i < stop_index; i++) {
-    //if (dependency_markings[unit_clauses[i]] > generation_before_line_checking) {
-    printf("%d (%ld), ", unit_clauses[i] + 1, dependency_markings[unit_clauses[i]]); // Add 1 to print it in DIMACS
-    //}
-  }
-  printf("\n"); */
-
-  for (int i = 0; i < stop_index; i++) {
+  for (int i = 0; i < unit_clauses_size; i++) {
     if (dependency_markings[unit_clauses[i]] > generation_before_line_checking) {
-      fprintf(lsr_proof_file, "%d ", unit_clauses[i] + 1); // Add 1 to print it in DIMACS
+      fprintf(lsr_proof_file, "%d ", unit_clauses[i] + 1); // Add 1 for DIMACS
     }
   }
 }
 
-// Prints the accumulated LSR line, after computing dependencies
+// Prints the accumulated LSR line, after computing dependencies.
+// Should be printed before incrementing the generation.
+// The kind of line printed depends on the global state_t.
 static void print_lsr_line(void) {
   FILE *f = lsr_proof_file;
   current_line++;
   fprintf(f, "%ld ", current_line);
 
-  switch (state) {
-    case GLOBAL_UP:
-      // printf("c Printing a global UP derivation.\n");
-      // We can immediately derive the empty clause
-      fprintf(f, "0 ");
-      print_active_dependencies();
-      fprintf(f, "%d ", up_falsified_clause + 1);
-      break;
-    case CANDIDATE_UP:
-      // printf("c Printing a candidate UP derivation.\n");
-      // Print the clause (with no witness), then the UP hints
-      print_clause(formula_size);
-      fprintf(f, "0 ");
-      print_active_dependencies();
-      fprintf(f, "%d ", up_falsified_clause + 1);
-      break;
-    case RAT_UP:
-      // printf("c Printing a whole RAT line\n");
-      // Print the marked global and candidate clauses, then the RAT dependencies
-      print_clause(formula_size);
-      print_witness();
-      fprintf(f, "0 ");
-      print_active_dependencies();
+  // Prints the clause to be added, or nothing if we derived the empty clause
+  print_clause();
 
-      for (int i = 0; i < lsr_line_size; i++) {
-        fprintf(f, "%d ", lsr_line[i]);
-      }
-      break;
-    default: PRINT_ERR_AND_EXIT("Corrupted state.");
+  // If there are no stored RAT derivations, then no need to print a witness
+  if (lsr_line_size > 0) {
+    print_witness();
+  }
+
+  fprintf(f, "0 ");
+  print_active_dependencies();
+
+  // If there are no RAT derivations, print the falsifying clause
+  if (lsr_line_size == 0) {
+    fprintf(f, "%d ", up_falsified_clause + 1); // Add 1 to print it in DIMACS
+  } else {
+    // Print the RAT derivations
+    for (int i = 0; i < lsr_line_size; i++) {
+      fprintf(f, "%d ", lsr_line[i]);
+    }
   }
 
   fprintf(f, "0\n");
@@ -251,22 +247,10 @@ static inline void add_clause_to_lsr_line(int clause) {
   lsr_line[lsr_line_size++] = (clause + 1);
 }
 
-static inline int find_reason_index_for_clause(int clause) {
-  for (int i = unit_clauses_size - 1; i >= 0; i--) {
-    if (unit_clauses[i] == clause) {
-      return i;
-    }
-  }
-
-  PRINT_ERR_AND_EXIT("Clause not found in unit_clauses");
-  return -1;
-}
-
 // Marks the clauses causing each literal in the clause to be false.
 // Ignore literals that are assumed fresh, whether in CANDIDATE or RAT.
-// Invariant: assumed literals are always fresh, and are not derived in GLOBAL_UP.
+// Literals that were globally set to unit, but are candidate assumed, are ignored.
 static inline void mark_clause(int clause, int offset) {
-  // Add one to the pointer skip the first literal, which is unit
   int *clause_ptr = get_clause_start_unsafe(clause) + offset; 
   int *clause_end = get_clause_start_unsafe(clause + 1);
   for (; clause_ptr < clause_end; clause_ptr++) {
@@ -316,6 +300,51 @@ static void store_RAT_dependencies() {
   add_clause_to_lsr_line(up_falsified_clause);
 }
 
+// Moves state from GLOBAL_UP -> CANDIDATE_UP -> RAT_UP.
+// Sets the various indexes appropriately.
+// If incremented at RAT_UP, resets "back to" a RAT_UP state.
+static void increment_state(void) {
+  switch (state) {
+    case GLOBAL_UP:
+      state = CANDIDATE_UP;
+      candidate_assumed_literals_index = unit_literals_size;
+      candidate_unit_literals_index = unit_literals_size;
+      candidate_unit_clauses_index = unit_clauses_size;
+      break;
+    case CANDIDATE_UP:
+      state = RAT_UP;
+      RAT_assumed_literals_index = unit_literals_size;
+      RAT_unit_literals_index = unit_literals_size;
+      RAT_unit_clauses_index = unit_clauses_size;
+      break;
+    case RAT_UP:
+      unit_literals_size = RAT_assumed_literals_index;
+      RAT_unit_literals_index = RAT_assumed_literals_index;
+      unit_clauses_size = RAT_unit_clauses_index;
+      break;
+    default: PRINT_ERR_AND_EXIT("Corrupted state.");
+  }
+}
+
+// Moves state from RAT_UP -> CANDIDATE_UP -> GLOBAL_UP.
+// Sets the various indexes appropriately.
+static void decrement_state(void) {
+  switch (state) {
+    case GLOBAL_UP: return;
+    case CANDIDATE_UP:
+      state = GLOBAL_UP;
+      unit_literals_size = candidate_assumed_literals_index;
+      unit_clauses_size = candidate_unit_clauses_index;
+      break;
+    case RAT_UP:
+      state = CANDIDATE_UP;
+      unit_literals_size = RAT_assumed_literals_index;
+      unit_clauses_size = RAT_unit_clauses_index;
+      break;
+    default: PRINT_ERR_AND_EXIT("Corrupted state.");
+  }
+}
+
 // Sets the literal to true, and adds it to the unit_literals array.
 // Infers the correct generation value from state.
 static inline void assume_unit_literal(int lit) {
@@ -323,14 +352,20 @@ static inline void assume_unit_literal(int lit) {
   set_lit_for_alpha(lit, gen);
   resize_units();
   unit_literals[unit_literals_size++] = lit;
+
+  // TODO: While incrementing is slower than setting it when we're done,
+  // there's less chance for bugs. Make it be a setting later.
+  if (state == CANDIDATE_UP) {
+    candidate_unit_literals_index++;
+  } else if (state == RAT_UP) {
+    RAT_unit_literals_index++;
+  }
 }
 
 // Sets the literal in the clause to true, assuming it's unit in the clause.
 // Then adds the literal to the unit_literals array, to look for more unit clauses later.
 // NOTE: When doing unit propagation, take the negation of the literal in the unit_literals array.
 static void set_unit_clause(int lit, int clause, long gen) {
-   // printf("c     [%ld] Clause %d is unit, set lit %d \n",
-    // current_line + 1, clause + 1, TO_DIMACS_LIT(lit));
   set_lit_for_alpha(lit, gen);
   up_reasons[VAR_FROM_LIT(lit)] = clause;
 
@@ -389,7 +424,6 @@ static void remove_wp_for_lit(int lit, int clause) {
 // up_falsified_clause. -1 if not found.
 // Any literals found are set to the provided generation value.
 static void perform_up(long gen) {
-  // printf("c   Performing unit propagation on gen %ld\n", gen);
   /* The unit propagation algorithm is quite involved and immersed in invariants.
    * Buckle up, cowboys.
    *
@@ -421,7 +455,7 @@ static void perform_up(long gen) {
 
   int i;
   switch (state) {
-    case GLOBAL_UP:    i = 0;                                break;
+    case GLOBAL_UP:    i = global_up_literals_index;         break;
     case CANDIDATE_UP: i = candidate_assumed_literals_index; break;
     case RAT_UP:       i = RAT_assumed_literals_index;       break;
     default: PRINT_ERR_AND_EXIT("Corrupted state.");
@@ -430,7 +464,6 @@ static void perform_up(long gen) {
   // TODO: Better way of doing this, since the size may increase as we do UP?
   up_falsified_clause = -1;
   for (; i < unit_literals_size; i++) {
-    // printf("c    [%ld, UP] next lit is %d\n", current_line + 1, TO_DIMACS_LIT(unit_literals[i]));
     int lit = NEGATE_LIT(unit_literals[i]);
 
     // Iterate through its watch pointers and see if the clause becomes unit
@@ -486,22 +519,27 @@ static void perform_up(long gen) {
       }
     }
   }
+  
+  if (state == GLOBAL_UP) {
+    global_up_literals_index = unit_literals_size;
+  }
 }
 
-// Adds watch pointers / sets units and performs unit propagation
-// If state == GLOBAL_UP, then we start at clause 0.
-// Otherwise, we only process the last (newly added) clause.
-// Sets the state to GLOBAL_UP.
+// Adds watch pointers / sets units and performs unit propagation.
+// Skips clauses already processed (i.e. when adding a new redundant clause,
+// only adds watch pointers/sets unit on that clause).
+// Should be called when the global state == GLOBAL_UP.
 static void add_wps_and_perform_up() {
-  int starting_clause = (state == GLOBAL_UP) ? 0 : formula_size - 1;
-  state = GLOBAL_UP;
-  
-  int *clause, *next_clause = get_clause_start_unsafe(starting_clause);
+  PRINT_ERR_AND_EXIT_IF(state != GLOBAL_UP, "state not GLOBAL_UP.");
+
+  int *clause, *next_clause = get_clause_start_unsafe(wp_processed_clauses);
   int clause_size;
-  for (int i = starting_clause; i < formula_size; i++) {
-    // printf("c  [awp] %d\n", i);
+
+  // Beyond the initial setup, this loop only runs once
+  // Make more efficient later?
+  for (; wp_processed_clauses < formula_size; wp_processed_clauses++) {
     clause = next_clause;
-    next_clause = get_clause_start_unsafe(i + 1);
+    next_clause = get_clause_start_unsafe(wp_processed_clauses + 1);
     clause_size = next_clause - clause;
 
     // If the clause is unit, set it to be true, do UP later. Otherwise, add watch pointers
@@ -512,19 +550,19 @@ static void add_wps_and_perform_up() {
       // Check if it is falsified - if so, then we have a UP derivation
       if (peval_lit_under_alpha(lit) == FF) {
         derived_empty_clause = 1;
-        up_falsified_clause = i;
+        up_falsified_clause = wp_processed_clauses;
         mark_up_derivation();
         print_lsr_line();
         return;
       } else {
         // Set its one literal globally to true, and add its negation to the UP queue
-        // TODO: Possible set up support for deleting a unit clause (but Marijn says this won't happen)
-        set_unit_clause(lit, i, GLOBAL_GEN);
+        // TODO: Possible support for deleting a unit (but Marijn says this won't happen)
+        set_unit_clause(lit, wp_processed_clauses, GLOBAL_GEN);
       }
     } else {
       // The clause has at least two literals - make them the watch pointers
-      add_wp_for_lit(clause[0], i);
-      add_wp_for_lit(clause[1], i);
+      add_wp_for_lit(clause[0], wp_processed_clauses);
+      add_wp_for_lit(clause[1], wp_processed_clauses);
     }
   }
 
@@ -534,59 +572,22 @@ static void add_wps_and_perform_up() {
     derived_empty_clause = 1;
     mark_up_derivation();
     print_lsr_line();
-    return;
-  } else {
-    candidate_unit_clauses_index = unit_clauses_size;
-    candidate_assumed_literals_index = unit_literals_size;
   }
-}
-
-// Reverts changes to the data structures made during the assumption of the candidate clause.
-// Must be called before adding the candidate to the formula via insert_clause().
-static void unassume_candidate_clause(void) {
-  // Undo the changes we made to the data structures
-  // First, address the unit literals set during new UP
-  for (int i = candidate_unit_literals_index; i < RAT_assumed_literals_index; i++) {
-    int lit = unit_literals[i];
-    int var = VAR_FROM_LIT(lit);
-
-    // Clear the variable's reason and generation (since they were derived during candidate UP)
-    up_reasons[var] = -1;
-    alpha[var] = 0;
-  }
-
-  // Now iterate through the clause and undo its changes
-  for (int i = formula[formula_size]; i < lits_db_size; i++) {
-    int lit = lits_db[i];
-    int var = VAR_FROM_LIT(lit);
-
-    if (up_reasons[var] == -1) {
-      // If the literal was originally unassigned, set its gen back to 0
-      alpha[var] = 0;
-    } else if (up_reasons[var] < 0) {
-      // The literal was assumed, but not unassigned - undo its assumption bit
-      up_reasons[var] ^= MSB32;
-    }
-  }
-
-  unit_literals_size = candidate_assumed_literals_index;
-  unit_clauses_size = candidate_unit_clauses_index;
 }
 
 // A clone of of assume_negated_clause() from global_data, but with added bookkeeping. 
 // Returns 0 if assumption succeeded, -1 if contradiction found and LSR line emitted.
+// Must be called when global state == GLOBAL_UP.
+// Even when -1 is returned, the candidate clause is still "assumed".
 static int assume_candidate_clause_and_perform_up(void) {
-  // TODO: API breaking
-  state = CANDIDATE_UP;
-  int clause = formula[formula_size];
-  candidate_unit_clauses_index = unit_clauses_size;
-  candidate_assumed_literals_index = unit_literals_size;
+  PRINT_ERR_AND_EXIT_IF(state != GLOBAL_UP, "state not GLOBAL_UP.");
+  increment_state();
 
   // TODO: Find "shortest" UP derivation later
   int satisfied_lit = -1;
-  up_falsified_clause = -1;
+  up_falsified_clause = -1; // Clear any previous UP falsifying clause
 
-  for (int i = clause; i < lits_db_size; i++) {
+  for (int i = formula[formula_size]; i < lits_db_size; i++) {
     int lit = lits_db[i];
     int var = VAR_FROM_LIT(lit);
 
@@ -605,9 +606,7 @@ static int assume_candidate_clause_and_perform_up(void) {
         break;
       case TT:
         // Skip the literal if we already found a satisfying literal
-        if (satisfied_lit != -1) {
-          break;
-        } else {
+        if (satisfied_lit == -1) {
           satisfied_lit = lit;
           up_falsified_clause = up_reasons[var];
         }
@@ -616,14 +615,9 @@ static int assume_candidate_clause_and_perform_up(void) {
     }
   }
 
-  // TODO: Package up these indexes and invariants in helper functions
-  candidate_unit_literals_index = RAT_assumed_literals_index = unit_literals_size;
-
   // If we haven't satisfied the clause, we perform unit propagation
   if (up_falsified_clause == -1) {
     perform_up(ASSUMED_GEN);
-    RAT_assumed_literals_index = unit_literals_size;
-    RAT_unit_clauses_index = unit_clauses_size;
   }
 
   // If we have either satisfied the clause, or found a UP derivation, emit it
@@ -636,11 +630,50 @@ static int assume_candidate_clause_and_perform_up(void) {
   return 0;
 }
 
+// Reverts changes to the data structures made during the assumption of the candidate clause.
+// Must be called before adding the candidate to the formula via insert_clause().
+// Decrements global state back to GLOBAL_UP.
+static void unassume_candidate_clause(void) {
+  PRINT_ERR_AND_EXIT_IF(state != CANDIDATE_UP, "state not CANDIDATE_UP.");
+
+  // Undo the changes we made to the data structures
+  // First, address the unit literals set during new UP
+  for (int i = candidate_unit_literals_index; i < unit_literals_size; i++) {
+    int lit = unit_literals[i];
+    int var = VAR_FROM_LIT(lit);
+
+    // Clear the var's reason and generation (since they were derived during candidate UP)
+    up_reasons[var] = -1;
+    alpha[var] = 0;
+  }
+
+  // Now iterate through the clause and undo its changes
+  for (int i = formula[formula_size]; i < lits_db_size; i++) {
+    int lit = lits_db[i];
+    int var = VAR_FROM_LIT(lit);
+
+    if (up_reasons[var] == -1) {
+      // If the literal was originally unassigned, set its gen back to 0
+      alpha[var] = 0;
+    } else if (up_reasons[var] < 0) {
+      // The literal was assumed, but not unassigned - undo its assumption bit
+      up_reasons[var] ^= MSB32;
+    }
+  }
+
+  decrement_state();
+}
+
 // This is clone of assume_negated_clause_under_subst(), but with extra bookkeeping.
 // In particular, we add any set literals to the unit_literals array, for UP purposes.
-// Returns the same values as angus().
+// Returns the same values as assume_negated_clause_under_subst().
 // Sets the indexes values appropriately.
+// Call when global state == CANDIDATE_UP.
+// Sets the global state to RAT_UP.
 static int assume_RAT_clause_under_subst(int clause_index) {
+  PRINT_ERR_AND_EXIT_IF(state != CANDIDATE_UP, "state not RAT_UP.");
+  increment_state();
+
   int *clause_ptr = get_clause_start(clause_index);
   int *end = get_clause_start(clause_index + 1);
   for (; clause_ptr < end; clause_ptr++) {
@@ -650,8 +683,8 @@ static int assume_RAT_clause_under_subst(int clause_index) {
     switch (mapped_lit) {
       case SUBST_TT: return SATISFIED_OR_MUL;
       case SUBST_FF: break; // Ignore the literal
-      case SUBST_UNASSIGNED: // TODO: See note in get_lit_from_subst
-        mapped_lit = lit;
+      case SUBST_UNASSIGNED:
+        mapped_lit = lit; // waterfall!
       default:
         // Now evaluate the mapped literal under alpha. If it's unassigned, set it
         switch (peval_lit_under_alpha(mapped_lit)) {
@@ -673,11 +706,14 @@ static int assume_RAT_clause_under_subst(int clause_index) {
     }
   }
 
-  RAT_unit_literals_index = unit_literals_size;
   return 0;
 }
 
+// Call when global state == RAT_UP.
+// Decrements state back to CANDIDATE_UP.
 static void unassume_RAT_clause(int clause_index) {
+  PRINT_ERR_AND_EXIT_IF(state != RAT_UP, "state not RAT_UP.");
+
   // Undo the changes we made to the data structures
   // First, address the unit literals set during new UP
   for (int i = RAT_unit_literals_index; i < unit_literals_size; i++) {
@@ -687,6 +723,8 @@ static void unassume_RAT_clause(int clause_index) {
     // Clear the variable's reason (the generation will clear automatically via bumping)
     up_reasons[var] = -1;
   }
+
+  decrement_state();
 }
 
 static void check_sr_line(void) {
@@ -694,8 +732,8 @@ static void check_sr_line(void) {
   // which clauses are marked in the dependency_markings array.
   generation_before_line_checking = current_generation;
   current_generation++;
-  state = CANDIDATE_UP;
-
+  subst_generation++;
+  clear_lsr_line();
 
   // TODO: Minimize witness size
 
@@ -704,28 +742,20 @@ static void check_sr_line(void) {
     goto candidate_valid;
   }
 
-  // If no UP contradiction, check for RAT clauses
-  clear_lsr_line();
-
-  // Since we didn't derive UP contradiction, the clause must be nonempty
+  // Since we didn't derive UP contradiction, the clause should be nonempty
   PRINT_ERR_AND_EXIT_IF(new_clause_size == 0, "Didn't derive empty clause.");
 
   // Assumes the witness into the substitution data structure.
-  assume_subst(current_generation);
-  RAT_assumed_literals_index = unit_literals_size;
-  RAT_unit_clauses_index = unit_clauses_size;
+  assume_subst(subst_generation);
 
   // Now do RAT checking
+  // printf("c   [%ld] Checking clauses %d to %d\n", current_line + 1, min_clause_to_check, max_clause_to_check);
   int *clause, *next_clause = get_clause_start_unsafe(0);
   int clause_size;
-  for (int i = min_clause_to_check; i <= max_clause_to_check; i++) { 
-    state = RAT_UP;
+  for (int i = min_clause_to_check; i <= max_clause_to_check; i++) {
     clause = next_clause;
     next_clause = get_clause_start_unsafe(i + 1);
     clause_size = next_clause - clause;
-
-    unit_literals_size = RAT_assumed_literals_index;
-    unit_clauses_size = RAT_unit_clauses_index;
 
     // Evaluate the clause under the substitution
     switch (reduce_subst_mapped(i)) {
@@ -735,34 +765,28 @@ static void check_sr_line(void) {
       case REDUCED:
         add_RAT_clause_to_lsr_line(i);
 
-        if (assume_RAT_clause_under_subst(i) == SATISFIED_OR_MUL) {
-          break;
-        }
-
-        // The negation of the clause has now been assumed
-        // Perform unit propagation
-        perform_up(current_generation);
-        if (up_falsified_clause >= 0) {
+        // If the RAT clause is not satisfied, do unit propagation
+        if (assume_RAT_clause_under_subst(i) != SATISFIED_OR_MUL) {
+          perform_up(current_generation);
+          PRINT_ERR_AND_EXIT_IF(up_falsified_clause == -1, "No RAT UP contradiction.");
           mark_up_derivation();
           store_RAT_dependencies();
-        } else {
-          PRINT_ERR_AND_EXIT("RAT clause did not derive UP contradiction.");
         }
 
+        // Undo the changes we made by (potentially partially) assuming the RAT clause
         unassume_RAT_clause(i);
         current_generation++;
         break;
       case CONTRADICTION:
         PRINT_ERR_AND_EXIT("RAT contradiction: should have had UP derivation.");
       default: PRINT_ERR_AND_EXIT("Corrupted reduction value.");
-    }
+    }    
   }
 
   print_lsr_line();
 
   // Congrats - the line checked out! Undo the changes we made to the data structures
 candidate_valid:
-  state = CANDIDATE_UP;
   unassume_candidate_clause();
   insert_clause_first_last_update(); // Officially add the clause to the formula
   add_wps_and_perform_up();
@@ -775,12 +799,10 @@ static void process_sr_certificate(void) {
   state = GLOBAL_UP;
   add_wps_and_perform_up();
 
-  // printf("c Successfully added watch pointers and did UP.\n");
-
   while (!derived_empty_clause) {
     parse_sr_clause_and_witness(sr_certificate_file);
     // printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
-      // current_line + 1, new_clause_size, witness_size);
+     // current_line + 1, new_clause_size, witness_size);
     resize_sr_trim_data(); 
     check_sr_line();
   }

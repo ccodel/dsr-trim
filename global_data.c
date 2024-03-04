@@ -57,6 +57,7 @@ int *subst_mappings = NULL;
 long *subst_taut = NULL;
 int alpha_subst_alloc_size = 0;
 long taut_generation = 0;
+long subst_generation = 0;
 
 int *witness = NULL;
 int witness_size = 0;
@@ -117,15 +118,8 @@ void init_global_data(int num_clauses, int num_vars) {
 // Assumes that VAR_FROM_LIT(lit) < alpha_subst_size
 inline void set_lit_for_alpha(int lit, long gen) {
   if (IS_POS_LIT(lit)) {
-    if (gen < labs(alpha[VAR_FROM_LIT(lit)])) {
-      printf("Moving gen from %ld to %ld for %d\n", alpha[VAR_FROM_LIT(lit)], gen, lit);
-    }
-
     alpha[VAR_FROM_LIT(lit)] = gen;
   } else {
-    if (gen < labs(alpha[VAR_FROM_LIT(lit)])) {
-      printf("Moving gen from %ld to %ld for %d\n", alpha[VAR_FROM_LIT(lit)], gen, lit);
-    }
     alpha[VAR_FROM_LIT(lit)] = -gen;
   }
 }
@@ -141,21 +135,24 @@ inline peval_t peval_lit_under_alpha(int lit) {
 }
 
 inline void set_mapping_for_subst(int lit, int lit_mapping, long gen) {
-  subst_generations[VAR_FROM_LIT(lit)] = gen;
+  int var = VAR_FROM_LIT(lit);
+  subst_generations[var] = gen;
   if (IS_POS_LIT(lit)) {
-    subst_mappings[VAR_FROM_LIT(lit)] = lit_mapping;
+    subst_mappings[var] = lit_mapping;
   } else {
-    subst_mappings[VAR_FROM_LIT(lit)] = NEGATE_LIT(lit_mapping);
+    subst_mappings[var] = NEGATE_LIT(lit_mapping);
   }
 }
 
 // Returns the lit value of subst(lit). Can return SUBST_TT/_FF.
+// Compares against subst_generation.
 inline int get_lit_from_subst(int lit) {
-  long gen = subst_generations[VAR_FROM_LIT(lit)];
-  if (gen >= current_generation) {
+  int var = VAR_FROM_LIT(lit);
+  long gen = subst_generations[var];
+  if (gen >= subst_generation) {
     // Equivalently,
     // (IS_POS_LIT(lit)) ? sm[V(lit)] : NEGATE_LIT(sm[V(lit)]);
-    return (subst_mappings[VAR_FROM_LIT(lit)]) ^ (IS_NEG_LIT(lit));
+    return (subst_mappings[var]) ^ (IS_NEG_LIT(lit));
   } else {
     // TODO: Or could we return lit here instead?
     return SUBST_UNASSIGNED;

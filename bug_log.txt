@@ -1,0 +1,12 @@
+sr_parser.c:
+    - When calculating min/max_clause_to_check, was previously setting the min and max to check for lit and neg_lit when subst_pair_incomplete was true, but it should be for when it is false, since we want to check clauses containing the literal that gets mapped under the substitution.
+    - Previously was adding the pivot to the witness array. Now omits it.
+
+sr-trim:
+    - Some invariant regarding candidate_assumed_literals_index/candidate_unit_clauses_index and RAT_assumed_literals_index/RAT_unit_literals_index was off. Refactored into increment/decrement_state(). (Needs better name.)
+        - Currently increments candidate_unit_literals_index/RAT etc. when assume_unit_literal() is called, but can be computed more efficiently by setting it separately.
+            - The benefits for doing this are super small.
+    - Was clearing the lsr_line_size after assuming the candidate clause, leading to RAT derivations being printed when candidate UP was found. Cleared before.
+    - Substitutions were set using current_generation, but were then cleared after the first RAT clause. Created a new subst_generation value to run separately from current_generation.
+        - TODO: Refactor for sr-check
+        - TODO: Rename current_generation (to alpha_generation?)

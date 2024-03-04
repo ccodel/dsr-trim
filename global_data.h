@@ -148,7 +148,11 @@ extern int alpha_subst_alloc_size;
 // global "current_generation," since tautology may be found on non-RAT clauses,
 // and the taut generation array needs to be cleared after each check.
 // TODO: Overflow possibility? Perhaps use ulong, or initially set to LONG_MIN.
+// TODO: Don't make taut_generation visible?
 extern long taut_generation;
+
+// Generation for substitution. Assume once per SR line, clear by incrementing.
+extern long subst_generation;
 
 // The witness portion of an SR certificate or proof line.
 extern int *witness;
@@ -227,6 +231,7 @@ int *get_clause_start_unsafe(int clause_index);
 int *get_clause_start(int clause_index);
 int  get_clause_size(int clause_index);
 
+// TODO: Remove argument?
 void assume_subst(long gen);
 void assume_negated_clause(int clause_index, long gen);
 int  assume_negated_clause_under_subst(int clause_index, long gen);

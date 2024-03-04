@@ -111,6 +111,8 @@ static int unit_propagate(int *hint_ptr, long gen) {
         *hint_ptr = hint_index;
         return CONTRADICTION;
       case SATISFIED_OR_MUL: // Unit propagation shouldn't give us either
+        printf("[%d] Found satisfied clause %d in UP part of hint (index %d)\n",
+          max_line_id, up_clause, hint_index);
         PRINT_ERR_AND_EXIT("Found satisfied clause in UP part of hint.");
       default: // We have unit on a literal - add to alpha
         set_lit_for_alpha(up_res, gen);
@@ -181,6 +183,7 @@ static void check_line(void) {
   // Now that the line is parsed, set up the negation of the candidate clause
   // We set each variable's value to current_generation + num_RAT_hints
   current_generation++;
+  subst_generation++;
   long negated_clause_gen = current_generation + num_RAT_hints;
 
   // Set the negated literals of the candidate clause to be true
@@ -199,7 +202,7 @@ static void check_line(void) {
   PRINT_ERR_AND_EXIT_IF(new_clause_size == 0, "UP didn't derive contradiction for empty clause.");
   // Lemma: new_clause_size > 0
 
-  assume_subst(negated_clause_gen);
+  assume_subst(subst_generation);
 
   // Now for each clause, check that it is either
   //   - Satisfied, or not reduced, by the witness
@@ -243,7 +246,9 @@ static void check_line(void) {
         case NOT_REDUCED:
         case SATISFIED_OR_MUL:
           continue;
-        case REDUCED:       PRINT_ERR_AND_EXIT("Reduced clause has no RAT hint.");
+        case REDUCED:       
+          printf("c [%d] Clause %d has no hint\n", max_line_id, i + 1);
+          PRINT_ERR_AND_EXIT("Reduced clause has no RAT hint.");
         case CONTRADICTION: PRINT_ERR_AND_EXIT("Contradiction derived in non-RAT clause.");
         default: PRINT_ERR_AND_EXIT("Corrupted clause reduction.");
       }
