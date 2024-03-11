@@ -270,6 +270,7 @@ static void check_line(void) {
         // Once we have succeeded on UP, set the hint_index forward
         // If the hints are sorted, this moves the hint_index along one grouping
         hint_index = MAX(hint_index, matching_hint_index);
+        alpha_generation++;
         break;
       case CONTRADICTION:
         PRINT_ERR_AND_EXIT("RAT contradiction: should have had UP derivation.");
