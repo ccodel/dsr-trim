@@ -230,10 +230,12 @@ static void print_lsr_line(void) {
   print_active_dependencies();
 
   // If there are no RAT derivations, print the falsifying clause
-  if (lsr_line_size == 0) {
+  if (lsr_line_size == 0 && up_falsified_clause != -1) {
     fprintf(f, "%d ", up_falsified_clause + 1); // Add 1 to print it in DIMACS
   } else {
     // Print the RAT derivations
+    // In rare cases, up_falsified_clause == -1, meaning that we *did* do RAT
+    // checking, but there were no RAT clauses, in which case this portion will be empty
     for (int i = 0; i < lsr_line_size; i++) {
       fprintf(f, "%d ", lsr_line[i]);
     }
