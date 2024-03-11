@@ -196,6 +196,7 @@ static void check_line(void) {
   }
 
   // Lemma: hint_index >= 0 and past the UP hints
+  // Lemma: hint_index >= hints_size OR hints[hint_index] < 0
 
   // Double-check that the proposed clause is not the empty clause
   // (The empty clause cannot have a witness, and must have contradiction through UP)
@@ -203,56 +204,78 @@ static void check_line(void) {
   // Lemma: new_clause_size > 0
 
   assume_subst(subst_generation);
+  PRINT_ERR_AND_EXIT_IF(min_clause_to_check < 0 || max_clause_to_check > formula_size
+    || min_clause_to_check > max_clause_to_check,
+      "Clause range to check is inconsistent.");
 
   // Now for each clause, check that it is either
   //   - Satisfied, or not reduced, by the witness
   //   - A RAT clause, whose hints derive contradiction
-  // We assume that the RAT hints are sorted in order
-  int hint = ABS(hints[hint_index]) - 1;
+  int rat_hint_start_index = hint_index;
+  int matching_hint_index;
   for (int i = min_clause_to_check; i <= max_clause_to_check; i++) {
     if (is_clause_deleted(i)) {
       continue; // Skip deleted clauses, nothing to prove
     }
 
-    // Check if the clause is the next RAT hint
-    // (Assume no RAT hint is omitted, and the RAT hints are ordered by clause ID)
-    // Lemma: (hint_index < hints_size) -> (hints[hint_index] < 0)
-    if (hint_index < hints_size && i == hint) {
-      // Assume the negation of the RAT clause and perform unit propagation
-      int neg_res = assume_negated_clause_under_subst(i, alpha_generation);
-
-      // RAT clauses can have no RAT hints, and so must be immediately satisfied.
-      // This occurs if the candidate unit propagations set a literal, satisfying the RAT clause.
-      // Notably, this is different than the witness satisfying the clause.
-      // If the RAT clause is satisfied by our prior UPs, then we scan to the next RAT hint.
-      if (neg_res == SATISFIED_OR_MUL) {
-        // Scan the hint_index forward until the hint is once again negative
-        do {
-          hint_index++;
-        } while (hints[hint_index] > 0 && hint_index < hints_size);
-        hint = ABS(hints[hint_index]) - 1;
+    // Check how the clause behaves under the substitution
+    // TODO: Cache the computed reduction under subst into an array, which resizes to max_clause_size?
+    switch (reduce_subst_mapped(i)) {
+      case NOT_REDUCED:
+      case SATISFIED_OR_MUL:
         continue;
-      }
-      
-      hint_index++;
-      // Now perform unit propagation. We expect CONTRADICTION. If not, error
-      if (unit_propagate(&hint_index, alpha_generation) != CONTRADICTION) {
-        PRINT_ERR_AND_EXIT("RAT clause UP didn't derive contradiction.");
-      }
-      hint = ABS(hints[hint_index]) - 1;
-    } else {
-      // Check that the clause is satisfied or not reduced by the witness
-      switch (reduce_subst_mapped(i)) {
-        case NOT_REDUCED:
-        case SATISFIED_OR_MUL:
+      case REDUCED:
+        // Find the reduced clause's hint
+        // Invariant: hint_index points at the "next negative hint," if the hints are sorted
+        // If the hints are sorted, check that the next one is valid
+        if (hint_index < hints_size && -(hints[hint_index] + 1) == i) {
+          matching_hint_index = hint_index;
+        } else {
+          // Scan through all the RAT hints for a negative one matching this clause
+          matching_hint_index = -1;
+          for (int h = rat_hint_start_index; h < hints_size; h++) {
+            if (-(hints[h] + 1) == i) {
+              matching_hint_index = h;
+              hint_index = MAX(hint_index, h);
+              break;
+            }
+          }
+
+          PRINT_ERR_AND_EXIT_IF(matching_hint_index == -1, "RAT clause has no RAT hint.");
+        }
+
+        // We successfully found a matching RAT hint
+        // Assume the negation of the RAT clause and perform unit propagation
+        int neg_res = assume_negated_clause_under_subst(i, alpha_generation);
+
+        // RAT clauses can have no RAT hints, and so must be immediately satisfied.
+        // This occurs if the candidate unit propagations set a literal, satisfying the RAT clause.
+        // Notably, this is different than the witness satisfying the clause.
+        // If the RAT clause is satisfied by our prior UPs, then we scan to the next RAT hint.
+        if (neg_res == SATISFIED_OR_MUL) {
+          // Scan the matching_hint_index forward until the hint is once again negative
+          do {
+            matching_hint_index++;
+          } while (hints[matching_hint_index] > 0 && matching_hint_index < hints_size);
+          hint_index = MAX(hint_index, matching_hint_index);
           continue;
-        case REDUCED:       
-          printf("c [%d] Clause %d has no hint\n", max_line_id, i + 1);
-          PRINT_ERR_AND_EXIT("Reduced clause has no RAT hint.");
-        case CONTRADICTION: PRINT_ERR_AND_EXIT("Contradiction derived in non-RAT clause.");
-        default: PRINT_ERR_AND_EXIT("Corrupted clause reduction.");
+        }
+
+        matching_hint_index++;
+        // Now perform unit propagation. We expect CONTRADICTION. If not, error
+        if (unit_propagate(&matching_hint_index, alpha_generation) != CONTRADICTION) {
+          PRINT_ERR_AND_EXIT("RAT clause UP didn't derive contradiction.");
+        }
+
+        // Once we have succeeded on UP, set the hint_index forward
+        // If the hints are sorted, this moves the hint_index along one grouping
+        hint_index = MAX(hint_index, matching_hint_index);
+        alpha_generation++;
+        break;
+      case CONTRADICTION:
+        PRINT_ERR_AND_EXIT("RAT contradiction: should have had UP derivation.");
+      default: PRINT_ERR_AND_EXIT("Corrupted clause reduction.");
       }
-    }
   }
 
 finish_line:

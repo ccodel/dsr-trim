@@ -1,6 +1,7 @@
 sr_parser.c:
     - When calculating min/max_clause_to_check, was previously setting the min and max to check for lit and neg_lit when subst_pair_incomplete was true, but it should be for when it is false, since we want to check clauses containing the literal that gets mapped under the substitution.
     - Previously was adding the pivot to the witness array. Now omits it.
+    - When comparing hints[hint_index], I computed -(hints[hint_index] - 1) == i. Because the hint is negative, should have added one to map it from "printable" into 0-indexed.
 
 sr-trim:
     - Some invariant regarding candidate_assumed_literals_index/candidate_unit_clauses_index and RAT_assumed_literals_index/RAT_unit_literals_index was off. Refactored into increment/decrement_state(). (Needs better name.)
