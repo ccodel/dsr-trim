@@ -335,8 +335,10 @@ void assume_subst(long gen) {
   // Set the pivot, just in case the witness is empty
   set_mapping_for_subst(pivot, SUBST_TT, gen);
 
-  min_clause_to_check = MIN(min_clause_to_check, lits_first_clause[pivot]);
-  max_clause_to_check = MAX(max_clause_to_check, lits_last_clause[pivot]);
+  // We have to check clauses that are reduced by the negation of the pivot
+  int neg_pivot = NEGATE_LIT(pivot);
+  min_clause_to_check = MIN(min_clause_to_check, lits_first_clause[neg_pivot]);
+  max_clause_to_check = MAX(max_clause_to_check, lits_last_clause[neg_pivot]);
   for (int i = 1; i < witness_size; i++) {
     if (i < subst_index) {
       set_mapping_for_subst(witness[i], SUBST_TT, gen);
