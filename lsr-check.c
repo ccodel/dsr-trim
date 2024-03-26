@@ -111,8 +111,8 @@ static int unit_propagate(int *hint_ptr, long gen) {
         *hint_ptr = hint_index;
         return CONTRADICTION;
       case SATISFIED_OR_MUL: // Unit propagation shouldn't give us either
-        printf("[%d] Found satisfied clause %d in UP part of hint (index %d)\n",
-          max_line_id, up_clause, hint_index);
+        // printf("[%d] Found satisfied clause %d in UP part of hint (index %d)\n",
+        //  max_line_id, up_clause, hint_index);
         PRINT_ERR_AND_EXIT("Found satisfied clause in UP part of hint.");
       default: // We have unit on a literal - add to alpha
         set_lit_for_alpha(up_res, gen);

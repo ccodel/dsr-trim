@@ -1,6 +1,13 @@
 # Project-specific files
-sr-trim
-sr-check
+dsr-trim
+lsr-check
+
+# Pigeonhole executables and CNF/proof files
+php/php
+php/php-sr
+php/cnf/*
+php/sr/*
+php/lsr/*
 
 # CNF and proof files
 *.cnf

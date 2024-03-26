@@ -856,7 +856,7 @@ static void process_sr_certificate(void) {
   while (!derived_empty_clause) {
     parse_sr_clause_and_witness(sr_certificate_file);
     // printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
-      // current_line + 1, new_clause_size, witness_size);
+    //   current_line + 1, new_clause_size, witness_size);
     resize_sr_trim_data(); 
     check_sr_line();
   }

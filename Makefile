@@ -3,15 +3,17 @@ CFLAGS = -DLONGTYPE -std=c99 -O3
 
 OFILES = xmalloc.o xio.o cnf_parser.o sr_parser.o global_data.o
 FILES = xmalloc.c xio.c cnf_parser.c global_data.c
-EXES  = sr-trim sr-check
+TRIM = dsr-trim
+CHECK = lsr-check
+EXECS = $(TRIM) $(CHECK)
 
-all: $(EXES)
+all: $(EXECS)
 
-sr-trim: sr-trim.c $(OFILES)
-	$(CC) $(CFLAGS) sr-trim.c $(OFILES) -o sr-trim
+dsr-trim: $(TRIM).c $(OFILES)
+	$(CC) $(CFLAGS) $(TRIM).c $(OFILES) -o $(TRIM)
 
-sr-check: sr-check.c $(OFILES)
-	$(CC) $(CFLAGS) sr-check.c $(OFILES) -o sr-check
+lsr-check: $(CHECK).c $(OFILES)
+	$(CC) $(CFLAGS) $(CHECK).c $(OFILES) -o $(CHECK)
 
 xmalloc.o: xmalloc.c
 	$(CC) $(CFLAGS) -c xmalloc.c
@@ -30,4 +32,4 @@ global_data.o: global_data.c
 
 clean:
 	rm -rf *.o
-	rm -f $(EXES)
+	rm -f $(EXECS)
