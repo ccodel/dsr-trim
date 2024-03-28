@@ -26,6 +26,20 @@ TODOs:
   - Allow dsr-trim and lsr-check to verify proofs that don't derive the empty clause.
   - Detect if the empty clause was trivially derived after parsing CNF formula.
   - Rewrite PRINT_ERR_AND_EXIT macros to accept %d, etc. format strings.
+  - Double-check that get_clause_start() with deletions are used correctly.
+      Don't want to use a deleted clause (more important for lsr-check).
+
+Potential optimizations:
+  - According to the profiler, a lot of time is spent in mark_dependencies,
+      because all unit clauses must be iterated over. Instead, an array indexed
+      by clauses could be maintained, and when a unit clause is involved in UP,
+      its "unit_clauses" index is consulted to update a min/max value of clauses
+      to mark in mark_dependencies. However, this probably won't work very well,
+      because as mark_dependencies works, new clauses are marked.
+  - Store the reduced clause in reduce_subst_mapped in an array. This would make
+      RAT checks cheaper because rather than doing two loops over the clause,
+      we can instead consult the cached substitution-mapped clause in the array.
+  - 
 */
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -336,9 +350,10 @@ static inline void mark_entire_clause(int clause) {
 
 // Start marking backwards, assuming the offending clause has already been marked.
 static inline void mark_dependencies(void) {
+  const long gen = alpha_generation;
   for (int i = unit_clauses_size - 1; i >= 0; i--) {
     int clause = unit_clauses[i];
-    if (dependency_markings[clause] == alpha_generation) {
+    if (dependency_markings[clause] == gen) {
       mark_unit_clause(clause);
     }
   }
