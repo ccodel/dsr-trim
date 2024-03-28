@@ -81,6 +81,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 // A typed result of an evaluation under a partial assignment
+// TODO: Rename, so name doesn't directly clash with SUBST_TT, etc.
 typedef enum peval {
   FF = -1,
   UNASSIGNED = 0,
@@ -186,10 +187,14 @@ extern int subst_index;
 // Maximum 0-indexed variable ID parsed so far. Used for resizing arrays.
 extern int max_var;
 
+// Flag for whether the empty clause has been derived.
+// Can be set during CNF parsing if the empty clause is added.
+extern int derived_empty_clause;
+
 ////////////////////////////////////////////////////////////////////////////////
 
-int intcompare (const void *a, const void *b);
-int absintcompare (const void *a, const void *b);
+int intcmp (const void *a, const void *b);
+int absintcmp (const void *a, const void *b);
 
 // Allocates and initializes global data structures, given the size of a CNF formula.
 void init_global_data(int num_clauses, int num_vars);
@@ -220,8 +225,7 @@ int *get_clause_start_unsafe(int clause_index);
 int *get_clause_start(int clause_index);
 int  get_clause_size(int clause_index);
 
-// TODO: Remove argument?
-void assume_subst(long gen);
+void assume_subst(void);
 void assume_negated_clause(int clause_index, long gen);
 int  assume_negated_clause_under_subst(int clause_index, long gen);
 int  reduce_subst_mapped(int clause_index);

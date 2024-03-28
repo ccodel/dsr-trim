@@ -18,6 +18,10 @@
  * 
  *  The new clause is added to the formula "eagerly," because if the clause
  *  checks, then we would add it to the formula anyway.
+ * 
+ *  The min/max_clause_to_check are *not* updated, because possible witness 
+ *  minimization during dsr-trim might adjust the ranges. These ranges are
+ *  instead calculated during assume_subst().
  */
 void parse_sr_clause_and_witness(FILE *f);
 

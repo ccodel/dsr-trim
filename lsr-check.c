@@ -32,7 +32,6 @@ static int hints_alloc_size = 0;
 
 // Metadata about the SR proof line
 static int num_RAT_hints = 0;
-static int derived_empty_clause = 0;
 
 static FILE *sr_file = NULL;
 
@@ -134,7 +133,7 @@ static int parse_line(void) {
   witness_size = hints_size = num_RAT_hints = new_clause_size = 0;
   subst_index = INT_MAX;
 
-  READ_NUMERICAL_TOKEN(res, sr_file, &line_id); // Grab line id. Should be positive
+  READ_NUMERICAL_TOKEN(res, sr_file, &line_id); // First token is the line id
 
   // Now we test for a deletion line
   res = fscanf(sr_file, "d %d", &token);
@@ -203,13 +202,13 @@ static void check_line(void) {
   PRINT_ERR_AND_EXIT_IF(new_clause_size == 0, "UP didn't derive contradiction for empty clause.");
   // Lemma: new_clause_size > 0
 
-  assume_subst(subst_generation);
+  assume_subst();
   PRINT_ERR_AND_EXIT_IF(min_clause_to_check < 0 || max_clause_to_check > formula_size
     || min_clause_to_check > max_clause_to_check,
       "Clause range to check is inconsistent.");
 
   // Now for each clause, check that it is either
-  //   - Satisfied, or not reduced, by the witness
+  //   - Satisfied or not reduced by the witness
   //   - A RAT clause, whose hints derive contradiction
   int rat_hint_start_index = hint_index;
   int matching_hint_index;
@@ -287,9 +286,7 @@ finish_line:
   }
 }
 
-static void check_proof(char *filename) {
-  sr_file = xfopen(filename, "r");
-
+static void check_proof() {
   do {
     switch (parse_line()) {
       case DELETION_LINE: continue;
@@ -308,11 +305,16 @@ int main(int argc, char *argv[]) {
     PRINT_ERR_AND_EXIT("Incorrect number of arguments.");
   }
 
-  parse_cnf(argv[1]);
+  // Open all the necessary files at the start, to ensure that we don't do
+  // work unless the files exist. Also might stop race conditions.
+  FILE *cnf_file = xfopen(argv[1], "r");
+  sr_file = xfopen(argv[2], "r");
+
+  parse_cnf(cnf_file);
   init_sr_check_data();
 
-  printf("c CNF formula claims to have %d clauses and %d variables.\n", formula_size, max_var);
+  printf("c Formula has %d clauses and %d variables.\n", formula_size, max_var);
 
-  check_proof(argv[2]);
+  check_proof();
   return 0;
 }

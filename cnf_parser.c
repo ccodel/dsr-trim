@@ -10,13 +10,10 @@
 #include <stdio.h>
 
 #include "xmalloc.h"
-#include "xio.h"
 #include "global_data.h"
 #include "cnf_parser.h"
 
-void parse_cnf(const char *filename) {
-  FILE *f = xfopen(filename, "r");
-
+void parse_cnf(FILE *f) {
   int res, found_problem_line = 0;
   int num_vars, num_clauses;
   while (!found_problem_line) {
@@ -25,12 +22,10 @@ void parse_cnf(const char *filename) {
       case DIMACS_COMMENT_LINE:
         // Read to the end of the line, discarding the comment
         while (getc_unlocked(f) != '\n') {}
-        // res = fscanf(f, "%*[^\n]"); // TODO: More efficient way?
-        PRINT_ERR_AND_EXIT_IF(res < 0, "Read error on consuming comment line.");
         break;
       case DIMACS_PROBLEM_LINE:
         found_problem_line = 1;
-        res = fscanf(f, "%*s %d %d\n", &num_vars, &num_clauses);
+        res = fscanf(f, " cnf %d %d\n", &num_vars, &num_clauses);
         PRINT_ERR_AND_EXIT_IF(res < 0, "Read error on problem line.");
         break;
       default:

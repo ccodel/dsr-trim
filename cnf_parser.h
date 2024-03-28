@@ -9,8 +9,12 @@
 #ifndef _CNF_PARSER_H_
 #define _CNF_PARSER_H_
 
+#include <stdlib.h>
+#include <stdio.h>
+
 // Parses the CNF and puts it into global data structures.
-void parse_cnf(const char *filename);
+// On success, closes the FILE.
+void parse_cnf(FILE *cnf_file);
 
 // Prints the CNF to stdout, for debugging purposes.
 void print_cnf(void); 

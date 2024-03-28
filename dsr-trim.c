@@ -19,11 +19,13 @@
 
 /*
 TODOs:
-  - Witness minimization. Will probably have to write a new assume_subst()
-    function that does this.
   - Candidate clause minimization. When marking clauses, mark literals as well.
-  - To handle future clause deletion, use the "safe" version of get_clause().
-  - Watch pointer de-sizing.
+  - Watch pointer de-sizing. (i.e. fewer watch pointers de-size the wp array)
+  - Clause deletion, via hash table.
+  - Make `long`s be `long long`s.
+  - Allow dsr-trim and lsr-check to verify proofs that don't derive the empty clause.
+  - Detect if the empty clause was trivially derived after parsing CNF formula.
+  - Rewrite PRINT_ERR_AND_EXIT macros to accept %d, etc. format strings.
 */
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -87,7 +89,7 @@ static int candidate_unit_literals_index = 0;
 static int RAT_assumed_literals_index = 0;
 static int RAT_unit_literals_index = 0;
 
-// Generation bumping for indicating that clauses are involved in UP derivations. Indexed by clauses.
+// Generations for clauses involved in UP derivations. Indexed by clauses.
 static long *dependency_markings = NULL;
 static int dependencies_alloc_size = 0;
 
@@ -98,7 +100,10 @@ static int *RAT_marked_vars = NULL;
 static int RAT_marked_vars_alloc_size = 0;
 static int RAT_marked_vars_size = 0;
 
-static int derived_empty_clause = 0;
+// Flag for noting if the witness contains a literal that once was mapped to
+// another literal, but was then direct-mapped to a truth value during minimization.
+// This allows for more efficient printing of the witness.
+static int witness_has_direct_mapped_subst_lit = 0;
 
 // We store the RAT derivations as they come in "printable" format.
 static int *lsr_line = NULL;
@@ -182,7 +187,7 @@ static inline void resize_units(void) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Prints the new clause to the LSR file.
+// Prints the candidate clause (the one to add to the formula) to the LSR file.
 // Doesn't print anything if the empty clause has been derived.
 static void print_clause(void) {
   if (!derived_empty_clause) {
@@ -192,16 +197,64 @@ static void print_clause(void) {
   }
 }
 
+// Prints the SR witness to the LSR file.
+// If the witness is empty, then nothing is printed.
 static void print_witness(void) {
-  for (int i = 0; i < witness_size; i++) {
-    // Add the pivot as a separator, if there's a substitution part of the witness
-    if (i == subst_index) {
-      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(pivot));
+  if (witness_size == 0) return;
+
+  /* Because witness minimization might map literals to true/false that are in
+   * the "substitution portion", we do a two-pass over that part to first print
+   * the true/false mapped literals, and then the non-trivial mappings.       */
+
+  // If the witness doesn't have a literal mapped to true/false in the
+  // substitution portion, then we can print the witness normally
+  if (!witness_has_direct_mapped_subst_lit) {
+    for (int i = 0; i < witness_size; i++) {
+      // Add the pivot as a separator, if there's a substitution part of the witness
+      if (i == subst_index) {
+        fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(pivot));
+      }
+      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
     }
-    fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
+  } else {
+    // We print the true/false portion first
+    for (int i = 0; i < subst_index; i++) {
+      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
+    }
+
+    // Now we two-pass over the substitution portion.
+    // We count the number of skipped non-trivial mappings, because if it is 0,
+    // then we have no substitutions and we don't print the pivot as a separator
+    int skipped_mapped_lits = 0;
+    for (int i = subst_index; i < witness_size; i += 2) {
+      switch (witness[i + 1]) {
+        case SUBST_TT:
+          fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
+          break;
+        case SUBST_FF:
+          fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(NEGATE_LIT(witness[i])));
+          break;
+        default: skipped_mapped_lits++;
+      }
+    }
+
+    // If we still have non-trivial mapped literals, print them after the pivot
+    if (skipped_mapped_lits > 0) {
+      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(pivot));
+      for (int i = subst_index; i < witness_size; i += 2) {
+        switch (witness[i + 1]) {
+          case SUBST_TT: break;
+          case SUBST_FF: break;
+          default: fprintf(lsr_proof_file, "%d %d ", 
+            TO_DIMACS_LIT(witness[i]), TO_DIMACS_LIT(witness[i + 1]));
+        }
+      }
+    }
   }
 }
 
+// Prints those clauses that were globally set to unit during global UP and
+// that were marked during UP dependency marking.
 static inline void print_active_dependencies(void) {
   for (int i = 0; i < unit_clauses_size; i++) {
     if (dependency_markings[unit_clauses[i]] > generation_before_line_checking) {
@@ -210,15 +263,12 @@ static inline void print_active_dependencies(void) {
   }
 }
 
-// Prints the accumulated LSR line, after computing dependencies.
+// Prints the accumulated LSR line, according to UP and clause dependencies.
 // Should be printed before incrementing the generation.
-// The kind of line printed depends on the global state_t.
 static void print_lsr_line(void) {
   FILE *f = lsr_proof_file;
   current_line++;
   fprintf(f, "%ld ", current_line);
-
-  // Prints the clause to be added, or nothing if we derived the empty clause
   print_clause();
 
   // If there are no stored RAT derivations, then no need to print a witness
@@ -248,11 +298,13 @@ static inline void clear_lsr_line(void) {
   lsr_line_size = 0;
 }
 
+// Adds the RAT clause ID, in printable format, to `lsr_line`.
 static inline void add_RAT_clause_to_lsr_line(int clause) {
   RESIZE_ARR(lsr_line, lsr_line_alloc_size, lsr_line_size, sizeof(int));
   lsr_line[lsr_line_size++] = -(clause + 1);
 }
 
+// Adds the clause ID, in printable format, to `lsr_line`.
 static inline void add_clause_to_lsr_line(int clause) {
   RESIZE_ARR(lsr_line, lsr_line_alloc_size, lsr_line_size, sizeof(int));
   lsr_line[lsr_line_size++] = (clause + 1);
@@ -262,8 +314,8 @@ static inline void add_clause_to_lsr_line(int clause) {
 // Ignore literals that are assumed fresh, whether in CANDIDATE or RAT.
 // Literals that were globally set to unit, but are candidate assumed, are ignored.
 static inline void mark_clause(int clause, int offset) {
-  int *clause_ptr = get_clause_start_unsafe(clause) + offset; 
-  int *clause_end = get_clause_start_unsafe(clause + 1);
+  int *clause_ptr = get_clause_start(clause) + offset; 
+  int *clause_end = get_clause_start(clause + 1);
   for (; clause_ptr < clause_end; clause_ptr++) {
     int lit = *clause_ptr;
     int var = VAR_FROM_LIT(lit);
@@ -309,6 +361,124 @@ static void store_RAT_dependencies() {
   }
 
   add_clause_to_lsr_line(up_falsified_clause);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * @brief Minimizes the witness and checks its consistency. Call after assuming 
+ *  the negation of the candidate clause and doing UP.
+ * 
+ * Any witness literal l set to true that is also set to true in alpha after
+ * assuming the negation of the candidate clause and doing UP can be omitted.
+ * This is because any clause satisfied by l will then generate contradiction
+ * with alpha (alpha satisfies it), and any clause containing -l will, when
+ * its negation is assumed for RAT checking, has no additional effect on alpha,
+ * now that it contains -l after the smaller witness.
+ * 
+ * In addition, any literal l -> m in the substitution portion, with m set to
+ * either true or false in alpha, can instead be mapped to m's truth value.
+ * The reason this is allowed is similar to the above: any clause containing l
+ * will contain m after the substitution, and m's truth value in alpha causes
+ * the same overall effect as mapping l to m's truth value directly when
+ * evaluating the clause under the substitution and doing RAT checking.
+ * 
+ * A witness containing a literal l set to true that is set to false via global
+ * UP before assuming the negation of the candidate, means a witness is
+ * inconsistent with the formula, and will cause an error.
+ * 
+ * Minimization is done by a single loop over the witness. Unnecessary literals
+ * l -> T/F are removed, and any l -> m in the substitution portion with
+ * m -> T/F in alpha are set to l -> T/F. If l -> m is set to l -> T/F, it
+ * then checks whether l can be removed using the same logic as before.
+ * Removals are handled with an increasing "write pointer" that allows the
+ * rest of the substitution to be shifted to fill in the holes.
+ * 
+ * At the end, `subst_index` and `witness_size` are decreased appropriately.
+ * 
+ * Note that l -> m set to l -> T/F stays in the substitution portion.
+ * Printing must handle this case with a two-pass over the substitution portion.
+ * 
+ * A note on design:
+ * We choose to do minimization this way because otherwise, careful bookkeeping
+ * would have to be performed to shuffle the direct-mapped and subst mapped
+ * portions around. Alternatively, we could use two separate arrays, but that
+ * is bad for locality, and the witness is not usually minimized (that much).
+ */
+static void minimize_witness(void) {
+  witness_has_direct_mapped_subst_lit = 0;
+  int write_index = -1;
+  int skipped_tf_lits = 0, skipped_lits = 0;
+
+  for (int i = 0; i < witness_size; i++) {
+    int lit = witness[i];
+    int var = VAR_FROM_LIT(lit);
+    int keep_lit = 1;
+    const int in_tf_mapped = (i < subst_index) ? 1 : 0;
+    peval_t lit_alpha = peval_lit_under_alpha(lit);
+    peval_t lit_subst = (in_tf_mapped) ? TT : UNASSIGNED;
+
+    // We track whether a literal in the substitution portion becomes true/false
+    // If we end up keeping that lit (i.e. keep_lit == 1), then we set a global
+    // flag `witness_has_direct_mapped_subst_lit`, which will cause different
+    // printing code to be run when printing the witness.
+    int subst_is_direct_mapped = 0;
+
+    // If we are in the substitution portion, check the truth value of m
+    if (!in_tf_mapped) {
+      int mapped_lit = witness[i + 1];
+      switch (peval_lit_under_alpha(mapped_lit)) {
+        case FF:
+          // printf("c   (%d -> %d), but latter was found to be globally false\n",
+          //   TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
+          witness[i + 1] = SUBST_FF;
+          lit_subst = FF;
+          subst_is_direct_mapped = 1;
+          break;
+        case TT:
+          // printf("c   (%d -> %d), but latter was found to be globally true\n",
+          //   TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
+          witness[i + 1] = SUBST_TT;
+          lit_subst = TT;
+          subst_is_direct_mapped = 1;
+          break;
+        default: break;
+      }
+    }
+
+    // Now compare the truth value of l in the substitution and alpha
+    // TODO: Brittle negation, based on hard-coded values of peval_t.
+    if (lit_alpha != UNASSIGNED) {
+      if (lit_alpha == lit_subst) {
+        // printf("c    Found an unnecessary literal %d at index %d\n", TO_DIMACS_LIT(lit), i);
+        keep_lit = 0;
+        subst_is_direct_mapped = 0;
+        skipped_tf_lits += (in_tf_mapped) ? 1 : 0;
+        skipped_lits += (in_tf_mapped) ? 1 : 2;
+        if (write_index == -1) {
+          write_index = i;
+        }
+      } else if (lit_alpha == -lit_subst) {
+        long gen = alpha[var];
+        PRINT_ERR_AND_EXIT_IF(ABS(gen) == GLOBAL_GEN, 
+          "Witness lit is set to negation of UP value.");
+      }
+    }
+
+    if (keep_lit && write_index != -1) {
+      witness[write_index++] = lit;
+      if (!in_tf_mapped) {
+        witness[write_index++] = witness[i + 1];
+      }
+    }
+
+    witness_has_direct_mapped_subst_lit |= subst_is_direct_mapped;
+    i += (in_tf_mapped) ? 0 : 1;
+  }
+
+  // Adjust witness size and subst_index based on the number of removed lits
+  subst_index -= skipped_tf_lits;
+  witness_size -= skipped_lits;
 }
 
 // Moves state from GLOBAL_UP -> CANDIDATE_UP -> RAT_UP.
@@ -543,14 +713,14 @@ static void perform_up(long gen) {
 static void add_wps_and_perform_up() {
   PRINT_ERR_AND_EXIT_IF(state != GLOBAL_UP, "state not GLOBAL_UP.");
 
-  int *clause, *next_clause = get_clause_start_unsafe(wp_processed_clauses);
+  int *clause, *next_clause = get_clause_start(wp_processed_clauses);
   int clause_size;
 
   // Beyond the initial setup, this loop only runs once
   // Make more efficient later?
   for (; wp_processed_clauses < formula_size; wp_processed_clauses++) {
     clause = next_clause;
-    next_clause = get_clause_start_unsafe(wp_processed_clauses + 1);
+    next_clause = get_clause_start(wp_processed_clauses + 1);
     clause_size = next_clause - clause;
 
     // If the clause is unit, set it to be true, do UP later. Otherwise, add watch pointers
@@ -768,8 +938,7 @@ static int assume_RAT_clause_under_subst(int clause_index) {
 static void unassume_RAT_clause(int clause_index) {
   PRINT_ERR_AND_EXIT_IF(state != RAT_UP, "state not RAT_UP.");
 
-  // Undo the changes we made to the data structures
-  // First, address the unit literals set during new UP
+  // Clear the UP reasons for the variables set during RAT UP
   for (int i = RAT_unit_literals_index; i < unit_literals_size; i++) {
     int lit = unit_literals[i];
     int var = VAR_FROM_LIT(lit);
@@ -793,6 +962,7 @@ static void check_sr_line(void) {
 
   // TODO: Replace -1/0 with enum/#define
   if (assume_candidate_clause_and_perform_up() == -1) {
+    // printf("c Found UP derivation with candidate clause, skipping RAT check\n");
     goto candidate_valid;
   }
 
@@ -800,15 +970,17 @@ static void check_sr_line(void) {
   PRINT_ERR_AND_EXIT_IF(new_clause_size == 0, "Didn't derive empty clause.");
 
   // Assumes the witness into the substitution data structure.
-  assume_subst(subst_generation);
+  minimize_witness();
+  assume_subst();
 
-  // Now do RAT checking
-  // printf("c   [%ld] Checking clauses %d to %d\n", current_line + 1, min_clause_to_check, max_clause_to_check);
-  int *clause, *next_clause = get_clause_start_unsafe(0);
+  // Now do RAT checking between min and max clauses to check (inclusive)
+  // printf("c   [%ld] Checking clauses %d to %d\n", 
+  //   current_line + 1, min_clause_to_check, max_clause_to_check);
+  int *clause, *next_clause = get_clause_start(min_clause_to_check);
   int clause_size;
   for (int i = min_clause_to_check; i <= max_clause_to_check; i++) {
     clause = next_clause;
-    next_clause = get_clause_start_unsafe(i + 1);
+    next_clause = get_clause_start(i + 1);
     clause_size = next_clause - clause;
 
     // Evaluate the clause under the substitution
@@ -875,13 +1047,17 @@ int main(int argc, char **argv) {
     exit(-1);
   }
 
-  parse_cnf(argv[1]);
-  init_sr_trim_data();
-
-  printf("c CNF formula claims to have %d clauses and %d variables.\n", formula_size, max_var);
-
+  // Open all the necessary files at the start, to ensure that we don't do
+  // work unless the files exist. Also might stop race conditions.
+  FILE *cnf_file = xfopen(argv[1], "r");
   sr_certificate_file = xfopen(argv[2], "r");
   lsr_proof_file = (argc == 3) ? stdout : xfopen(argv[3], "w");
+
+  parse_cnf(cnf_file);
+  init_sr_trim_data();
+
+  printf("c Formula has %d clauses and %d variables.\n", formula_size, max_var);
+
   process_sr_certificate();
   return 0;
 }

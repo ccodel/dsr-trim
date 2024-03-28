@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 
 #include "xmalloc.h"
 #include "global_data.h"
@@ -70,13 +71,15 @@ int max_clause_to_check = 0;
 
 int max_var = 0;
 
+int derived_empty_clause = 0;
+
 ////////////////////////////////////////////////////////////////////////////////
 
-int intcompare (const void *a, const void *b) {
+int intcmp (const void *a, const void *b) {
   return (*(int*)a - *(int*)b); 
 }
 
-int absintcompare (const void *a, const void *b) {
+int absintcmp (const void *a, const void *b) {
   int ia = *(int*)a;
   int ib = *(int*)b;
   return (ABS(ia) - ABS(ib)); 
@@ -114,6 +117,22 @@ void init_global_data(int num_clauses, int num_vars) {
 
 // Assumes that VAR_FROM_LIT(lit) < alpha_subst_size
 inline void set_lit_for_alpha(int lit, long gen) {
+
+// Check if the mapping already exists in the global partial assignment
+/*
+  switch (peval_lit_under_alpha(lit)) {
+    case FF:
+      printf("    Literal %d is already false under alpha, setting it to true.\n",
+        TO_DIMACS_LIT(lit));
+      break;
+    case TT:
+      printf("    Literal %d is already true under alpha, setting it to true.\n",
+        TO_DIMACS_LIT(lit));
+      break;
+    case UNASSIGNED: break;
+    default: PRINT_ERR_AND_EXIT("Corrupted peval value.");
+  } */
+
   if (IS_POS_LIT(lit)) {
     alpha[VAR_FROM_LIT(lit)] = gen;
   } else {
@@ -134,6 +153,22 @@ inline peval_t peval_lit_under_alpha(int lit) {
 inline void set_mapping_for_subst(int lit, int lit_mapping, long gen) {
   int var = VAR_FROM_LIT(lit);
   subst_generations[var] = gen;
+
+  // Check if the mapping already exists in the global partial assignment
+  /*
+  switch (peval_lit_under_alpha(lit)) {
+    case FF:
+      printf("    Literal %d is already false under alpha, setting it to %d.\n",
+        TO_DIMACS_LIT(lit), lit_mapping);
+      break;
+    case TT:
+      printf("    Literal %d is already true under alpha, setting it to %d.\n",
+        TO_DIMACS_LIT(lit), lit_mapping);
+      break;
+    case UNASSIGNED: break;
+    default: PRINT_ERR_AND_EXIT("Corrupted peval value.");
+  } */
+
   if (IS_POS_LIT(lit)) {
     subst_mappings[var] = lit_mapping;
   } else {
@@ -327,23 +362,46 @@ inline int get_clause_size(int clause_index) {
   }
 }
 
+static void set_min_and_max_clause_to_check(int lit) {
+  update_first_last_clause(lit);
+  if (lits_first_clause[lit] != -1) {
+    min_clause_to_check = MIN(min_clause_to_check, lits_first_clause[lit]); 
+    max_clause_to_check = MAX(max_clause_to_check, lits_last_clause[lit]);
+  }
+}
+
 // Assumes the substitution witness, if it exists. If it doesn't, it uses
 // the pivot (the first literal in the clause to be added).
-// The clause must be nonempty.
+// The candidate clause associated with the witness must be nonempty.
 // Updates the min/max_clause_check_to_check
-void assume_subst(long gen) {
-  // Set the pivot, just in case the witness is empty
-  set_mapping_for_subst(pivot, SUBST_TT, gen);
+void assume_subst(void) {
+  min_clause_to_check = formula_size - 1;
+  max_clause_to_check = 0;
 
-  // We have to check clauses that are reduced by the negation of the pivot
-  int neg_pivot = NEGATE_LIT(pivot);
-  min_clause_to_check = MIN(min_clause_to_check, lits_first_clause[neg_pivot]);
-  max_clause_to_check = MAX(max_clause_to_check, lits_last_clause[neg_pivot]);
+  // Set the pivot, just in case the witness is empty
+  set_mapping_for_subst(pivot, SUBST_TT, subst_generation);
+  set_min_and_max_clause_to_check(NEGATE_LIT(pivot));
+
+  // For all other literals l in the witness
+  // 1. Check that var(l) hasn't been set yet (compare gen against subst_generation)
+  // 2. Set its mapping
   for (int i = 1; i < witness_size; i++) {
+    int lit = witness[i];
+    int neg_lit = NEGATE_LIT(lit);
+    int var = VAR_FROM_LIT(lit);
+
+    // Error if we have already set a variable in the substitution.
+    // This ensures no variable appears twice.
+    PRINT_ERR_AND_EXIT_IF(subst_generations[var] == subst_generation,
+      "Literal in witness was already set.");
+    
     if (i < subst_index) {
-      set_mapping_for_subst(witness[i], SUBST_TT, gen);
+      set_mapping_for_subst(lit, SUBST_TT, subst_generation);
+      set_min_and_max_clause_to_check(neg_lit);
     } else {
-      set_mapping_for_subst(witness[i], witness[i + 1], gen);
+      set_mapping_for_subst(lit, witness[i + 1], subst_generation);
+      set_min_and_max_clause_to_check(lit);
+      set_min_and_max_clause_to_check(neg_lit);
       i++;
     }
   }
