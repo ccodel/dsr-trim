@@ -9,6 +9,9 @@
 #ifndef _GLOBAL_DATA_H_
 #define _GLOBAL_DATA_H_
 
+#include <stdlib.h>
+#include <stdio.h>
+
 ////////////////////////////////////////////////////////////////////////////////
 
 #ifndef ABS
@@ -31,13 +34,22 @@
 #define LONG_SET_BIT(s)           (1L << (s))
 #endif
 
-/** DIMACS character that starts a comment line. */
-#define DIMACS_COMMENT_LINE ('c')
+#ifndef llong
+typedef long long llong;
+typedef unsigned long long ullong;
+#endif
 
-/** DIMACS character that starts a problem line. */
-#define DIMACS_PROBLEM_LINE ('p')
+// If the SR proofs are massive, then `long long`s should be used. But for most
+// purposes, an int can be used instead.
+#ifdef LONGTYPE
+typedef llong srid_t;
+#define SRID_MSB                MSB64
+#else
+typedef int srid_t;
+#define SRID_MSB                MSB32
+#endif
 
-#define FROM_DIMACS_LIT(x)      (((x) < 0) ? (2 * -(x) - 1) : (2 * (x) - 2))
+#define FROM_DIMACS_LIT(x)      (((x) < 0) ? ((-(x) << 1) - 1) : (((x) << 1) - 2))
 #define TO_DIMACS_LIT(x)        (((x) % 2) ? (((x) / -2) - 1) : (((x) / 2) + 1))
 #define VAR_FROM_LIT(x)         ((x) >> 1)
 #define IS_POS_LIT(x)           (!((x) & 0x1))
@@ -64,20 +76,6 @@
     }                                                                          \
   } while (0)
 
-#define READ_LONG_TOKEN(res, f, ptr)            do {                           \
-    res = fscanf(f, "%ld ", ptr);                                              \
-    PRINT_ERR_AND_EXIT_IF(res == 0, "Token was expected to be a number.");     \
-    PRINT_ERR_AND_EXIT_IF(res == EOF, "EOF unexpectedly reached.");            \
-    PRINT_ERR_AND_EXIT_IF(res < 0, "Other error encountered while parsing.");  \
-  } while (0)
-
-#define READ_NUMERICAL_TOKEN(res, f, ptr)       do {                           \
-    res = fscanf(f, "%d ", ptr);                                               \
-    PRINT_ERR_AND_EXIT_IF(res == 0, "Token was expected to be a number.");     \
-    PRINT_ERR_AND_EXIT_IF(res == EOF, "EOF unexpectedly reached.");            \
-    PRINT_ERR_AND_EXIT_IF(res < 0, "Other error encountered while parsing.");  \
-  } while (0)
-
 ////////////////////////////////////////////////////////////////////////////////
 
 // A typed result of an evaluation under a partial assignment
@@ -99,6 +97,9 @@ typedef enum peval {
 #define SUBST_FF                 (-2)
 #define SUBST_UNASSIGNED         (-3)
 
+#define DELETION_LINE            (10)
+#define ADDITION_LINE            (20)
+
 /* Note that the partial assignments and substitutions need to use longs for the
  * generation values, since the number of lines in a proof can exceed 2^32. But
  * literals must be < 2^32.
@@ -113,8 +114,8 @@ typedef enum peval {
  * are stored in the `clauses` array.
  */
 extern int *lits_db;
-extern int lits_db_size;       // Number of literals in the database
-extern int lits_db_alloc_size; // Allocated size of the database
+extern srid_t lits_db_size;       // Number of literals in the database
+extern srid_t lits_db_alloc_size; // Allocated size of the database
 
 /**
  * @brief Indexes into the `lits` array forming implicit pointers, marking clauses.
@@ -122,15 +123,15 @@ extern int lits_db_alloc_size; // Allocated size of the database
  * The size of clause i is the difference `clauses[i + 1] - clauses[i]`.
  * Allocated with `malloc()`. The pointers start at `clauses[0] = 0`.
  */
-extern int *formula;
-extern int formula_size;        // Number of clauses in the database
-extern int formula_alloc_size;  // Allocated size of the clauses array
+extern srid_t *formula;
+extern srid_t formula_size;        // Number of clauses in the database
+extern srid_t formula_alloc_size;  // Allocated size of the clauses array
 
 // The first clause index each literal appears in. Initialized to -1.
-extern int *lits_first_clause;
+extern srid_t *lits_first_clause;
 
 // The last clause index each literal appears in. Initialized to -1.
-extern int *lits_last_clause;   
+extern srid_t *lits_last_clause;   
 
 /**
  * @brief The partial assignment used for unit propagation and RAT hints.
@@ -139,16 +140,19 @@ extern int *lits_last_clause;
  * Uses "generation bumping" to make clearing the assignment O(1).
  * Indexed by 0-indexed variables, compare value to `current_generation`.
  */
-extern long *alpha;
-extern long *subst_generations;
+extern llong *alpha;
+extern llong *subst_generations;
 extern int *subst_mappings;
+
+// The allocated size of `alpha`, `subst`, and `lits_first/last_clause`.
+// TODO: Rename
 extern int alpha_subst_alloc_size;
 
 // The generation for alpha. Increase by (1 + RAT steps) for each proof line.
-extern long alpha_generation;
+extern llong alpha_generation;
 
 // Generation for substitution. Assume once per SR line, clear by incrementing.
-extern long subst_generation;
+extern llong subst_generation;
 
 // The witness portion of an SR certificate or proof line.
 extern int *witness;
@@ -171,8 +175,8 @@ extern int pivot;
  *  So for example, if (2 -> 3), then the min/max values for literal 2 are 
  *  included in the calculation, but not for literal 3.
  */
-extern int min_clause_to_check;
-extern int max_clause_to_check;
+extern srid_t min_clause_to_check;
+extern srid_t max_clause_to_check;
 
 // Cached size of the new SR clause. Equal to get_clause_size(formula_size).
 extern int new_clause_size; 
@@ -197,12 +201,12 @@ int intcmp (const void *a, const void *b);
 int absintcmp (const void *a, const void *b);
 
 // Allocates and initializes global data structures, given the size of a CNF formula.
-void init_global_data(int num_clauses, int num_vars);
+void init_global_data(srid_t num_clauses, int num_vars);
 
-void set_lit_for_alpha(int lit, long gen);
+void set_lit_for_alpha(int lit, llong gen);
 peval_t peval_lit_under_alpha(int lit);
 
-void set_mapping_for_subst(int lit, int lit_mapping, long gen);
+void set_mapping_for_subst(int lit, int lit_mapping, llong gen);
 int get_lit_from_subst(int lit);
 
 /** Inserts a literal into the database. Handles resizing of the appropriate global_data
@@ -216,19 +220,19 @@ void insert_lit_no_first_last_update(int lit);
 // Caps the current clause and increments the clause count. Clauses can be empty.
 void insert_clause(void);
 void insert_clause_first_last_update(void);
-int  is_clause_deleted(int clause_index);
+int  is_clause_deleted(srid_t clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
-void delete_clause(int clause_index);    
+void delete_clause(srid_t clause_index);    
 
-int *get_clause_start_unsafe(int clause_index);
-int *get_clause_start(int clause_index);
-int  get_clause_size(int clause_index);
+int *get_clause_start_unsafe(srid_t clause_index);
+int *get_clause_start(srid_t clause_index);
+int  get_clause_size(srid_t clause_index);
 
 void assume_subst(void);
-void assume_negated_clause(int clause_index, long gen);
-int  assume_negated_clause_under_subst(int clause_index, long gen);
-int  reduce_subst_mapped(int clause_index);
+void assume_negated_clause(srid_t clause_index, llong gen);
+int  assume_negated_clause_under_subst(srid_t clause_index, llong gen);
+int  reduce_subst_mapped(srid_t clause_index);
 
 void update_first_last_clause(int lit);
 

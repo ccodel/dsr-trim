@@ -11,11 +11,12 @@
 
 #include "xmalloc.h"
 #include "global_data.h"
+#include "global_parsing.h"
 #include "cnf_parser.h"
 
 void parse_cnf(FILE *f) {
-  int res, found_problem_line = 0;
-  int num_vars, num_clauses;
+  srid_t num_clauses;
+  int res, num_vars, found_problem_line = 0;
   while (!found_problem_line) {
     int c = getc_unlocked(f);
     switch (c) {
@@ -25,7 +26,7 @@ void parse_cnf(FILE *f) {
         break;
       case DIMACS_PROBLEM_LINE:
         found_problem_line = 1;
-        res = fscanf(f, " cnf %d %d\n", &num_vars, &num_clauses);
+        res = fscanf(f, CNF_HEADER_STR, &num_vars, &num_clauses);
         PRINT_ERR_AND_EXIT_IF(res < 0, "Read error on problem line.");
         break;
       default:
@@ -44,7 +45,7 @@ void parse_cnf(FILE *f) {
   while (formula_size < num_clauses) {
     int parsed_lit = 0, clause_size = 0;
     do {
-      READ_NUMERICAL_TOKEN(res, f, &parsed_lit);
+      READ_LIT(res, f, &parsed_lit);
       if (parsed_lit != 0) {
         int lit = FROM_DIMACS_LIT(parsed_lit);
         insert_lit(lit);
@@ -109,7 +110,7 @@ void parse_cnf(FILE *f) {
 }
 
 void print_cnf(void) {
-  for (int c = 0; c < formula_size; c++) {
+  for (srid_t c = 0; c < formula_size; c++) {
     if (is_clause_deleted(c)) {
       continue;
     }

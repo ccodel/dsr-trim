@@ -13,6 +13,7 @@
 
 #include "xio.h"
 #include "global_data.h"
+#include "global_parsing.h"
 #include "cnf_parser.h"
 #include "sr_parser.h"
 #include "xmalloc.h"
@@ -22,7 +23,6 @@ TODOs:
   - Candidate clause minimization. When marking clauses, mark literals as well.
   - Watch pointer de-sizing. (i.e. fewer watch pointers de-size the wp array)
   - Clause deletion, via hash table.
-  - Make `long`s be `long long`s.
   - Allow dsr-trim and lsr-check to verify proofs that don't derive the empty clause.
   - Detect if the empty clause was trivially derived after parsing CNF formula.
   - Rewrite PRINT_ERR_AND_EXIT macros to accept %d, etc. format strings.
@@ -39,7 +39,8 @@ Potential optimizations:
   - Store the reduced clause in reduce_subst_mapped in an array. This would make
       RAT checks cheaper because rather than doing two loops over the clause,
       we can instead consult the cached substitution-mapped clause in the array.
-  - 
+  - Marijn's code computes the RAT set from the watch pointers. Might be more
+    efficient than tracking the first/last.
 */
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -47,9 +48,9 @@ Potential optimizations:
 #define INIT_LIT_WP_ARRAY_SIZE    (4)
 
 // When setting literals "globally" under initial unit propagation, we use the
-// largest possible generation value. We use longs, so we use LONG_MAX.
-#define GLOBAL_GEN                (LONG_MAX)
-#define ASSUMED_GEN               (LONG_MAX - 1)
+// largest possible generation value.
+#define GLOBAL_GEN                (LLONG_MAX)
+#define ASSUMED_GEN               (LLONG_MAX - 1)
 
 // SR trim as a state machine, for different parts of UP.
 typedef enum sr_trim_state {
@@ -60,12 +61,8 @@ typedef enum sr_trim_state {
 
 static state_t state;
 
-// TODO: dpr-trim has watch pointers, clause ids, etc. as longs and not ints.
-// Possible reason is the additional two bits of info in the least-siginificant bits
-// For now, we'll keep them as ints and revisit this later.
-
 // 2D array of watch pointers, indexed by literals. Initialized to NULL for each literal.
-static int **wps = NULL;
+static srid_t **wps = NULL;
 
 // Allocated size of the 2D array of watch pointers.
 static int wps_alloc_size = 0;
@@ -79,12 +76,14 @@ static int *wp_alloc_sizes = NULL;
 static int *wp_sizes = NULL; // TODO: New name
 
 // Array containing the clause ID "reason" causing the variable to be set. Indexed by variable.
-static int *up_reasons = NULL;
+static srid_t *up_reasons = NULL;
 static int up_reasons_alloc_size = 0; // TODO: use alpha_subst_alloc_size for this?
 
-// A list of literals, in order of when they become unit
+// A list of literals, in order of when they become unit.
 static int *unit_literals = NULL;
-static int *unit_clauses = NULL;
+
+// A list of clauses, in order of when they became unit.
+static srid_t *unit_clauses = NULL;
 static int units_alloc_size = 0;
 static int unit_literals_size = 0;
 static int unit_clauses_size = 0;
@@ -96,7 +95,7 @@ static int RAT_unit_clauses_index = 0;
 static int global_up_literals_index = 0;
 
 // Monotonically increased index into the formula
-static int wp_processed_clauses = 0;
+static srid_t wp_processed_clauses = 0;
 
 static int candidate_assumed_literals_index = 0;
 static int candidate_unit_literals_index = 0;
@@ -104,8 +103,8 @@ static int RAT_assumed_literals_index = 0;
 static int RAT_unit_literals_index = 0;
 
 // Generations for clauses involved in UP derivations. Indexed by clauses.
-static long *dependency_markings = NULL;
-static int dependencies_alloc_size = 0;
+static llong *dependency_markings = NULL;
+static srid_t dependencies_alloc_size = 0;
 
 // When assuming the RAT clause under the substitution, we record specially
 // marked variables here for tautology checking. Cleared when a trivial
@@ -120,14 +119,14 @@ static int RAT_marked_vars_size = 0;
 static int witness_has_direct_mapped_subst_lit = 0;
 
 // We store the RAT derivations as they come in "printable" format.
-static int *lsr_line = NULL;
+static srid_t *lsr_line = NULL;
 static int lsr_line_alloc_size = 0;
 static int lsr_line_size = 0;
 
 static FILE *sr_certificate_file = NULL;
-static long current_line = 0; // For printing the correct line ID
-static long generation_before_line_checking = 0;
-static int up_falsified_clause = -1; // Set by unit propagation, -1 if none found
+static srid_t current_line = 0; // For printing the correct line ID
+static llong generation_before_line_checking = 0;
+static srid_t up_falsified_clause = -1; // Set by unit propagation, -1 if none found
 
 static FILE *lsr_proof_file = NULL;
 
@@ -141,36 +140,36 @@ static void init_sr_trim_data(void) {
   // Allocate an empty watch pointer array for each literal
   // Allocate some additional space, since we'll probably add new literals later
   wps_alloc_size = max_var * 4;
-  wps = xcalloc(wps_alloc_size, sizeof(int *));
+  wps = xcalloc(wps_alloc_size, sizeof(srid_t *));
   wp_alloc_sizes = xcalloc(wps_alloc_size, sizeof(int)); 
   wp_sizes = xcalloc(wps_alloc_size, sizeof(int));
 
-  // Only allocate initial watch pointer space for literals that appear in the formula 
+  // Only allocate initial watch pointer space for literals in the formula 
   for (int i = 0; i < max_var * 2; i++) {
     wp_alloc_sizes[i] = INIT_LIT_WP_ARRAY_SIZE;
-    wps[i] = xmalloc(INIT_LIT_WP_ARRAY_SIZE * sizeof(int));
+    wps[i] = xmalloc(INIT_LIT_WP_ARRAY_SIZE * sizeof(srid_t));
   }
 
   // Allocate empty reasons array for each variable, plus extra space
   up_reasons_alloc_size = max_var * 2;
-  up_reasons = xmalloc(up_reasons_alloc_size * sizeof(int));
-  memset(up_reasons, 0xff, up_reasons_alloc_size * sizeof(int)); // Set to -1
+  up_reasons = xmalloc(up_reasons_alloc_size * sizeof(srid_t));
+  memset(up_reasons, 0xff, up_reasons_alloc_size * sizeof(srid_t)); // Set to -1
 
   // Allocate space for the unit lists. Probably won't be too large
   units_alloc_size = max_var * 2;
   unit_literals = xmalloc(units_alloc_size * sizeof(int));
-  unit_clauses = xmalloc(units_alloc_size * sizeof(int));
+  unit_clauses = xmalloc(units_alloc_size * sizeof(srid_t));
 
   // Allocate space for the dependency markings
   dependencies_alloc_size = formula_size * 2;
-  dependency_markings = xcalloc(dependencies_alloc_size, sizeof(long));
+  dependency_markings = xcalloc(dependencies_alloc_size, sizeof(llong));
 
   RAT_marked_vars_alloc_size = max_var;
   RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
 
   // Allocate space for the printable LSR line, for RAT derivations.
   lsr_line_alloc_size = formula_size;
-  lsr_line = xmalloc(lsr_line_alloc_size * sizeof(int));
+  lsr_line = xmalloc(lsr_line_alloc_size * sizeof(srid_t));
 
   current_line = formula_size;
 }
@@ -179,23 +178,24 @@ static void resize_sr_trim_data(void) {
   // Resize arrays that depend on max_var and formula_size
   // The memset() calls don't do anything in the case of no allocation
   int old_size = up_reasons_alloc_size;
-  RESIZE_ARR(up_reasons, up_reasons_alloc_size, max_var, sizeof(int));
-  memset(up_reasons + old_size, 0xff, (up_reasons_alloc_size - old_size) * sizeof(int));
+  RESIZE_ARR(up_reasons, up_reasons_alloc_size, max_var, sizeof(srid_t));
+  memset(up_reasons + old_size, 0xff, (up_reasons_alloc_size - old_size) * sizeof(srid_t));
 
   old_size = wps_alloc_size;
-  RESIZE_ARR(wps, wps_alloc_size, max_var * 2, sizeof(int *));
-  memset(wps + old_size, 0, (wps_alloc_size - old_size) * sizeof(int *));
+  RESIZE_ARR(wps, wps_alloc_size, max_var * 2, sizeof(srid_t *));
+  memset(wps + old_size, 0, (wps_alloc_size - old_size) * sizeof(srid_t *));
 
-  old_size = dependencies_alloc_size;
-  RESIZE_ARR(dependency_markings, dependencies_alloc_size, formula_size, sizeof(long));
-  memset(dependency_markings + old_size, 0, (dependencies_alloc_size - old_size) * sizeof(long));
+  srid_t old_dep_size = dependencies_alloc_size;
+  RESIZE_ARR(dependency_markings, dependencies_alloc_size, formula_size, sizeof(llong));
+  memset(dependency_markings + old_dep_size, 0, 
+    (dependencies_alloc_size - old_dep_size) * sizeof(llong));
 }
 
 static inline void resize_units(void) {
   if (unit_literals_size >= units_alloc_size) {
     units_alloc_size = RESIZE(unit_literals_size);
     unit_literals = xrealloc(unit_literals, units_alloc_size * sizeof(int));
-    unit_clauses = xrealloc(unit_clauses , units_alloc_size * sizeof(int));
+    unit_clauses = xrealloc(unit_clauses, units_alloc_size * sizeof(srid_t));
   }
 }
 
@@ -205,8 +205,8 @@ static inline void resize_units(void) {
 // Doesn't print anything if the empty clause has been derived.
 static void print_clause(void) {
   if (!derived_empty_clause) {
-    for (int i = formula[formula_size]; i < lits_db_size; i++) {
-      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(lits_db[i]));
+    for (srid_t i = formula[formula_size]; i < lits_db_size; i++) {
+      write_lit(sr_certificate_file, TO_DIMACS_LIT(lits_db[i]));
     }
   }
 }
@@ -226,14 +226,15 @@ static void print_witness(void) {
     for (int i = 0; i < witness_size; i++) {
       // Add the pivot as a separator, if there's a substitution part of the witness
       if (i == subst_index) {
-        fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(pivot));
+        write_lit(lsr_proof_file, TO_DIMACS_LIT(pivot));
       }
-      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
+
+      write_lit(lsr_proof_file, TO_DIMACS_LIT(witness[i]));
     }
   } else {
     // We print the true/false portion first
     for (int i = 0; i < subst_index; i++) {
-      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
+      write_lit(lsr_proof_file, TO_DIMACS_LIT(witness[i]));
     }
 
     // Now we two-pass over the substitution portion.
@@ -243,10 +244,10 @@ static void print_witness(void) {
     for (int i = subst_index; i < witness_size; i += 2) {
       switch (witness[i + 1]) {
         case SUBST_TT:
-          fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(witness[i]));
+          write_lit(lsr_proof_file, TO_DIMACS_LIT(witness[i]));
           break;
         case SUBST_FF:
-          fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(NEGATE_LIT(witness[i])));
+          write_lit(lsr_proof_file, TO_DIMACS_LIT(NEGATE_LIT(witness[i])));
           break;
         default: skipped_mapped_lits++;
       }
@@ -254,13 +255,14 @@ static void print_witness(void) {
 
     // If we still have non-trivial mapped literals, print them after the pivot
     if (skipped_mapped_lits > 0) {
-      fprintf(lsr_proof_file, "%d ", TO_DIMACS_LIT(pivot));
+      write_lit(lsr_proof_file, TO_DIMACS_LIT(pivot));
       for (int i = subst_index; i < witness_size; i += 2) {
         switch (witness[i + 1]) {
           case SUBST_TT: break;
           case SUBST_FF: break;
-          default: fprintf(lsr_proof_file, "%d %d ", 
-            TO_DIMACS_LIT(witness[i]), TO_DIMACS_LIT(witness[i + 1]));
+          default: 
+            write_lit(lsr_proof_file, TO_DIMACS_LIT(witness[i]));
+            write_lit(lsr_proof_file, TO_DIMACS_LIT(witness[i + 1]));
         }
       }
     }
@@ -271,8 +273,9 @@ static void print_witness(void) {
 // that were marked during UP dependency marking.
 static inline void print_active_dependencies(void) {
   for (int i = 0; i < unit_clauses_size; i++) {
-    if (dependency_markings[unit_clauses[i]] > generation_before_line_checking) {
-      fprintf(lsr_proof_file, "%d ", unit_clauses[i] + 1); // Add 1 for DIMACS
+    srid_t c = unit_clauses[i];
+    if (dependency_markings[c] > generation_before_line_checking) {
+      write_clause_id(lsr_proof_file, c + 1); // +1 for DIMACS
     }
   }
 }
@@ -280,9 +283,8 @@ static inline void print_active_dependencies(void) {
 // Prints the accumulated LSR line, according to UP and clause dependencies.
 // Should be printed before incrementing the generation.
 static void print_lsr_line(void) {
-  FILE *f = lsr_proof_file;
   current_line++;
-  fprintf(f, "%ld ", current_line);
+  write_clause_id(lsr_proof_file, current_line);
   print_clause();
 
   // If there are no stored RAT derivations, then no need to print a witness
@@ -290,22 +292,22 @@ static void print_lsr_line(void) {
     print_witness();
   }
 
-  fprintf(f, "0 ");
+  write_lit(lsr_proof_file, 0); // Separator between (clause + witness) and rest
   print_active_dependencies();
 
   // If there are no RAT derivations, print the falsifying clause
   if (lsr_line_size == 0 && up_falsified_clause != -1) {
-    fprintf(f, "%d ", up_falsified_clause + 1); // Add 1 to print it in DIMACS
+    write_clause_id(lsr_proof_file, up_falsified_clause + 1); // +1 for DIMACS
   } else {
     // Print the RAT derivations
     // In rare cases, up_falsified_clause == -1, meaning that we *did* do RAT
     // checking, but there were no RAT clauses, in which case this portion will be empty
     for (int i = 0; i < lsr_line_size; i++) {
-      fprintf(f, "%d ", lsr_line[i]);
+      write_clause_id(lsr_proof_file, lsr_line[i]);
     }
   }
 
-  fprintf(f, "0\n");
+  write_sr_line_end(lsr_proof_file); // Cap the end of the line with a '0'
 }
 
 static inline void clear_lsr_line(void) {
@@ -313,13 +315,13 @@ static inline void clear_lsr_line(void) {
 }
 
 // Adds the RAT clause ID, in printable format, to `lsr_line`.
-static inline void add_RAT_clause_to_lsr_line(int clause) {
+static inline void add_RAT_clause_to_lsr_line(srid_t clause) {
   RESIZE_ARR(lsr_line, lsr_line_alloc_size, lsr_line_size, sizeof(int));
   lsr_line[lsr_line_size++] = -(clause + 1);
 }
 
 // Adds the clause ID, in printable format, to `lsr_line`.
-static inline void add_clause_to_lsr_line(int clause) {
+static inline void add_clause_to_lsr_line(srid_t clause) {
   RESIZE_ARR(lsr_line, lsr_line_alloc_size, lsr_line_size, sizeof(int));
   lsr_line[lsr_line_size++] = (clause + 1);
 }
@@ -327,32 +329,32 @@ static inline void add_clause_to_lsr_line(int clause) {
 // Marks the clauses causing each literal in the clause to be false.
 // Ignore literals that are assumed fresh, whether in CANDIDATE or RAT.
 // Literals that were globally set to unit, but are candidate assumed, are ignored.
-static inline void mark_clause(int clause, int offset) {
+static inline void mark_clause(srid_t clause, int offset) {
   int *clause_ptr = get_clause_start(clause) + offset; 
   int *clause_end = get_clause_start(clause + 1);
   for (; clause_ptr < clause_end; clause_ptr++) {
     int lit = *clause_ptr;
     int var = VAR_FROM_LIT(lit);
-    int reason = up_reasons[var];
+    srid_t reason = up_reasons[var];
     if (reason >= 0) {
       dependency_markings[reason] = alpha_generation;
     }
   }
 }
 
-static inline void mark_unit_clause(int clause) {
+static inline void mark_unit_clause(srid_t clause) {
   mark_clause(clause, 1);
 }
 
-static inline void mark_entire_clause(int clause) {
+static inline void mark_entire_clause(srid_t clause) {
   mark_clause(clause, 0);
 }
 
 // Start marking backwards, assuming the offending clause has already been marked.
 static inline void mark_dependencies(void) {
-  const long gen = alpha_generation;
+  const llong gen = alpha_generation;
   for (int i = unit_clauses_size - 1; i >= 0; i--) {
-    int clause = unit_clauses[i];
+    srid_t clause = unit_clauses[i];
     if (dependency_markings[clause] == gen) {
       mark_unit_clause(clause);
     }
@@ -474,7 +476,7 @@ static void minimize_witness(void) {
           write_index = i;
         }
       } else if (lit_alpha == -lit_subst) {
-        long gen = alpha[var];
+        llong gen = alpha[var];
         PRINT_ERR_AND_EXIT_IF(ABS(gen) == GLOBAL_GEN, 
           "Witness lit is set to negation of UP value.");
       }
@@ -544,7 +546,7 @@ static void decrement_state(void) {
 // Sets the literal to true, and adds it to the unit_literals array.
 // Infers the correct generation value from state.
 static inline void assume_unit_literal(int lit) {
-  long gen = (state == CANDIDATE_UP) ? ASSUMED_GEN : alpha_generation;
+  llong gen = (state == CANDIDATE_UP) ? ASSUMED_GEN : alpha_generation;
   set_lit_for_alpha(lit, gen);
   resize_units();
   unit_literals[unit_literals_size++] = lit;
@@ -561,7 +563,7 @@ static inline void assume_unit_literal(int lit) {
 // Sets the literal in the clause to true, assuming it's unit in the clause.
 // Then adds the literal to the unit_literals array, to look for more unit clauses later.
 // NOTE: When doing unit propagation, take the negation of the literal in the unit_literals array.
-static void set_unit_clause(int lit, int clause, long gen) {
+static void set_unit_clause(int lit, srid_t clause, llong gen) {
   set_lit_for_alpha(lit, gen);
   up_reasons[VAR_FROM_LIT(lit)] = clause;
 
@@ -571,18 +573,18 @@ static void set_unit_clause(int lit, int clause, long gen) {
 }
 
 // Adds a watch pointer for the lit at the specified clause ID
-static void add_wp_for_lit(int lit, int clause) {
+static void add_wp_for_lit(int lit, srid_t clause) {
   // Resize the literal-indexes arrays if lit is outside our allocated bounds
   if (max_var * 2 >= wps_alloc_size) {
     int old_size = wps_alloc_size;
     wps_alloc_size = RESIZE(max_var * 2);
-    wps = xrealloc(wps, wps_alloc_size * sizeof(int *));
+    wps = xrealloc(wps, wps_alloc_size * sizeof(srid_t *));
     wp_alloc_sizes = xrealloc(wp_alloc_sizes, wps_alloc_size * sizeof(int));
     wp_sizes = xrealloc(wp_sizes, wps_alloc_size * sizeof(int));
 
     // Set to NULL the new spaces in wps
     int added_size = wps_alloc_size - old_size;
-    memset(wps + old_size, 0, added_size * sizeof(int *));
+    memset(wps + old_size, 0, added_size * sizeof(srid_t *));
     memset(wp_alloc_sizes + old_size, 0, added_size * sizeof(int));
     memset(wp_sizes + old_size, 0, added_size * sizeof(int));
   }
@@ -591,7 +593,7 @@ static void add_wp_for_lit(int lit, int clause) {
   // Handles the case where both are 0 (uninitialized)
   if (wp_sizes[lit] == wp_alloc_sizes[lit]) {
     wp_alloc_sizes[lit] = MAX(INIT_LIT_WP_ARRAY_SIZE, RESIZE(wp_alloc_sizes[lit]));
-    wps[lit] = xrealloc(wps[lit], wp_alloc_sizes[lit] * sizeof(int));
+    wps[lit] = xrealloc(wps[lit], wp_alloc_sizes[lit] * sizeof(srid_t));
   }
 
   // Finally, add the clause to the wp list
@@ -599,8 +601,8 @@ static void add_wp_for_lit(int lit, int clause) {
   wp_sizes[lit]++;
 }
 
-static void remove_wp_for_lit(int lit, int clause) {
-  int *wp_list = wps[lit];
+static void remove_wp_for_lit(int lit, srid_t clause) {
+  srid_t *wp_list = wps[lit];
   int wp_list_size = wp_sizes[lit];
 
   // Find the clause in the wp list and remove it
@@ -619,7 +621,7 @@ static void remove_wp_for_lit(int lit, int clause) {
 // Performs unit propagation. Sets the falsified clause (the contradiction) to
 // up_falsified_clause. -1 if not found.
 // Any literals found are set to the provided generation value.
-static void perform_up(long gen) {
+static void perform_up(llong gen) {
   /* The unit propagation algorithm is quite involved and immersed in invariants.
    * Buckle up, cowboys.
    *
@@ -658,14 +660,15 @@ static void perform_up(long gen) {
   }
 
   // TODO: Better way of doing this, since the size may increase as we do UP?
+  // TODO: When doing backwards checking, use clauses that are already marked
   up_falsified_clause = -1;
   for (; i < unit_literals_size; i++) {
     int lit = NEGATE_LIT(unit_literals[i]);
 
     // Iterate through its watch pointers and see if the clause becomes unit
-    int *wp_list = wps[lit];
+    srid_t *wp_list = wps[lit];
     for (int j = 0; j < wp_sizes[lit]; j++) {
-      int clause_id = wp_list[j];
+      srid_t clause_id = wp_list[j];
       int *clause = get_clause_start(clause_id);
       const int clause_size = get_clause_size(clause_id);
       
@@ -783,7 +786,7 @@ static int assume_candidate_clause_and_perform_up(void) {
   int satisfied_lit = -1;
   up_falsified_clause = -1; // Clear any previous UP falsifying clause
 
-  for (int i = formula[formula_size]; i < lits_db_size; i++) {
+  for (srid_t i = formula[formula_size]; i < lits_db_size; i++) {
     int lit = lits_db[i];
     int var = VAR_FROM_LIT(lit);
 
@@ -793,7 +796,7 @@ static int assume_candidate_clause_and_perform_up(void) {
       case FF:
         // Mark the reason for an already-satisfied literal as assumed
         // This shortens UP derivations
-        up_reasons[var] |= MSB32;
+        up_reasons[var] |= SRID_MSB;
         break;
       case UNASSIGNED:
         // Always set (the negations of) unassigned literals to true
@@ -844,7 +847,7 @@ static void unassume_candidate_clause(void) {
   }
 
   // Now iterate through the clause and undo its changes
-  for (int i = formula[formula_size]; i < lits_db_size; i++) {
+  for (srid_t i = formula[formula_size]; i < lits_db_size; i++) {
     int lit = lits_db[i];
     int var = VAR_FROM_LIT(lit);
 
@@ -853,7 +856,7 @@ static void unassume_candidate_clause(void) {
       alpha[var] = 0;
     } else if (up_reasons[var] < 0) {
       // The literal was assumed, but not unassigned - undo its assumption bit
-      up_reasons[var] ^= MSB32;
+      up_reasons[var] ^= SRID_MSB;
     }
   }
 
@@ -868,7 +871,7 @@ static inline void add_RAT_marked_var(int marked_var) {
 
 static inline void clear_RAT_marked_vars(void) {
   for (int i = 0; i < RAT_marked_vars_size; i++) {
-    up_reasons[RAT_marked_vars[i]] ^= MSB32;
+    up_reasons[RAT_marked_vars[i]] ^= SRID_MSB;
   }
 
   RAT_marked_vars_size = 0;
@@ -880,7 +883,7 @@ static inline void clear_RAT_marked_vars(void) {
 // Sets the indexes values appropriately.
 // Call when global state == CANDIDATE_UP.
 // Sets the global state to RAT_UP.
-static int assume_RAT_clause_under_subst(int clause_index) {
+static int assume_RAT_clause_under_subst(srid_t clause_index) {
   PRINT_ERR_AND_EXIT_IF(state != CANDIDATE_UP, "state not RAT_UP.");
   increment_state();
 
@@ -919,7 +922,7 @@ static int assume_RAT_clause_under_subst(int clause_index) {
             // However, we ignore this assumption when doing RAT UP derivations.
             // Only mark literals whose reasons are not already marked
             if (up_reasons[mapped_var] >= 0) {
-              up_reasons[mapped_var] |= MSB32;
+              up_reasons[mapped_var] |= SRID_MSB;
               add_RAT_marked_var(mapped_var);
             }
             break;
@@ -950,19 +953,38 @@ static int assume_RAT_clause_under_subst(int clause_index) {
 
 // Call when global state == RAT_UP.
 // Decrements state back to CANDIDATE_UP.
-static void unassume_RAT_clause(int clause_index) {
+static void unassume_RAT_clause(srid_t clause_index) {
   PRINT_ERR_AND_EXIT_IF(state != RAT_UP, "state not RAT_UP.");
 
   // Clear the UP reasons for the variables set during RAT UP
   for (int i = RAT_unit_literals_index; i < unit_literals_size; i++) {
     int lit = unit_literals[i];
     int var = VAR_FROM_LIT(lit);
-
-    // Clear the variable's reason (the generation will clear automatically via bumping)
-    up_reasons[var] = -1;
+    up_reasons[var] = -1; // Clear the reason (gen will clear via bumping)
   }
 
   decrement_state();
+}
+
+// Parses the next DSR line. If it's a deletion line, the clause is deleted.
+// Otherwise, the new candidate clause and the witness are parsed and stored.
+// Returns ADDITION_LINE or DELETION_LINE for the line type.
+// Errors and exits if a read error is encountered.
+static inline int parse_dsr_line(void) {
+  int line_type = read_dsr_line_start(sr_certificate_file);
+  switch (line_type) {
+    case DELETION_LINE:
+      // Parse the clause, and find it in the hash table lookup for deletion
+      printf("c Ignoring deletion lines for now\n");
+      break;
+    case ADDITION_LINE:
+      parse_sr_clause_and_witness(sr_certificate_file);
+      break;
+    default:
+      PRINT_ERR_AND_EXIT("Corrupted line type.");
+  }
+
+  return line_type;
 }
 
 static void check_sr_line(void) {
@@ -972,8 +994,6 @@ static void check_sr_line(void) {
   alpha_generation++;
   subst_generation++;
   clear_lsr_line();
-
-  // TODO: Minimize witness size
 
   // TODO: Replace -1/0 with enum/#define
   if (assume_candidate_clause_and_perform_up() == -1) {
@@ -993,11 +1013,7 @@ static void check_sr_line(void) {
   //   current_line + 1, min_clause_to_check, max_clause_to_check);
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
   int clause_size;
-  for (int i = min_clause_to_check; i <= max_clause_to_check; i++) {
-    clause = next_clause;
-    next_clause = get_clause_start(i + 1);
-    clause_size = next_clause - clause;
-
+  for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
     // Evaluate the clause under the substitution
     switch (reduce_subst_mapped(i)) {
       case NOT_REDUCED:
@@ -1024,6 +1040,7 @@ static void check_sr_line(void) {
     }    
   }
 
+  // TODO: For backwards checking, don't print here, but store it instead
   print_lsr_line();
 
   // Congrats - the line checked out! Undo the changes we made to the data structures
@@ -1040,12 +1057,16 @@ static void process_sr_certificate(void) {
   state = GLOBAL_UP;
   add_wps_and_perform_up();
 
+  // TODO: Allow for proofs that don't derive the empty clause
+  // TODO: Handle deletion lines
   while (!derived_empty_clause) {
-    parse_sr_clause_and_witness(sr_certificate_file);
     // printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
     //   current_line + 1, new_clause_size, witness_size);
-    resize_sr_trim_data(); 
-    check_sr_line();
+
+    if (parse_dsr_line() == ADDITION_LINE) {
+      resize_sr_trim_data(); 
+      check_sr_line();
+    }
   }
 
   fclose(sr_certificate_file);
@@ -1053,7 +1074,11 @@ static void process_sr_certificate(void) {
     fclose(lsr_proof_file);
   }
 
-  printf("s VERIFIED UNSAT\n");
+  if (derived_empty_clause) {
+    printf("s VERIFIED UNSAT\n");
+  } else {
+    printf("s VALID\n");
+  }
 }
 
 int main(int argc, char **argv) {
@@ -1071,7 +1096,9 @@ int main(int argc, char **argv) {
   parse_cnf(cnf_file);
   init_sr_trim_data();
 
-  printf("c Formula has %d clauses and %d variables.\n", formula_size, max_var);
+  printf("c Formula has ");
+  printf(SRID_FORMAT_STR, formula_size);
+  printf(" clauses and %d variables.\n", max_var);
 
   process_sr_certificate();
   return 0;

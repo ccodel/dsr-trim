@@ -1,8 +1,9 @@
 CC = gcc
-CFLAGS = -DLONGTYPE -std=c99 -O3
+# CFLAGS = -DLONGTYPE -std=c99 -O3
+CFLAGS = -std=c99 -O3
 
-OFILES = xmalloc.o xio.o cnf_parser.o sr_parser.o global_data.o
-FILES = xmalloc.c xio.c cnf_parser.c global_data.c
+OFILES = xmalloc.o xio.o cnf_parser.o sr_parser.o global_data.o global_parsing.o
+FILES = xmalloc.c xio.c cnf_parser.c global_data.c global_parsing.c
 TRIM = dsr-trim
 CHECK = lsr-check
 EXECS = $(TRIM) $(CHECK)
@@ -29,6 +30,9 @@ sr_parser.o: sr_parser.c
 
 global_data.o: global_data.c
 	$(CC) $(CFLAGS) -c global_data.c
+
+global_parsing.o: global_parsing.c
+	$(CC) $(CFLAGS) -c global_parsing.c
 
 clean:
 	rm -rf *.o

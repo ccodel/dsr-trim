@@ -11,6 +11,7 @@
 #include <limits.h>
 
 #include "global_data.h"
+#include "global_parsing.h"
 #include "xmalloc.h"
 #include "sr_parser.h"
 
@@ -39,8 +40,7 @@ void parse_sr_clause_and_witness(FILE *f) {
   subst_pair_incomplete = 0;
 
   // Read the SR clause and witness until a 0 is read
-  READ_NUMERICAL_TOKEN(res, f, &token);
-  while (token != 0) {
+  while ((token = read_lit(f)) != 0) {
     lit = FROM_DIMACS_LIT(token);
     if (num_times_found_pivot == 0) {
       pivot = lit; // First lit in a nonempty clause is the pivot
@@ -49,11 +49,11 @@ void parse_sr_clause_and_witness(FILE *f) {
       num_times_found_pivot++;
       if (num_times_found_pivot == 3) {
         // The third time we see the pivot, it's as a separator
-        goto read_next_token;
+        continue;
       }
     }
 
-    // TODO: Allow for a witness that only has a substitution portion
+    // TODO: Allow for a witness that only has a substitution portion?
     // Marijn suggests using a thrice-repeated pivot as a marker for this
     switch (num_times_found_pivot) {
       case 1: // We're reading the clause
@@ -67,14 +67,9 @@ void parse_sr_clause_and_witness(FILE *f) {
         insert_witness_lit(lit);
         break;
     }
-
-read_next_token:
-    READ_NUMERICAL_TOKEN(res, f, &token);
   }
 
-  if (subst_pair_incomplete) {
-    PRINT_ERR_AND_EXIT("Missing second half of subst mapping pair.");
-  }
+  PRINT_ERR_AND_EXIT_IF(subst_pair_incomplete, "Missing half of subst map.");
 
   if (subst_index == INT_MAX) {
     subst_index = witness_size;

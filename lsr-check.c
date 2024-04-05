@@ -14,19 +14,17 @@
 
 #include "xio.h"
 #include "global_data.h"
+#include "global_parsing.h"
 #include "xmalloc.h"
 #include "cnf_parser.h"
 #include "sr_parser.h"
 
-#define DELETION_LINE     (10)
-#define ADDITION_LINE     (20)
-
 ////////////////////////////////////////////////////////////////////////////////
 
-static int max_line_id = 0; // Max line identifier checked/parsed.
+static srid_t max_line_id = 0; // Max line identifier checked/parsed.
 
 // The clause ID tokens from the SR file. Not 0-indexed, negatives mark RAT hints.
-static int *hints = NULL;
+static srid_t *hints = NULL;
 static int hints_size = 0;
 static int hints_alloc_size = 0;
 
@@ -43,19 +41,19 @@ static void print_usage(void) {
 
 // Initializes check-specific data structures. Call after parsing the CNF file.
 static void init_sr_check_data(void) {
-  hints_alloc_size = formula_size * 10;
+  hints_alloc_size = max_var * 50;
   hints_size = 0;
-  hints = xmalloc(hints_alloc_size * sizeof(int));
+  hints = xmalloc(hints_alloc_size * sizeof(srid_t));
 }
 
 /** Inserts a clause ID hint into the hints array.
  *  Unlike for the literals, we leave the clause IDs as-is, no remapping.
  *  That way, we can still tell where the RAT hints start.
  */
-static void insert_hint(int clause_id) {
-  RESIZE_ARR(hints, hints_alloc_size, hints_size, sizeof(int));
+static void insert_hint(srid_t clause_id) {
+  RESIZE_ARR(hints, hints_alloc_size, hints_size, sizeof(srid_t));
   // Check that the clause_id is in range
-  int id = ABS(clause_id) - 1;
+  srid_t id = ABS(clause_id) - 1;
   PRINT_ERR_AND_EXIT_IF(id > formula_size || is_clause_deleted(id),
     "Clause ID in the SR proof line is out of bounds or is deleted.");
   hints[hints_size] = clause_id;
@@ -67,7 +65,7 @@ static void insert_hint(int clause_id) {
 
 // Computes the reduction of the clause under the partial assignment.
 // Returns SATISFIED_OR_MUL, or CONTRADICTION, or the unit lit.
-static int reduce(int clause_index) {
+static int reduce(srid_t clause_index) {
   PRINT_ERR_AND_EXIT_IF(is_clause_deleted(clause_index),
     "Trying to unit propagate on a deleted clause.");
 
@@ -95,8 +93,9 @@ static int reduce(int clause_index) {
 
 // Perform unit propagation starting from a hint index. Stops if end or negative hint.
 // Returns CONTRADICTION if false derived, or 0 otherwise. Updates hint index
-static int unit_propagate(int *hint_ptr, long gen) {
-  int up_clause, up_res, hint_index = *hint_ptr;
+static int unit_propagate(int *hint_ptr, llong gen) {
+  int up_res, hint_index = *hint_ptr;
+  srid_t up_clause;
   while (hint_index < hints_size && (up_clause = hints[hint_index]) > 0) {
     // Perform unit propagation against alpha on up_clause
     // Subtract one from the identifier because it's 1-indexed in the proof line
@@ -128,54 +127,54 @@ static int unit_propagate(int *hint_ptr, long gen) {
 
 // Parses the next SR line. Returns either DELETION_LINE or ADDITION_LINE.
 // If deletion line, the deletions are handled already.
-static int parse_line(void) {
-  int line_id, token, res;
-  witness_size = hints_size = num_RAT_hints = new_clause_size = 0;
-  subst_index = INT_MAX;
+static int parse_lsr_line(void) {
+  srid_t line_id, token;
 
-  READ_NUMERICAL_TOKEN(res, sr_file, &line_id); // First token is the line id
+  int line_type = read_lsr_line_start(sr_file, &line_id);
+  switch (line_type) {
+    case DELETION_LINE:
+      // Ensure that the line id is (non-strictly) monotonically increasing
+      PRINT_ERR_AND_EXIT_IF(line_id < max_line_id, "Deletion line id decreases.");
+      max_line_id = line_id;   // Lemma: line_id >= max_line_id
+      // TODO: can make this max_line_id = line_id + 1, to prevent two deletion lines
+      // However, this breaks with (line_id <= max_line_id) below
+      // Question for Marijn for later
 
-  // Now we test for a deletion line
-  res = fscanf(sr_file, "d %d", &token);
-  if (res == 1) {
-    // We have a deletion line, as there was a match in fscanf()
-    // Check that the line id is (non-strictly) monotonically increasing
-    PRINT_ERR_AND_EXIT_IF(line_id < max_line_id, "Deletion line id decreases.");
-    max_line_id = line_id;   // Lemma: line_id >= max_line_id
+      // Now loop on tokens until a zero is read, deleting clauses along the way
+      while ((token = read_clause_id(sr_file)) != 0) {
+        PRINT_ERR_AND_EXIT_IF(token < 0, "Deletion line has negative clause ID.");
+        delete_clause(token - 1);
+      }
+      break;
+    case ADDITION_LINE:
 
-    // Now loop on tokens until a zero is read, deleting clauses along the way
-    while (token != 0) {
-      PRINT_ERR_AND_EXIT_IF(token < 0, "Deletion line has negative clause ID.");
-      delete_clause(token - 1);
-      READ_NUMERICAL_TOKEN(res, sr_file, &token);
-    }
+      // Check that the line id is strictly monotonically increasing
+      PRINT_ERR_AND_EXIT_IF(line_id <= max_line_id, "Addition line id doesn't increase.");
+      max_line_id = line_id;  // Lemma: line_id > max_line_id
 
-    return DELETION_LINE; // A deletion line is always valid, so there's nothing more to check
+      // Reset supporting data structures
+      hints_size = num_RAT_hints = 0;
+      subst_index = INT_MAX;
+
+      // In case a line is "skipped", cap off empty clauses until formula size catches up
+      while (formula_size < max_line_id - 1) {
+        insert_clause();
+        delete_clause(formula_size - 1);
+      }
+
+      // Read in the clause and witness portions of the SR proof line
+      parse_sr_clause_and_witness(sr_file);
+
+      // Now consume the rest of the line. The hints are stored in the hints array,
+      // keeping the clause IDs as-is so we can tell where the RAT hints start.
+      while ((token = read_clause_id(sr_file)) != 0) {
+        insert_hint(token);
+      }
+      break;
+    default: PRINT_ERR_AND_EXIT("Invalid line type.");
   }
 
-  // Since we don't have a deletion line, we have an addition line
-  // Check that the line id is strictly monotonically increasing
-  PRINT_ERR_AND_EXIT_IF(line_id <= max_line_id, "Addition line id doesn't increase.");
-  max_line_id = line_id;  // Lemma: line_id > max_line_id
-
-  // In case a line is "skipped", cap off empty clauses until formula size catches up
-  while (formula_size < max_line_id - 1) {
-    insert_clause();
-    delete_clause(formula_size - 1);
-  }
-
-  // Read in the clause and witness portions of the SR proof line
-  parse_sr_clause_and_witness(sr_file);
-
-  // Now consume the rest of the line. The hints are stored in the hints array,
-  // keeping the clause IDs as-is so we can tell where the RAT hints start.
-  READ_NUMERICAL_TOKEN(res, sr_file, &token);
-  while (token != 0) {
-    insert_hint(token);
-    READ_NUMERICAL_TOKEN(res, sr_file, &token);
-  }
-
-  return ADDITION_LINE;
+  return line_type;
 }
 
 static void check_line(void) {
@@ -183,7 +182,7 @@ static void check_line(void) {
   // We set each variable's value to alpha_generation + num_RAT_hints
   alpha_generation++;
   subst_generation++;
-  long negated_clause_gen = alpha_generation + num_RAT_hints;
+  llong negated_clause_gen = alpha_generation + num_RAT_hints;
 
   // Set the negated literals of the candidate clause to be true
   assume_negated_clause(formula_size, negated_clause_gen);
@@ -212,7 +211,7 @@ static void check_line(void) {
   //   - A RAT clause, whose hints derive contradiction
   int rat_hint_start_index = hint_index;
   int matching_hint_index;
-  for (int i = min_clause_to_check; i <= max_clause_to_check; i++) {
+  for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
     if (is_clause_deleted(i)) {
       continue; // Skip deleted clauses, nothing to prove
     }
@@ -287,13 +286,11 @@ finish_line:
 }
 
 static void check_proof() {
-  do {
-    switch (parse_line()) {
-      case DELETION_LINE: continue;
-      case ADDITION_LINE: check_line(); break;
-      default: PRINT_ERR_AND_EXIT("Corrupted line type.");
+  while (!derived_empty_clause) {
+    if (parse_lsr_line() == ADDITION_LINE) {
+      check_line();
     }
-  } while (!derived_empty_clause);
+  }
 
   fclose(sr_file);
   printf("s VERIFIED UNSAT\n");
@@ -313,7 +310,7 @@ int main(int argc, char *argv[]) {
   parse_cnf(cnf_file);
   init_sr_check_data();
 
-  printf("c Formula has %d clauses and %d variables.\n", formula_size, max_var);
+  printf("c Formula has %lld clauses and %d variables.\n", ((llong) formula_size), max_var);
 
   check_proof();
   return 0;
