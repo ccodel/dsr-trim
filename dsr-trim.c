@@ -206,7 +206,7 @@ static inline void resize_units(void) {
 static void print_clause(void) {
   if (!derived_empty_clause) {
     for (srid_t i = formula[formula_size]; i < lits_db_size; i++) {
-      write_lit(sr_certificate_file, TO_DIMACS_LIT(lits_db[i]));
+      write_lit(lsr_proof_file, TO_DIMACS_LIT(lits_db[i]));
     }
   }
 }
@@ -284,7 +284,7 @@ static inline void print_active_dependencies(void) {
 // Should be printed before incrementing the generation.
 static void print_lsr_line(void) {
   current_line++;
-  write_clause_id(lsr_proof_file, current_line);
+  write_lsr_line_start(lsr_proof_file, current_line, 0);
   print_clause();
 
   // If there are no stored RAT derivations, then no need to print a witness
@@ -1060,10 +1060,9 @@ static void process_sr_certificate(void) {
   // TODO: Allow for proofs that don't derive the empty clause
   // TODO: Handle deletion lines
   while (!derived_empty_clause) {
-    // printf("c Parsed line %ld, new clause has size %d and witness with size %d\n", 
-    //   current_line + 1, new_clause_size, witness_size);
-
     if (parse_dsr_line() == ADDITION_LINE) {
+      // printf("c Parsed line %d, new clause has size %d and witness with size %d\n", 
+      //   current_line + 1, new_clause_size, witness_size);
       resize_sr_trim_data(); 
       check_sr_line();
     }
