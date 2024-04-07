@@ -6,7 +6,9 @@ OFILES = xmalloc.o xio.o cnf_parser.o sr_parser.o global_data.o global_parsing.o
 FILES = xmalloc.c xio.c cnf_parser.c global_data.c global_parsing.c
 TRIM = dsr-trim
 CHECK = lsr-check
-EXECS = $(TRIM) $(CHECK)
+COMPRESS = compress
+DECOMPRESS = decompress
+EXECS = $(TRIM) $(CHECK) $(COMPRESS) $(DECOMPRESS)
 
 all: $(EXECS)
 
@@ -15,6 +17,12 @@ dsr-trim: $(TRIM).c $(OFILES)
 
 lsr-check: $(CHECK).c $(OFILES)
 	$(CC) $(CFLAGS) $(CHECK).c $(OFILES) -o $(CHECK)
+
+compress: $(COMPRESS).c $(OFILES)
+	$(CC) $(CFLAGS) $(COMPRESS).c $(OFILES) -o $(COMPRESS)
+
+decompress: $(DECOMPRESS).c $(OFILES)
+	$(CC) $(CFLAGS) $(DECOMPRESS).c $(OFILES) -o $(DECOMPRESS)
 
 xmalloc.o: xmalloc.c
 	$(CC) $(CFLAGS) -c xmalloc.c

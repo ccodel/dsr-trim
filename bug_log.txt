@@ -14,3 +14,9 @@ dsr-trim:
     - The ret val of get_lit_under_subst() can return SUBST_UNASSIGNED. Taking the up_reason of that variable gives 0 always, because I computed it before re-assigning back to the original lit.
 
     - (3/27/24) When doing witness minimization, the write_index was not incremented twice when writing a literal mapping, leading to non-deleted witness mappings after minimization.
+
+global_parsing.c:
+    - Not taking the absolute value of a token, meaning that negative tokens get "mapped twice."
+
+compress/decompress.c:
+    - Writing a zero and then a newline character adds an extra space, which won't interfere with parsing, but makes the diff command line tool complain.

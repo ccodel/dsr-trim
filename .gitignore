@@ -1,6 +1,8 @@
 # Project-specific files
 dsr-trim
 lsr-check
+compress
+decompress
 
 # Pigeonhole executables and CNF/proof files
 php/php

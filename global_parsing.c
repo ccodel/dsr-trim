@@ -31,7 +31,7 @@ int read_lit_binary(FILE *f) {
     return (x >> 1) * -1;
   } else {
     return x >> 1;
-  }  
+  }
 }
 
 int read_lit(FILE *f) {
@@ -45,7 +45,7 @@ int read_lit(FILE *f) {
 }
 
 void write_lit_binary(FILE *f, int lit) {
-  unsigned int x = lit << 1;
+  unsigned int x = abs(lit) << 1;
   if (lit < 0) {
     x |= 0x1;
   }
@@ -105,7 +105,7 @@ srid_t read_clause_id(FILE *f) {
 }
 
 void write_clause_id_binary(FILE *f, srid_t clause_id) {
-  ullong x = clause_id << 1;
+  ullong x = llabs(clause_id) << 1;
   if (clause_id < 0) {
     x |= 0x1;
   }
