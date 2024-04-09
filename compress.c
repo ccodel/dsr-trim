@@ -56,9 +56,6 @@ static srid_t data_alloc_size = 0;
  */
 static srid_t *data_mappings = NULL;
 
-// Logical size of `data_mappings`. The number of elements it contains.
-static srid_t data_mappings_size = 0;
-
 // The allocated size of `data_mappings` through `malloc()`.
 static srid_t data_mappings_alloc_size = 0;
 
@@ -107,20 +104,15 @@ static inline void store_atom(srid_t atom) {
 // Because DSR files are not "ordered", we can directly write what we read.
 static void compress_dsr_input(void) {
   srid_t token;
-  while (has_another_line(input)) { 
+  while (has_another_line(input)) {
     int line_type = read_dsr_line_start(input);
-    int zeros_left = (line_type == ADDITION_LINE) ? 
-      ZEROS_FOR_ADDITION : ZEROS_FOR_DELETION;
     write_dsr_line_start(output, (line_type == DELETION_LINE) ? 1 : 0);
 
-    // Keep reading atoms until enough zeros are read
-    while (zeros_left > 0) {
+    // Keep reading atoms until 0 is read
+    do {
       token = read_clause_id(input);
       write_clause_id(output, token);
-      if (token == 0) {
-        zeros_left--;
-      }
-    }
+    } while (token != 0);
   }
 }
 
@@ -137,11 +129,10 @@ static void compress_lsr_input(void) {
     PRINT_ERR_AND_EXIT_IF(line_id < 0, "Line id is negative.");
     srid_t mapping = (line_id << 1) | ((line_type == ADDITION_LINE) ? 0 : 1);
 
-    if (mapping > data_mappings_size) {
-      int old_size = data_mappings_size;
-      data_mappings_size = MAX(data_mappings_size, mapping + 1);
-      RESIZE_ARR(data_mappings, data_mappings_alloc_size, data_mappings_size, sizeof(srid_t));
-      memset(data_mappings + old_size, 0xff, (data_mappings_size - old_size) * sizeof(srid_t));
+    if (mapping >= data_mappings_alloc_size) {
+      srid_t old_size = data_mappings_alloc_size;
+      RESIZE_ARR(data_mappings, data_mappings_alloc_size, mapping, sizeof(srid_t));
+      memset(data_mappings + old_size, 0xff, (data_mappings_alloc_size - old_size) * sizeof(srid_t));
     }
 
     PRINT_ERR_AND_EXIT_IF(data_mappings[mapping] != -1, "Map already exists.");
@@ -188,14 +179,22 @@ int main(int argc, char *argv[]) {
 
   // Open the files right away, so we fail fast if they don't exist.
   input  = xfopen(argv[1], "r");
-  output = (argv[2][0] == '-') ? stdout : xfopen(argv[2], "w");
+  if (argc == 2 || argv[2][0] == '-') {
+    output = stdout;
+    optind = 2;
+  } else {
+    output = xfopen(argv[2], "w");
+    optind = 3;
+  }
 
   // TODO: Allow for sorting flag
-  int used_args = (argv[2][0] == '-') ? 2 : 3;
   int opt; 
-  while ((opt = getopt(argc - used_args, argv + used_args, "dl")) != -1) {
+  while ((opt = getopt(argc, argv, "dl")) != -1) {
     switch (opt) {
-      case 'd': read_lsr = 0; break;
+      case 'd':
+        printf("c Mode switched to DSR compression.\n");
+        read_lsr = 0;
+        break;
       case 'l': read_lsr = 1; break;
       default: 
         fprintf(stderr, "Error: Unknown option: %c\n", opt);

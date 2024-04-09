@@ -40,20 +40,11 @@ static void decompress_dsr_input(void) {
   srid_t token;
   while (has_another_line(input)) { 
     int line_type = read_dsr_line_start(input);
-    int zeros_left = (line_type == ADDITION_LINE) ? 
-      ZEROS_FOR_ADDITION : ZEROS_FOR_DELETION;
     write_dsr_line_start(output, (line_type == DELETION_LINE) ? 1 : 0);
 
-    // Keep reading atoms until enough zeros are read
-    while (zeros_left > 0) {
-      token = read_clause_id(input);
-      if (token == 0) {
-        zeros_left--;
-      }
-
-      if (zeros_left > 0) {
-        write_clause_id(output, token);
-      }
+    // Keep reading atoms until 0 is read
+    while ((token = read_clause_id(input)) != 0) {
+      write_clause_id(output, token);
     }
 
     write_sr_line_end(output);
@@ -93,13 +84,21 @@ int main(int argc, char *argv[]) {
 
   // Open the files right away, so we fail fast if they don't exist
   input  = xfopen(argv[1], "r");
-  output = (argv[2][0] == '-') ? stdout : xfopen(argv[2], "w");
+  if (argc == 2 || argv[2][0] == '-') {
+    output = stdout;
+    optind = 2;
+  } else {
+    output = xfopen(argv[2], "w");
+    optind = 3;
+  }
 
-  int used_args = (argv[2][0] == '-') ? 2 : 3;
   int opt;
-  while ((opt = getopt(argc - used_args, argv + used_args, "dl")) != -1) {
+  while ((opt = getopt(argc, argv, "dl")) != -1) {
     switch (opt) {
-      case 'd': read_lsr = 0; break;
+      case 'd':
+        printf("c Mode switched to DSR decompression.\n");
+        read_lsr = 0;
+        break;
       case 'l': read_lsr = 1; break;
       default:
         fprintf(stderr, "Error: Unknown option: %c\n", opt);

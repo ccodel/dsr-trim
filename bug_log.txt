@@ -20,3 +20,5 @@ global_parsing.c:
 
 compress/decompress.c:
     - Writing a zero and then a newline character adds an extra space, which won't interfere with parsing, but makes the diff command line tool complain.
+    - Was expecting to read two zeros per addition line in DSR format. But these lines only have one zero per line.
+    - Was expecting text lines to start with solely numbers (isdigit()). Instead, lines can start with '-' or 'd'.

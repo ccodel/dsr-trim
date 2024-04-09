@@ -172,7 +172,7 @@ int read_dsr_line_start(FILE *f) {
     switch (c) {
       case BINARY_ADDITION_LINE_START: return ADDITION_LINE;
       case BINARY_DELETION_LINE_START: return DELETION_LINE;
-      default: PRINT_ERR_AND_EXIT("Line didn't start with 'a' or 'd'.");
+      default: PRINT_ERR_AND_EXIT("Line didn't start with a good character.");
     }
   } else {
     if (scan_until_char(f, 'd')) {
@@ -253,16 +253,14 @@ int has_another_line(FILE *f) {
       case BINARY_DELETION_LINE_START:
         ungetc(c, f);
         return 1;
-      case EOF: 
-        return 0;
-      default:
-        PRINT_ERR_AND_EXIT("Unexpected binary character found.");
+      case EOF: return 0;
+      default:  PRINT_ERR_AND_EXIT("Unexpected binary character found.");
     }
   } else {
     // Ignore whitespace until a digit is found. Error if non-digit found.
     while ((c = getc_unlocked(f)) != EOF) {
       if (!isspace(c)) {
-        if (isdigit(c)) {
+        if (isdigit(c) || c == '-' || c == 'd') {
           ungetc(c, f);
           return 1;
         } else {

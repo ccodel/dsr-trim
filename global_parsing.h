@@ -18,8 +18,10 @@
 /** DIMACS character that starts a problem line. */
 #define DIMACS_PROBLEM_LINE ('p')
 
-#define BINARY_ADDITION_LINE_START    ('a')
-#define BINARY_DELETION_LINE_START    ('d')
+// We make the addition and deletion characters unprintable so we are able to
+// differentiate binary and textual proof files with the first character.
+#define BINARY_ADDITION_LINE_START    (1)
+#define BINARY_DELETION_LINE_START    (2)
 
 #define READ_LONG_TOKEN(res, f, ptr)            do {                           \
     res = fscanf(f, "%lld ", ptr);                                             \
