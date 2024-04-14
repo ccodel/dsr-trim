@@ -256,6 +256,7 @@ static void check_line(void) {
             matching_hint_index++;
           } while (hints[matching_hint_index] > 0 && matching_hint_index < hints_size);
           hint_index = MAX(hint_index, matching_hint_index);
+          alpha_generation++;
           continue;
         }
 
@@ -286,7 +287,7 @@ finish_line:
 }
 
 static void check_proof() {
-  while (!derived_empty_clause) {
+  while (!derived_empty_clause && has_another_line(sr_file)) {
     if (parse_lsr_line() == ADDITION_LINE) {
       check_line();
     }
