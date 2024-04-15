@@ -8,12 +8,15 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include "global_data.h"
 #include "xio.h"
 
 /** Safely opens a file with a path and mode. */
 FILE *xfopen(const char * restrict path, const char * restrict mode) {
   FILE *f = fopen(path, mode);
-  PRINT_ERR_AND_EXIT_IF(f == NULL, "Unable to open the file");
+  if (f == NULL) {
+    fprintf(stderr, "c Error: %s\n", "Unable to open the file %s\n", path);
+    exit(-1);
+  }
+
   return f;
 }
