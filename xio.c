@@ -14,7 +14,7 @@
 FILE *xfopen(const char * restrict path, const char * restrict mode) {
   FILE *f = fopen(path, mode);
   if (f == NULL) {
-    fprintf(stderr, "c Error: %s\n", "Unable to open the file %s\n", path);
+    fprintf(stderr, "c Error: Unable to open the file %s\n", path);
     exit(-1);
   }
 
