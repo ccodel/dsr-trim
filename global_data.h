@@ -49,7 +49,7 @@ typedef int srid_t;
 #define SRID_MSB                MSB32
 #endif
 
-#define FROM_DIMACS_LIT(x)      (((x) < 0) ? ((-(x) << 1) - 1) : (((x) << 1) - 2))
+#define FROM_DIMACS_LIT(x)      (((x) < 0) ? (((-(x)) << 1) - 1) : (((x) << 1) - 2))
 #define TO_DIMACS_LIT(x)        (((x) % 2) ? (((x) / -2) - 1) : (((x) / 2) + 1))
 #define VAR_FROM_LIT(x)         ((x) >> 1)
 #define IS_POS_LIT(x)           (!((x) & 0x1))

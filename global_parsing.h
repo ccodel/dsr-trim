@@ -94,10 +94,10 @@ srid_t read_clause_id_binary(FILE *f);
 // Expects a clause ID to read. If EOF is reached, it prints an error and exits.
 srid_t read_clause_id(FILE *f);
 
-// Takes a clause ID in 0-indexed format and writes it to the file in binary format.
+// Takes a clause ID in 1-indexed format and writes it to the file in binary format.
 void write_clause_id_binary(FILE *f, srid_t clause_id);
 
-// Takes a clause ID in 0-indexed format and writes it to the file according to `write_binary`.
+// Takes a clause ID in 1-indexed format and writes it to the file according to `write_binary`.
 void write_clause_id(FILE *f, srid_t clause_id);
 
 int read_dsr_line_start(FILE *f);

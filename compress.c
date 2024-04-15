@@ -74,8 +74,8 @@ static int read_lsr = 1;
 ////////////////////////////////////////////////////////////////////////////////
 
 static void print_usage(void) {
-  printf("Usage: ./compress <input_file> [<output_file>] [<option>]\n\n");
-  printf("where <option> is one of the following:\n\n");
+  printf("Usage: ./compress <input_file> [output_file] [option]\n\n");
+  printf("where [option] is one of the following:\n\n");
   printf("  -d    Compress a DSR file.\n");
   printf("  -l    Compress an LSR file. (This is the default behavior.)\n\n");
   printf("When an output file is not provided, stdout is used.\n");
