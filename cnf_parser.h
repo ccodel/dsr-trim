@@ -12,6 +12,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+// Parses a single clause and stores it in `lits_db` and `formula`.
+// Sorts the literals, eliminates duplicates, and checks for tautology.
+// Note that it does not call `insert_clause()`.
+// Returns 1 if it's a tautology, 0 otherwise.
+int parse_clause(FILE *f);
+
 // Parses the CNF and puts it into global data structures.
 // On success, closes the FILE.
 void parse_cnf(FILE *cnf_file);

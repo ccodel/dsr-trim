@@ -25,23 +25,23 @@ compress: $(COMPRESS).c $(OFILES)
 decompress: $(DECOMPRESS).c $(OFILES)
 	$(CC) $(CFLAGS) $(DECOMPRESS).c $(OFILES) -o $(DECOMPRESS)
 
-xmalloc.o: xmalloc.c
-	$(CC) $(CFLAGS) -c xmalloc.c xmalloc.h
+xmalloc.o: xmalloc.c xmalloc.h
+	$(CC) $(CFLAGS) -c xmalloc.c
 
-xio.o: xio.c
-	$(CC) $(CFLAGS) -c xio.c xio.h
+xio.o: xio.c xio.h
+	$(CC) $(CFLAGS) -c xio.c
 
-cnf_parser.o: cnf_parser.c
-	$(CC) $(CFLAGS) -c cnf_parser.c cnf_parser.h
+cnf_parser.o: cnf_parser.c cnf_parser.h
+	$(CC) $(CFLAGS) -c cnf_parser.c
 
-sr_parser.o: sr_parser.c
-	$(CC) $(CFLAGS) -c sr_parser.c sr_parser.h
+sr_parser.o: sr_parser.c sr_parser.h
+	$(CC) $(CFLAGS) -c sr_parser.c
 
 global_data.o: global_data.c global_data.h
-	$(CC) $(CFLAGS) -c global_data.c global_data.h
+	$(CC) $(CFLAGS) -c global_data.c
 
-global_parsing.o: global_parsing.c
-	$(CC) $(CFLAGS) -c global_parsing.c global_parsing.h
+global_parsing.o: global_parsing.c global_parsing.h
+	$(CC) $(CFLAGS) -c global_parsing.c
 
 clean:
 	rm -rf *.o

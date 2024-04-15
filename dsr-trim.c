@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <limits.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "xio.h"
 #include "global_data.h"
@@ -45,7 +46,9 @@ Potential optimizations:
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#define INIT_LIT_WP_ARRAY_SIZE    (4)
+#define INIT_LIT_WP_ARRAY_SIZE          (4)
+#define INIT_CLAUSE_ID_HT_SIZE          (100000)
+#define INIT_CLAUSE_ID_BUCKET_SIZE      (8)
 
 // When setting literals "globally" under initial unit propagation, we use the
 // largest possible generation value.
@@ -130,11 +133,35 @@ static srid_t up_falsified_clause = -1; // Set by unit propagation, -1 if none f
 
 static FILE *lsr_proof_file = NULL;
 
+// Because deletion lines in the DSR format identify a clause to be deleted,
+// and not a clause ID, we use a hash table to store clause IDs, where the
+// hash is a commutative function of the literals. That way, permutations of
+// the clause will hash to the same thing.
+
+// The clause deletion hash table.
+static srid_t **clause_id_ht = NULL;
+static int clause_id_ht_alloc_size = 0;
+
+// Stores the (logical) size of the buckets under each hash in the table.
+// Not initialized to anything (check for NULL under clause_id_ht[i]).
+static int *clause_id_ht_sizes = NULL;
+
+// Stores the allocated sizes of the buckets under each hash in the table.
+// Not initialized to anything (check for NULL under clause_id_ht[i]).
+static int *clause_id_ht_alloc_sizes = NULL;
+
+static void add_clause_hash(srid_t clause);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 static void print_usage(void) {
-  printf("c Usage: ./sr-trim <cnf-file> <pf-file> [lsr-file]\n");
+  printf("Usage: ./sr-trim <cnf> <proof> [lsr-proof] [options]\n\n");
+  printf("where [options] are among the following:\n\n");
+  // printf("  -i    Specify that the input proof is in the binary format.\n");
+  // printf("  -b      ");
 }
+
+////////////////////////////////////////////////////////////////////////////////
 
 static void init_sr_trim_data(void) {
   // Allocate an empty watch pointer array for each literal
@@ -170,6 +197,17 @@ static void init_sr_trim_data(void) {
   // Allocate space for the printable LSR line, for RAT derivations.
   lsr_line_alloc_size = formula_size;
   lsr_line = xmalloc(lsr_line_alloc_size * sizeof(srid_t));
+
+  // Allocate space for the clause id hash table
+  clause_id_ht_alloc_size = INIT_CLAUSE_ID_HT_SIZE;
+  clause_id_ht = xcalloc(clause_id_ht_alloc_size, sizeof(srid_t *));
+  clause_id_ht_sizes = xmalloc(clause_id_ht_alloc_size * sizeof(int));
+  clause_id_ht_alloc_sizes = xmalloc(clause_id_ht_alloc_size * sizeof(int));
+
+  // Run through all the clauses and hash them
+  for (srid_t i = 0; i < formula_size; i++) {
+    add_clause_hash(i);
+  }
 
   current_line = formula_size;
 }
@@ -308,6 +346,13 @@ static void print_lsr_line(void) {
   }
 
   write_sr_line_end(lsr_proof_file); // Cap the end of the line with a '0'
+}
+
+static inline void print_lsr_deletion_line(srid_t clause) {
+  // Print the deletion line (TODO: Store later? for backwards checking)
+  write_lsr_line_start(lsr_proof_file, current_line, 1);
+  write_clause_id(lsr_proof_file, clause + 1);
+  write_sr_line_end(lsr_proof_file);
 }
 
 static inline void clear_lsr_line(void) {
@@ -755,7 +800,6 @@ static void add_wps_and_perform_up() {
         return;
       } else {
         // Set its one literal globally to true, and add its negation to the UP queue
-        // TODO: Possible support for deleting a unit (but Marijn says this won't happen)
         set_unit_clause(lit, wp_processed_clauses, GLOBAL_GEN);
       }
     } else {
@@ -966,6 +1010,138 @@ static void unassume_RAT_clause(srid_t clause_index) {
   decrement_state();
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+// Hashes the provided clause ID.
+// The hash function is commutative, meaning that no matter how the clause is
+// permuted, the clause will return the same hash value.
+// (Could be computed as the literals are parsed and stored, but because only
+// dsr-trim hashes clauses, this is better from an encapsulation perspective.)
+static unsigned int hash_clause(srid_t clause) {
+  unsigned int sum = 0, prod = 1, xor = 0;
+  int *clause_ptr, *clause_end;
+
+  // Slightly API-breaking, but since we don't compute these as we parse the
+  // clauses, and we store almost-clauses in the formula, we need to know
+  // if the clause we are hashing is the newest one or not.
+  clause_ptr = get_clause_start(clause);
+  if (clause == formula_size) {
+    clause_end = lits_db + lits_db_size;
+  } else {
+    clause_end = get_clause_start(clause + 1);
+  }
+
+  for (; clause_ptr < clause_end; clause_ptr++) {
+    int lit = *clause_ptr;
+    sum += lit;
+    prod *= lit;
+    xor ^= lit;
+  }
+
+  // Hash function borrowed from dpr-trim
+  return (1023 * sum + prod ^ (31 * xor)) % clause_id_ht_alloc_size;
+}
+
+static void add_clause_hash(srid_t clause) {
+  // For now, we don't resize the hash table. TODO: implement resizing.
+  // TODO: Implement de-sizing when clauses get deleted.
+  unsigned int hash = hash_clause(clause);
+
+  // Allocate a hash table bucket, if it doesn't exist yet
+  if (clause_id_ht[hash] == NULL) {
+    clause_id_ht[hash] = xmalloc(INIT_CLAUSE_ID_BUCKET_SIZE * sizeof(srid_t));
+    clause_id_ht_sizes[hash] = 0;
+    clause_id_ht_alloc_sizes[hash] = INIT_CLAUSE_ID_BUCKET_SIZE;
+  }
+
+  // Resize the bucket if we've run out of space 
+  if (clause_id_ht_sizes[hash] >= clause_id_ht_alloc_sizes[hash]) {
+    clause_id_ht_alloc_sizes[hash] = RESIZE(clause_id_ht_sizes[hash]);
+    clause_id_ht[hash] = xrealloc(clause_id_ht[hash], 
+      clause_id_ht_alloc_sizes[hash] * sizeof(srid_t));
+  }
+
+  // Add the clause to the bucket
+  clause_id_ht[hash][clause_id_ht_sizes[hash]++] = clause;
+}
+
+// Finds and deletes a matching clause (i.e., a permutation of the new clause).
+// The deletion is reflected in the hash table and in `lits_db`/`formula`.
+// Errors and exits if no matching clause exists.
+// Assumes that the clause is not unit (i.e., it has at least two literals).
+static void get_and_remove_clause_hash(void) {
+  // TODO: Implement de-sizing
+  unsigned int hash = hash_clause(formula_size);
+  const int *clause_ptr = get_clause_start(formula_size);
+
+  // Now iterate through all clauses in the bucket to find a matching clause
+  const srid_t *bucket = clause_id_ht[hash];
+  const int bucket_size = clause_id_ht_sizes[hash];
+  for (int i = 0; i < bucket_size; i++) {
+    srid_t candidate_match = bucket[i];
+
+    // Only check for matching literals if the sizes match
+    if (get_clause_size(candidate_match) == new_clause_size) {
+      // Most clauses are small (<= 20 lits), so O(n^2) search is good enough
+      int *candidate_start = get_clause_start(candidate_match);
+      int *candidate_end = get_clause_start(candidate_match + 1);
+      int found_match = 1;
+      for (int *ptr = candidate_start; ptr < candidate_end; ptr++) {
+        int new_lit = *ptr;
+        int found_lit = 0;
+        for (int j = 0; j < new_clause_size; j++) {
+          if (new_lit == clause_ptr[j]) {
+            found_lit = 1;
+            break;
+          }
+        }
+
+        if (!found_lit) {
+          found_match = 0;
+          break;
+        }
+      }
+
+      if (found_match) {
+        // Check if the clause is a global unit clause
+        // If it is, error, since we don't want to handle re-running UP
+        for (int j = 0; j < unit_clauses_size; j++) {
+          if (unit_clauses[j] == candidate_match) {
+            PRINT_ERR_AND_EXIT("Deleted clause is a global unit.");
+          }
+        }
+
+        // The matching clause wasn't unit, so we delete it and its hash
+        if (bucket_size > 1) {
+          clause_id_ht[hash][i] = bucket[(bucket_size - 1)];
+        }
+        
+        clause_id_ht_sizes[hash]--;
+
+        // Remove the watch pointers for the matching clause
+        // Our invariant is that the first two literals are watch pointers
+        // Do this before deleting the clause from the formula, because
+        // otherwise the garbage collector can move the literals underneath
+        remove_wp_for_lit(candidate_start[0], candidate_match);
+        remove_wp_for_lit(candidate_start[1], candidate_match);
+
+        // Delete the identified matching clause from the formula
+        delete_clause(candidate_match);
+
+        // Remove the literals for the parsed deletion clause in lits_db
+        lits_db_size -= new_clause_size;
+
+        print_lsr_deletion_line(candidate_match);
+        return;
+      }
+    }
+  }
+
+  PRINT_ERR_AND_EXIT("No matching clause found for deletion.");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 // Parses the next DSR line. If it's a deletion line, the clause is deleted.
 // Otherwise, the new candidate clause and the witness are parsed and stored.
 // Returns ADDITION_LINE or DELETION_LINE for the line type.
@@ -973,9 +1149,11 @@ static void unassume_RAT_clause(srid_t clause_index) {
 static inline int parse_dsr_line(void) {
   int line_type = read_dsr_line_start(sr_certificate_file);
   switch (line_type) {
-    case DELETION_LINE:
-      // Parse the clause, and find it in the hash table lookup for deletion
-      printf("c Ignoring deletion lines for now\n");
+    case DELETION_LINE:;
+      int is_tautology = parse_clause(sr_certificate_file);
+      PRINT_ERR_AND_EXIT_IF(is_tautology || new_clause_size <= 1, 
+        "Clause to delete was a tautology, was empty, or was a unit.");
+      get_and_remove_clause_hash();
       break;
     case ADDITION_LINE:
       parse_sr_clause_and_witness(sr_certificate_file);
@@ -1009,11 +1187,13 @@ static void check_sr_line(void) {
   assume_subst();
 
   // Now do RAT checking between min and max clauses to check (inclusive)
-  // printf("c   [%ld] Checking clauses %d to %d\n", 
-  //   current_line + 1, min_clause_to_check, max_clause_to_check);
+  // printf("c   [%d] Checking clauses %d to %d\n", 
+  //   current_line + 1, min_clause_to_check + 1, max_clause_to_check + 1);
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
   int clause_size;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
+    if (is_clause_deleted(i)) continue;
+
     // Evaluate the clause under the substitution
     switch (reduce_subst_mapped(i)) {
       case NOT_REDUCED:
@@ -1046,6 +1226,7 @@ static void check_sr_line(void) {
   // Congrats - the line checked out! Undo the changes we made to the data structures
 candidate_valid:
   unassume_candidate_clause();
+  add_clause_hash(formula_size);
   insert_clause_first_last_update(); // Officially add the clause to the formula
   add_wps_and_perform_up();
 }
@@ -1059,7 +1240,7 @@ static void process_sr_certificate(void) {
 
   // TODO: Allow for proofs that don't derive the empty clause
   // TODO: Handle deletion lines
-  while (!derived_empty_clause) {
+  while (!derived_empty_clause && has_another_line(sr_certificate_file)) {
     if (parse_dsr_line() == ADDITION_LINE) {
       // printf("c Parsed line %d, new clause has size %d and witness with size %d\n", 
       //   current_line + 1, new_clause_size, witness_size);
@@ -1081,10 +1262,17 @@ static void process_sr_certificate(void) {
 }
 
 int main(int argc, char **argv) {
-  if (argc < 3 || argc > 4) {
+  if (argc < 3) {
     print_usage();
-    exit(-1);
+    return 0;
   }
+
+  extern char *optarg;
+  char opt;
+  //while ((opt = getopt(argc, argv, 
+  //        "dhvqQza:A:c:C:f:g:G:l:m:o:r:s:t:T:w:")) != -1) {
+
+  //}
 
   // Open all the necessary files at the start, to ensure that we don't do
   // work unless the files exist. Also might stop race conditions.

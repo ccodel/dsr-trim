@@ -220,34 +220,10 @@ static inline void update_first_last(int lit) {
 }
 
 void insert_lit(int lit) {
-  // Insert the literal into the literal database
-  RESIZE_ARR(lits_db, lits_db_alloc_size, lits_db_size, sizeof(int));
-  lits_db[lits_db_size++] = lit;
-
-  // Resize the other var-indexed arrays if new max would exceed allocated size
-  int var = VAR_FROM_LIT(lit);
-  max_var = MAX(max_var, var);
-  if (max_var >= alpha_subst_alloc_size) {
-    int old_size = alpha_subst_alloc_size;
-    alpha_subst_alloc_size = RESIZE(max_var);
-    alpha = xrealloc(alpha, alpha_subst_alloc_size * sizeof(llong));
-    subst_generations = xrealloc(subst_generations, alpha_subst_alloc_size * sizeof(llong));
-    subst_mappings = xrealloc(subst_mappings, alpha_subst_alloc_size * sizeof(int));
-    lits_first_clause = xrealloc(lits_first_clause, alpha_subst_alloc_size * sizeof(srid_t));
-    lits_last_clause = xrealloc(lits_last_clause, alpha_subst_alloc_size * sizeof(srid_t));
-
-    // Set to default values in the new allocated regions
-    int added_size = alpha_subst_alloc_size - old_size;
-    memset(alpha + old_size, 0, added_size * sizeof(llong));
-    memset(subst_generations + old_size, 0, added_size * sizeof(llong));
-    memset(lits_first_clause + old_size, 0xff, added_size * sizeof(srid_t));
-    memset(lits_last_clause + old_size, 0xff, added_size * sizeof(srid_t));
-  }
-
+  insert_lit_no_first_last_update(lit);
   update_first_last(lit);
 }
 
-// Not inlined, and used as helper for insert_lit() because common operation.
 // Updates max_var and resizes global_data arrays that depend on max_var.
 void insert_lit_no_first_last_update(int lit) {
   // Insert the literal into the literal database
@@ -484,7 +460,7 @@ int assume_negated_clause_under_subst(srid_t clause_index, llong gen) {
 // Evaluate the clause under the substitution. SATISFIED_OR_MUL is satisfied only.
 int reduce_subst_mapped(srid_t clause_index) {
   PRINT_ERR_AND_EXIT_IF(is_clause_deleted(clause_index),
-    "Trying to unit propagate on a deleted clause.");
+    "Trying to apply substitution reduction on a deleted clause.");
 
   int id_mapped_lits = 0, falsified_lits = 0;
   int *start = get_clause_start(clause_index);
@@ -527,18 +503,16 @@ void update_first_last_clause(int lit) {
 
   if (is_clause_deleted(first)) {
     // Scan forward until we find a non-deleted clause containing lit
-    for (first++; first < last; first++) {
+    for (++first; first <= last; first++) {
       if (!is_clause_deleted(first)) {
         // Check the clause for the literal
         int *clause_ptr = get_clause_start(first);
         int *end_ptr = get_clause_start(first + 1);
         for (; clause_ptr < end_ptr; clause_ptr++) {
-          // TODO: Assumes clauses are sorted. Call quicksort() elsewhere?
+          // TODO: For lsr-check, clauses are sorted. Add a sorted flag here?
           if (*clause_ptr == lit) {
             lits_first_clause[lit] = first;
             found_new = 1;
-            break;
-          } else if (*clause_ptr > lit) {
             break;
           }
         }
@@ -563,17 +537,16 @@ void update_first_last_clause(int lit) {
   if (is_clause_deleted(last)) {
     found_new = 0;
     // Scan backward until we find a non-deleted clause containing lit
-    for (last--; last > first; last--) {
+    for (--last; last > first; last--) {
       if (!is_clause_deleted(last)) {
         // Check the clause for the literal
         int *clause_ptr = get_clause_start(last);
         int *end_ptr = get_clause_start(last + 1);
         for (; clause_ptr < end_ptr; clause_ptr++) {
+          // TODO: Clauses are sorted? here too.
           if (*clause_ptr == lit) {
             lits_last_clause[lit] = last;
             found_new = 1;
-            break;
-          } else if (*clause_ptr > lit) {
             break;
           }
         }

@@ -74,4 +74,6 @@ void parse_sr_clause_and_witness(FILE *f) {
   if (subst_index == INT_MAX) {
     subst_index = witness_size;
   }
+
+  // TODO: Sort anything after the pivot in the new clause and remove duplicate literals?
 }

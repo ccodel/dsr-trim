@@ -14,6 +14,57 @@
 #include "global_parsing.h"
 #include "cnf_parser.h"
 
+int parse_clause(FILE *f) {
+  new_clause_size = 0;
+  int parsed_lit = 0;
+  while ((parsed_lit = read_lit(f)) != 0) {
+    int lit = FROM_DIMACS_LIT(parsed_lit);
+    insert_lit_no_first_last_update(lit);
+    new_clause_size++;
+  }
+
+  if (new_clause_size <= 1) {
+    return 0;
+  }
+
+  // Now we sort the literals in the clause
+  // Then, we efficiently remove duplicate literals and detect tautologies
+  int *write_ptr, *read_ptr = get_clause_start(formula_size);
+  qsort((void *) read_ptr, new_clause_size, sizeof(int), intcmp);
+  int is_tautology = 0;
+  int skipped_lits = 0;
+  int lit, next_lit = read_ptr[0];
+
+  for (int i = 0; i < new_clause_size - 1; i++) {
+    read_ptr++;
+    lit = next_lit;
+    next_lit = *read_ptr;
+
+    if (lit == next_lit) {
+      skipped_lits++;
+      if (skipped_lits == 1) {
+        write_ptr = read_ptr - 1;
+      }
+    } else if (lit == NEGATE_LIT(next_lit)) {
+      is_tautology = 1;
+      break;
+    } else if (skipped_lits > 0) {
+      *write_ptr = lit;
+      write_ptr++;
+    }
+  }
+
+  // Write the last literal - this could "write" a duplicate
+  // However, the duplicate is "erased" when the lits_db_size is adjusted below
+  if (skipped_lits > 0) {
+    *write_ptr = next_lit;
+  }
+
+  new_clause_size -= skipped_lits;
+  lits_db_size -= skipped_lits;
+  return is_tautology;
+}
+
 void parse_cnf(FILE *f) {
   srid_t num_clauses;
   int res, num_vars, found_problem_line = 0;
@@ -43,66 +94,16 @@ void parse_cnf(FILE *f) {
   // Now parse in the rest of the CNF file
   // We assume that no more comment lines can appear, and will error if a non-number is parsed
   while (formula_size < num_clauses) {
-    int parsed_lit = 0, clause_size = 0;
-    do {
-      READ_LIT(res, f, &parsed_lit);
-      if (parsed_lit != 0) {
-        int lit = FROM_DIMACS_LIT(parsed_lit);
-        insert_lit(lit);
-        clause_size++;
-      }
-    } while (parsed_lit != 0);
-
-    if (clause_size == 0) {
+    int is_tautology = parse_clause(f);
+    if (new_clause_size == 0) {
       derived_empty_clause = 1;
+      insert_clause();
       break;
-    } else if (clause_size == 1) {
-      insert_clause();
-      continue;
-    }
-
-    // Now we sort the literals in the clause
-    // Then, we efficiently remove duplicate literals and detect tautologies
-    // Tautological clauses are added but are deleted, leaving a "hole"
-    int *write_ptr, *read_ptr = get_clause_start(formula_size);
-    qsort((void *) read_ptr, clause_size, sizeof(int), intcmp);
-    int is_tautology = 0;
-    int skipped_lits = 0;
-    int lit, next_lit = read_ptr[0];
-
-    for (int i = 0; i < clause_size - 1; i++) {
-      read_ptr++;
-      lit = next_lit;
-      next_lit = *read_ptr;
-
-      if (lit == next_lit) {
-        skipped_lits++;
-        if (skipped_lits == 1) {
-          write_ptr = read_ptr - 1;
-        }
-      } else if (lit == NEGATE_LIT(next_lit)) {
-        is_tautology = 1;
-        break;
-      } else if (skipped_lits > 0) {
-        *write_ptr = lit;
-        write_ptr++;
-      }
-    }
-
-    // Write the last literal
-    // This can "write" a duplicate, if the duplicates ended the clause
-    // But the writing is "erased" when the lits_db_size is adjusted below
-    if (skipped_lits > 0) {
-      *write_ptr = next_lit;
-    }
-
-    if (!is_tautology) {
-      lits_db_size -= skipped_lits; // Update the clause's size before adding
-      insert_clause();
-    } else {
-      lits_db_size -= clause_size;
+    } else if (is_tautology) {
       insert_clause();
       delete_clause(formula_size - 1);
+    } else {
+      insert_clause_first_last_update();
     }
   }
 

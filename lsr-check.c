@@ -211,6 +211,8 @@ static void check_line(void) {
   //   - A RAT clause, whose hints derive contradiction
   int rat_hint_start_index = hint_index;
   int matching_hint_index;
+  // printf("c [%d] Checking clauses %d to %d\n", 
+  //  max_line_id, min_clause_to_check + 1, max_clause_to_check + 1);
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
     if (is_clause_deleted(i)) {
       continue; // Skip deleted clauses, nothing to prove
@@ -289,6 +291,7 @@ finish_line:
 static void check_proof() {
   while (!derived_empty_clause && has_another_line(sr_file)) {
     if (parse_lsr_line() == ADDITION_LINE) {
+      // printf("c Checking line %d\n", max_line_id);
       check_line();
     }
   }
