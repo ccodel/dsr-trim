@@ -79,6 +79,7 @@ static int *wp_alloc_sizes = NULL;
 static int *wp_sizes = NULL; // TODO: New name
 
 // Array containing the clause ID "reason" causing the variable to be set. Indexed by variable.
+// The MSB is set during RAT assumption to let global UP clauses be marked globally. (TODO: update docs later.)
 static srid_t *up_reasons = NULL;
 static int up_reasons_alloc_size = 0; // TODO: use alpha_subst_alloc_size for this?
 
@@ -791,16 +792,36 @@ static void add_wps_and_perform_up() {
       // The clause is unit - examine its only literal
       int lit = *clause;
 
-      // Check if it is falsified - if so, then we have a UP derivation
-      if (peval_lit_under_alpha(lit) == FF) {
-        derived_empty_clause = 1;
-        up_falsified_clause = wp_processed_clauses;
-        mark_up_derivation();
-        print_lsr_line();
-        return;
-      } else {
-        // Set its one literal globally to true, and add its negation to the UP queue
-        set_unit_clause(lit, wp_processed_clauses, GLOBAL_GEN);
+      switch (peval_lit_under_alpha(lit)) {
+        case FF:
+          // If the literal is false, then we have a UP refutation
+          derived_empty_clause = 1;
+          up_falsified_clause = wp_processed_clauses;
+          mark_up_derivation();
+          print_lsr_line();
+          return;
+        case TT:;
+          /* If the literal is true, then the unit clause is "duplicated"
+           * by another clause made unit via UP. Since we prefer true unit
+           * clauses in future UP derivations, we replace the clause reason
+           * for `lit` with the current clause ID, and we replace the previous
+           * clause's ID in `unit_clauses`. */
+
+          // TODO: Examine the previous "unit" - if it's unit, do we add the clause again?
+          // TODO: Delete the previous clause, since it has been subsumed?
+          int var = VAR_FROM_LIT(lit);
+          srid_t prev_unit = up_reasons[var];
+          up_reasons[var] = wp_processed_clauses;
+
+          for (int i = 0; i < unit_clauses_size; i++) {
+            if (unit_clauses[i] == prev_unit) {
+              unit_clauses[i] = wp_processed_clauses;
+              break;
+            }
+          }
+          break;
+        default:
+          set_unit_clause(lit, wp_processed_clauses, GLOBAL_GEN);
       }
     } else {
       // The clause has at least two literals - make them the watch pointers
