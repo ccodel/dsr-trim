@@ -23,7 +23,6 @@
 TODOs:
   - Candidate clause minimization. When marking clauses, mark literals as well.
   - Watch pointer de-sizing. (i.e. fewer watch pointers de-size the wp array)
-  - Clause deletion, via hash table.
   - Allow dsr-trim and lsr-check to verify proofs that don't derive the empty clause.
   - Detect if the empty clause was trivially derived after parsing CNF formula.
   - Rewrite PRINT_ERR_AND_EXIT macros to accept %d, etc. format strings.
@@ -151,13 +150,21 @@ static int *clause_id_ht_sizes = NULL;
 // Not initialized to anything (check for NULL under clause_id_ht[i]).
 static int *clause_id_ht_alloc_sizes = NULL;
 
+// Because DSR lines can only delete one clause at a time, but multiple clauses
+// might get deleted after an addition line, we store deleted clause IDs in
+// a buffer. The next time an addition line is parsed, we flush this buffer
+// in a single deletion line.
+static srid_t *deleted_clause_buf = NULL;
+static int deleted_clause_buf_size = 0;
+static int deleted_clause_buf_alloc_size = 0;
+
 static void add_clause_hash(srid_t clause);
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static void print_usage(void) {
-  printf("Usage: ./sr-trim <cnf> <proof> [lsr-proof] [options]\n\n");
-  printf("where [options] are among the following:\n\n");
+static void print_usage(FILE *f) {
+  fprintf(f, "Usage: ./sr-trim <cnf> <proof> [lsr-proof] [options]\n\n");
+  fprintf(f, "where [options] are among the following:\n\n");
   // printf("  -i    Specify that the input proof is in the binary format.\n");
   // printf("  -b      ");
 }
@@ -209,6 +216,10 @@ static void init_sr_trim_data(void) {
   for (srid_t i = 0; i < formula_size; i++) {
     add_clause_hash(i);
   }
+
+  // Allocation of clause deletion buffer to arbitrary size
+  deleted_clause_buf_alloc_size = max_var;
+  deleted_clause_buf = xmalloc(deleted_clause_buf_alloc_size * sizeof(srid_t));
 
   current_line = formula_size;
 }
@@ -349,11 +360,22 @@ static void print_lsr_line(void) {
   write_sr_line_end(lsr_proof_file); // Cap the end of the line with a '0'
 }
 
-static inline void print_lsr_deletion_line(srid_t clause) {
-  // Print the deletion line (TODO: Store later? for backwards checking)
+// Flushes the stored deletion clause IDs, if there are any.
+static inline void print_lsr_deletion_line(void) {
+  if (deleted_clause_buf_size == 0) return;
+
   write_lsr_line_start(lsr_proof_file, current_line, 1);
-  write_clause_id(lsr_proof_file, clause + 1);
+  for (int i = 0; i < deleted_clause_buf_size; i++) {
+    write_clause_id(lsr_proof_file, deleted_clause_buf[i] + 1);
+  }
+
   write_sr_line_end(lsr_proof_file);
+  deleted_clause_buf_size = 0;
+}
+
+static void add_deleted_clause_to_buf(srid_t clause) {
+  RESIZE_ARR(deleted_clause_buf, deleted_clause_buf_alloc_size, deleted_clause_buf_size, sizeof(srid_t));
+  deleted_clause_buf[deleted_clause_buf_size++] = clause;
 }
 
 static inline void clear_lsr_line(void) {
@@ -1151,8 +1173,7 @@ static void get_and_remove_clause_hash(void) {
 
         // Remove the literals for the parsed deletion clause in lits_db
         lits_db_size -= new_clause_size;
-
-        print_lsr_deletion_line(candidate_match);
+        add_deleted_clause_to_buf(candidate_match);
         return;
       }
     }
@@ -1177,6 +1198,7 @@ static inline int parse_dsr_line(void) {
       get_and_remove_clause_hash();
       break;
     case ADDITION_LINE:
+      print_lsr_deletion_line();
       parse_sr_clause_and_witness(sr_certificate_file);
       break;
     default:
@@ -1284,8 +1306,8 @@ static void process_sr_certificate(void) {
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    print_usage();
-    return 0;
+    print_usage((argc == 1) ? stdout : stderr);
+    return (argc != 1);
   }
 
   extern char *optarg;
