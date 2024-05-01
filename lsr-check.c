@@ -35,8 +35,8 @@ static FILE *sr_file = NULL;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static void print_usage(void) {
-  printf("c Usage: ./sr-check <cnf-file> <sr-file>\n");
+static void print_usage(FILE *f) {
+  fprintf(f, "c Usage: ./lsr-check <cnf-file> <sr-file>\n");
 }
 
 // Initializes check-specific data structures. Call after parsing the CNF file.
@@ -202,9 +202,6 @@ static void check_line(void) {
   // Lemma: new_clause_size > 0
 
   assume_subst();
-  PRINT_ERR_AND_EXIT_IF(min_clause_to_check < 0 || max_clause_to_check > formula_size
-    || min_clause_to_check > max_clause_to_check,
-      "Clause range to check is inconsistent.");
 
   // Now for each clause, check that it is either
   //   - Satisfied or not reduced by the witness
@@ -302,7 +299,7 @@ static void check_proof() {
 
 int main(int argc, char *argv[]) {
   if (argc != 3) {
-    print_usage();
+    print_usage((argc == 1) ? stdout : stderr);
     PRINT_ERR_AND_EXIT("Incorrect number of arguments.");
   }
 
