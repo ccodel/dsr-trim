@@ -27,13 +27,13 @@ static int read_lsr = 1;
 
 static FILE *input, *output;
 
-static void print_usage(void) {
-  printf("Usage: ./decompress <input_file> [output_file] [option]\n\n");
-  printf("where [option] is one of the following:\n\n");
-  printf("  -d   Decompress a DSR file.\n");
-  printf("  -l   Decompress an LSR file. (This is the default behavior.)\n\n");
-  printf("When an output file is not provided, stdout is used.\n");
-  printf("\n");
+static void print_usage(FILE *f) {
+  fprintf(f, "Usage: ./decompress <input_file> [output_file] [option]\n\n");
+  fprintf(f, "where [option] is one of the following:\n\n");
+  fprintf(f, "  -d   Decompress a DSR file.\n");
+  fprintf(f, "  -l   Decompress an LSR file. (This is the default behavior.)\n\n");
+  fprintf(f, "When an output file is not provided, stdout is used.\n");
+  fprintf(f, "\n");
 }
 
 static void decompress_dsr_input(void) {
@@ -78,8 +78,8 @@ static void decompress_lsr_input(void) {
 
 int main(int argc, char *argv[]) {
   if (argc < 2 || argc > 4) {
-    print_usage();
-    return 0;
+    print_usage((argc == 1) ? stdout : stderr);
+    return (argc != 1);
   }
 
   // Open the files right away, so we fail fast if they don't exist
@@ -102,7 +102,7 @@ int main(int argc, char *argv[]) {
       case 'l': read_lsr = 1; break;
       default:
         fprintf(stderr, "Error: Unknown option: %c\n", opt);
-        print_usage();
+        print_usage(stderr);
         return 1;
     }
   }
