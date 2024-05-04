@@ -638,6 +638,15 @@ static void set_unit_clause(int lit, srid_t clause, llong gen) {
   resize_units();
   unit_literals[unit_literals_size++] = lit;
   unit_clauses[unit_clauses_size++] = clause;
+
+  // If we are setting a global unit, then any clause that has a watch pointer
+  // on this literal can be safely deleted
+  if (state == GLOBAL_UP) {
+    // TODO: This is actually where deletions take place.
+    // Reorder order of functions to do it here.
+    // Then, handle case where we eagerly delete a clause, and then the .dsr
+    // file wants to delete the same clause. 
+  }
 }
 
 // Adds a watch pointer for the lit at the specified clause ID
@@ -685,6 +694,170 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
 
   // TODO: If below some threshold of size/alloc_sizes, shrink the array
 }
+
+////////////////////////////////////////////////////////////////////////////////
+
+// Hashes the provided clause ID.
+// The hash function is commutative, meaning that no matter how the clause is
+// permuted, the clause will return the same hash value.
+// (Could be computed as the literals are parsed and stored, but because only
+// dsr-trim hashes clauses, this is better from an encapsulation perspective.)
+static unsigned int hash_clause(srid_t clause) {
+  unsigned int sum = 0, prod = 1, xor = 0;
+  int *clause_ptr, *clause_end;
+
+  // Slightly API-breaking, but since we don't compute these as we parse the
+  // clauses, and we store almost-clauses in the formula, we need to know
+  // if the clause we are hashing is the newest one or not.
+  clause_ptr = get_clause_start(clause);
+  if (clause == formula_size) {
+    clause_end = lits_db + lits_db_size;
+  } else {
+    clause_end = get_clause_start(clause + 1);
+  }
+
+  for (; clause_ptr < clause_end; clause_ptr++) {
+    int lit = *clause_ptr;
+    sum += lit;
+    prod *= lit;
+    xor ^= lit;
+  }
+
+  // Hash function borrowed from dpr-trim
+  return (1023 * sum + prod ^ (31 * xor)) % clause_id_ht_alloc_size;
+}
+
+static void add_clause_hash(srid_t clause) {
+  // For now, we don't resize the hash table. TODO: implement resizing.
+  // TODO: Implement de-sizing when clauses get deleted.
+  unsigned int hash = hash_clause(clause);
+
+  // Allocate a hash table bucket, if it doesn't exist yet
+  if (clause_id_ht[hash] == NULL) {
+    clause_id_ht[hash] = xmalloc(INIT_CLAUSE_ID_BUCKET_SIZE * sizeof(srid_t));
+    clause_id_ht_sizes[hash] = 0;
+    clause_id_ht_alloc_sizes[hash] = INIT_CLAUSE_ID_BUCKET_SIZE;
+  }
+
+  // Resize the bucket if we've run out of space 
+  if (clause_id_ht_sizes[hash] >= clause_id_ht_alloc_sizes[hash]) {
+    clause_id_ht_alloc_sizes[hash] = RESIZE(clause_id_ht_sizes[hash]);
+    clause_id_ht[hash] = xrealloc(clause_id_ht[hash], 
+      clause_id_ht_alloc_sizes[hash] * sizeof(srid_t));
+  }
+
+  // Add the clause to the bucket
+  clause_id_ht[hash][clause_id_ht_sizes[hash]++] = clause;
+}
+
+// TODO: Rename function.
+// Deletes a specified clause from the hash table, removes its watch pointers,
+// and deletes the clause from the formula.
+// Assumes that the clause is not a global unit clause.
+static void delete_clause_bookkeeping(srid_t clause) {
+  int *clause_start = get_clause_start(clause);
+  int *clause_end = get_clause_start(clause + 1);
+  const int clause_size = clause_end - clause_start;
+  if (clause_size == 1) { return; }
+
+  unsigned int hash = hash_clause(clause);
+  const srid_t *bucket = clause_id_ht[hash];
+  const int bucket_size = clause_id_ht_sizes[hash];
+  for (int i = 0; i < bucket_size; i++) {
+    if (bucket[i] == clause) {
+      if (bucket_size > 1) {
+        clause_id_ht[hash][i] = bucket[bucket_size - 1];
+      }
+
+      clause_id_ht_sizes[hash]--;
+
+      remove_wp_for_lit(clause_start[0], clause);
+      remove_wp_for_lit(clause_start[1], clause);
+      delete_clause(clause);
+      add_deleted_clause_to_buf(clause);
+      return;
+    }
+  }
+
+  PRINT_ERR_AND_EXIT("Couldn't find clause in hash table.");
+}
+
+// TODO: Rename this function.
+// Finds and deletes a matching clause (i.e., a permutation of the new clause).
+// The deletion is reflected in the hash table and in `lits_db`/`formula`.
+// Errors and exits if no matching clause exists.
+// Assumes that the clause is not unit (i.e., it has at least two literals).
+static void get_and_remove_clause_hash(void) {
+  // TODO: Implement de-sizing
+  unsigned int hash = hash_clause(formula_size);
+  const int *clause_ptr = get_clause_start(formula_size);
+
+  // Now iterate through all clauses in the bucket to find a matching clause
+  const srid_t *bucket = clause_id_ht[hash];
+  const int bucket_size = clause_id_ht_sizes[hash];
+  for (int i = 0; i < bucket_size; i++) {
+    srid_t candidate_match = bucket[i];
+
+    // Only check for matching literals if the sizes match
+    if (get_clause_size(candidate_match) == new_clause_size) {
+      // Most clauses are small (<= 20 lits), so O(n^2) search is good enough
+      int *candidate_start = get_clause_start(candidate_match);
+      int *candidate_end = get_clause_start(candidate_match + 1);
+      int found_match = 1;
+      for (int *ptr = candidate_start; ptr < candidate_end; ptr++) {
+        int new_lit = *ptr;
+        int found_lit = 0;
+        for (int j = 0; j < new_clause_size; j++) {
+          if (new_lit == clause_ptr[j]) {
+            found_lit = 1;
+            break;
+          }
+        }
+
+        if (!found_lit) {
+          found_match = 0;
+          break;
+        }
+      }
+
+      if (found_match) {
+        // Check if the clause is a global unit clause
+        // If it is, error, since we don't want to handle re-running UP
+        for (int j = 0; j < unit_clauses_size; j++) {
+          if (unit_clauses[j] == candidate_match) {
+            PRINT_ERR_AND_EXIT("Deleted clause is a global unit.");
+          }
+        }
+
+        // The matching clause wasn't unit, so we delete it and its hash
+        if (bucket_size > 1) {
+          clause_id_ht[hash][i] = bucket[(bucket_size - 1)];
+        }
+        
+        clause_id_ht_sizes[hash]--;
+
+        // Remove the watch pointers for the matching clause
+        // Our invariant is that the first two literals are watch pointers
+        // Do this before deleting the clause from the formula, because
+        // otherwise the garbage collector can move the literals underneath
+        remove_wp_for_lit(candidate_start[0], candidate_match);
+        remove_wp_for_lit(candidate_start[1], candidate_match);
+
+        // Delete the identified matching clause from the formula
+        delete_clause(candidate_match);
+
+        // Remove the literals for the parsed deletion clause in lits_db
+        lits_db_size -= new_clause_size;
+        add_deleted_clause_to_buf(candidate_match);
+        return;
+      }
+    }
+  }
+
+  PRINT_ERR_AND_EXIT("No matching clause found for deletion.");
+}
+
+////////////////////////////////////////////////////////////////////////////////
 
 // Performs unit propagation. Sets the falsified clause (the contradiction) to
 // up_falsified_clause. -1 if not found.
@@ -751,24 +924,57 @@ static void perform_up(llong gen) {
 
       int first_wp = clause[0];
 
-      // If the first watch pointer is true, then the clause is satisfied (not unit)
+      // If the first watch pointer is true, then either:
+      // - If state == GLOBAL_UP, then we can delete the clause
+      //     This is because there exists enough units to satisfy the clause,
+      //     and so this clause will never become unit or falsified.
+      // - Otherwise, we continue
       if (peval_lit_under_alpha(first_wp) == TT) {
+        if (state == GLOBAL_UP) {
+          // Check if the clause is unit on this literal
+          // If not, delete the clause
+          int wp_var = VAR_FROM_LIT(first_wp);
+          if (up_reasons[wp_var] != clause_id) {
+            delete_clause_bookkeeping(clause_id);
+          }
+        }
+
         continue;
       }
 
       // Otherwise, scan the clause for a non-false literal
-      int found_new_wp = 0;
+      int found_new_wp = 0, deleted_clause = 0;
       for (int k = 2; k < clause_size; k++) {
-        if (peval_lit_under_alpha(clause[k]) != FF) {
-          clause[1] = clause[k];
-          clause[k] = lit;
-          add_wp_for_lit(clause[1], clause_id);
-          // Instead of calling remove_wp_for_lit, we can more intelligently swap
-          wp_list[j] = wp_list[wp_sizes[lit] - 1];
-          wp_sizes[lit]--;
-          found_new_wp = 1;
+        int k_lit = clause[k];
+        switch (peval_lit_under_alpha(k_lit)) {
+          case FF: continue;
+          case TT:
+            if (state == GLOBAL_UP) {
+              int var = VAR_FROM_LIT(k_lit);
+              if (up_reasons[var] != clause_id) {
+                delete_clause_bookkeeping(clause_id);
+                deleted_clause = 1;
+                break;
+              }
+            }
+          default: // Waterfall into the normal case
+            clause[1] = k_lit;
+            clause[k] = lit;
+            add_wp_for_lit(clause[1], clause_id);
+            // Instead of calling remove_wp_for_lit, we can more intelligently swap
+            wp_list[j] = wp_list[wp_sizes[lit] - 1];
+            wp_sizes[lit]--;
+            found_new_wp = 1;
+            break;
+        }
+
+        if (found_new_wp || deleted_clause) {
           break;
         }
+      }
+
+      if (deleted_clause) {
+        continue;
       }
 
       if (found_new_wp) {
@@ -1051,135 +1257,6 @@ static void unassume_RAT_clause(srid_t clause_index) {
   }
 
   decrement_state();
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-// Hashes the provided clause ID.
-// The hash function is commutative, meaning that no matter how the clause is
-// permuted, the clause will return the same hash value.
-// (Could be computed as the literals are parsed and stored, but because only
-// dsr-trim hashes clauses, this is better from an encapsulation perspective.)
-static unsigned int hash_clause(srid_t clause) {
-  unsigned int sum = 0, prod = 1, xor = 0;
-  int *clause_ptr, *clause_end;
-
-  // Slightly API-breaking, but since we don't compute these as we parse the
-  // clauses, and we store almost-clauses in the formula, we need to know
-  // if the clause we are hashing is the newest one or not.
-  clause_ptr = get_clause_start(clause);
-  if (clause == formula_size) {
-    clause_end = lits_db + lits_db_size;
-  } else {
-    clause_end = get_clause_start(clause + 1);
-  }
-
-  for (; clause_ptr < clause_end; clause_ptr++) {
-    int lit = *clause_ptr;
-    sum += lit;
-    prod *= lit;
-    xor ^= lit;
-  }
-
-  // Hash function borrowed from dpr-trim
-  return (1023 * sum + prod ^ (31 * xor)) % clause_id_ht_alloc_size;
-}
-
-static void add_clause_hash(srid_t clause) {
-  // For now, we don't resize the hash table. TODO: implement resizing.
-  // TODO: Implement de-sizing when clauses get deleted.
-  unsigned int hash = hash_clause(clause);
-
-  // Allocate a hash table bucket, if it doesn't exist yet
-  if (clause_id_ht[hash] == NULL) {
-    clause_id_ht[hash] = xmalloc(INIT_CLAUSE_ID_BUCKET_SIZE * sizeof(srid_t));
-    clause_id_ht_sizes[hash] = 0;
-    clause_id_ht_alloc_sizes[hash] = INIT_CLAUSE_ID_BUCKET_SIZE;
-  }
-
-  // Resize the bucket if we've run out of space 
-  if (clause_id_ht_sizes[hash] >= clause_id_ht_alloc_sizes[hash]) {
-    clause_id_ht_alloc_sizes[hash] = RESIZE(clause_id_ht_sizes[hash]);
-    clause_id_ht[hash] = xrealloc(clause_id_ht[hash], 
-      clause_id_ht_alloc_sizes[hash] * sizeof(srid_t));
-  }
-
-  // Add the clause to the bucket
-  clause_id_ht[hash][clause_id_ht_sizes[hash]++] = clause;
-}
-
-// Finds and deletes a matching clause (i.e., a permutation of the new clause).
-// The deletion is reflected in the hash table and in `lits_db`/`formula`.
-// Errors and exits if no matching clause exists.
-// Assumes that the clause is not unit (i.e., it has at least two literals).
-static void get_and_remove_clause_hash(void) {
-  // TODO: Implement de-sizing
-  unsigned int hash = hash_clause(formula_size);
-  const int *clause_ptr = get_clause_start(formula_size);
-
-  // Now iterate through all clauses in the bucket to find a matching clause
-  const srid_t *bucket = clause_id_ht[hash];
-  const int bucket_size = clause_id_ht_sizes[hash];
-  for (int i = 0; i < bucket_size; i++) {
-    srid_t candidate_match = bucket[i];
-
-    // Only check for matching literals if the sizes match
-    if (get_clause_size(candidate_match) == new_clause_size) {
-      // Most clauses are small (<= 20 lits), so O(n^2) search is good enough
-      int *candidate_start = get_clause_start(candidate_match);
-      int *candidate_end = get_clause_start(candidate_match + 1);
-      int found_match = 1;
-      for (int *ptr = candidate_start; ptr < candidate_end; ptr++) {
-        int new_lit = *ptr;
-        int found_lit = 0;
-        for (int j = 0; j < new_clause_size; j++) {
-          if (new_lit == clause_ptr[j]) {
-            found_lit = 1;
-            break;
-          }
-        }
-
-        if (!found_lit) {
-          found_match = 0;
-          break;
-        }
-      }
-
-      if (found_match) {
-        // Check if the clause is a global unit clause
-        // If it is, error, since we don't want to handle re-running UP
-        for (int j = 0; j < unit_clauses_size; j++) {
-          if (unit_clauses[j] == candidate_match) {
-            PRINT_ERR_AND_EXIT("Deleted clause is a global unit.");
-          }
-        }
-
-        // The matching clause wasn't unit, so we delete it and its hash
-        if (bucket_size > 1) {
-          clause_id_ht[hash][i] = bucket[(bucket_size - 1)];
-        }
-        
-        clause_id_ht_sizes[hash]--;
-
-        // Remove the watch pointers for the matching clause
-        // Our invariant is that the first two literals are watch pointers
-        // Do this before deleting the clause from the formula, because
-        // otherwise the garbage collector can move the literals underneath
-        remove_wp_for_lit(candidate_start[0], candidate_match);
-        remove_wp_for_lit(candidate_start[1], candidate_match);
-
-        // Delete the identified matching clause from the formula
-        delete_clause(candidate_match);
-
-        // Remove the literals for the parsed deletion clause in lits_db
-        lits_db_size -= new_clause_size;
-        add_deleted_clause_to_buf(candidate_match);
-        return;
-      }
-    }
-  }
-
-  PRINT_ERR_AND_EXIT("No matching clause found for deletion.");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
