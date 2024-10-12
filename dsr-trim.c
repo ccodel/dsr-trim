@@ -52,6 +52,14 @@ Potential optimizations:
 #define GLOBAL_GEN                (LLONG_MAX)
 #define ASSUMED_GEN               (LLONG_MAX - 1)
 
+typedef enum sr_checking_mode {
+  FORWARDS_CHECKING_MODE,
+  BACKWARDS_CHECKING_MODE,
+} cmode_t;
+
+// The checking mode. By default, it is set to `BACKWARDS_CHECKING_MODE`.
+static cmode_t cmode = BACKWARDS_CHECKING_MODE;
+
 // SR trim as a state machine, for different parts of UP.
 typedef enum sr_trim_state {
   GLOBAL_UP,
@@ -156,7 +164,31 @@ static srid_t *deleted_clause_buf = NULL;
 static int deleted_clause_buf_size = 0;
 static int deleted_clause_buf_alloc_size = 0;
 
+// Must be forward-declared because `init_sr_trim_data()` needs it,
+// but hash-table code is gathered lower in the file.
 static void add_clause_hash(srid_t clause);
+
+// Backwards checking minimizes the size of the resulting LSR proof by
+// removing unreferenced redundant clauses. Proof checking proceeds as normal,
+// 
+
+/* Questions for Marijn:
+
+  1. I notice that drat/dpr-trim parse the entire DRAT/DPR proof first to check
+     if the empty clause is added. Is this because backwards checking can't
+     be done on a valid-but-not-unsat proof?
+
+*/
+
+// During backwards checing, we mark clauses as being active or not.
+// Active clauses are those clauses that were not involved in any UPs.
+// Uses `formula_size` and `formula_alloc_size` for allocation.
+// TODO: Figure out if a `char*` is the best structure for this.
+static char *clause_markings = NULL;
+
+// TODO: add first-last mentions for clauses (like for literals)
+//       to enable eager deletion
+
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -684,10 +716,10 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
   // TODO: If below some threshold of size/alloc_sizes, shrink the array
 }
 
-// Performs unit propagation. Sets the falsified clause (the contradiction) to
-// up_falsified_clause. -1 if not found.
-// Any literals found are set to the provided generation value.
-static void perform_up(llong gen) {
+// Performs unit propagation. Sets `up_falsified_clause` to the ID of
+// the falsified clause (the contradiction) if found, and to `-1` if not.
+// Any unit literals found are set to the provided generation value.
+static int perform_up(llong gen) {
   /* The unit propagation algorithm is quite involved and immersed in invariants.
    * Buckle up, cowboys.
    *
@@ -725,23 +757,44 @@ static void perform_up(llong gen) {
     default: PRINT_ERR_AND_EXIT("Corrupted state.");
   }
 
-  // TODO: Better way of doing this, since the size may increase as we do UP?
-  // TODO: When doing backwards checking, use clauses that are already marked
+  // Clear the clause ID of the previous clause that caused UP contradiction
   up_falsified_clause = -1;
-  for (; i < unit_literals_size; i++) {
+
+  // Our unit propagation strategy
+  int skip_unmarked_clauses = 0;
+  int skipped_an_unmarked_clause = 0;
+
+  // Depending on whether we are skipping unmarked clauses,
+  // we adjust the start index of our search
+  int up_start_index = i;
+  int use_alternate_up = (cmode == BACKWARDS_CHECKING_MODE);
+
+restart_up:
+  // Swap UP modes if we backwards check (initial value is 1)
+  skip_unmarked_clauses ^= use_alternate_up;
+  skipped_an_unmarked_clause = 0;
+
+  for (i = up_start_index; i < unit_literals_size; i++) {
     int lit = NEGATE_LIT(unit_literals[i]);
 
     // Iterate through its watch pointers and see if the clause becomes unit
     srid_t *wp_list = wps[lit];
     for (int j = 0; j < wp_sizes[lit]; j++) {
       srid_t clause_id = wp_list[j];
+
+      // Skip unmarked clauses, if requested
+      if (skip_unmarked_clauses && clause_markings[clause_id] == 0) {
+        skipped_an_unmarked_clause = 1;
+        continue;
+      }
+
       int *clause = get_clause_start(clause_id);
       const int clause_size = get_clause_size(clause_id);
       
       // Lemma: the clause is not a unit clause (yet), and its watch pointers are 
       // the first two literals in the clause (we may reorder literals here).
 
-      // Place the other watch pointer first
+      // Place the other watch pointer first, (the falsified lit goes in the first index)
       if (clause[0] == lit) {
         clause[0] = clause[1];
         clause[1] = lit;
@@ -758,6 +811,7 @@ static void perform_up(llong gen) {
       int found_new_wp = 0;
       for (int k = 2; k < clause_size; k++) {
         if (peval_lit_under_alpha(clause[k]) != FF) {
+          // The kth literal is non-false, so swap it with the first wp
           clause[1] = clause[k];
           clause[k] = lit;
           add_wp_for_lit(clause[1], clause_id);
@@ -774,20 +828,28 @@ static void perform_up(llong gen) {
         continue;  
       }
 
-      // We didn't find a replacement watch pointer. Is the first watch pointer false?
+      // We didn't find a replacement watch pointer, meaning literals [1..size] are false
+      // Is the first watch pointer false?
       if (peval_lit_under_alpha(first_wp) == FF) {
+        // Since all literals are false, we found a UP contradiction
         // printf("c       [%ld, UP] Found contradiction in clause %d\n", current_line + 1, clause_id + 1);
         up_falsified_clause = clause_id;
         return;
       } else {
+        // The first literal is unassigned, so we have a unit clause
         set_unit_clause(first_wp, clause_id, gen); // Add as a unit literal
+
+        // If we are not skipping unmarked clauses
       }
     }
   }
-  
+
+  // TODO: Figure out if this needs to get done.  
   if (state == GLOBAL_UP) {
     global_up_literals_index = unit_literals_size;
   }
+
+  return skipped_clauses;
 }
 
 // Adds watch pointers / sets units and performs unit propagation.
