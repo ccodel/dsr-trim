@@ -23,8 +23,6 @@
 TODOs:
   - Candidate clause minimization. When marking clauses, mark literals as well.
   - Watch pointer de-sizing. (i.e. fewer watch pointers de-size the wp array)
-  - Allow dsr-trim and lsr-check to verify proofs that don't derive the empty clause.
-  - Detect if the empty clause was trivially derived after parsing CNF formula.
   - Rewrite PRINT_ERR_AND_EXIT macros to accept %d, etc. format strings.
   - Double-check that get_clause_start() with deletions are used correctly.
       Don't want to use a deleted clause (more important for lsr-check).

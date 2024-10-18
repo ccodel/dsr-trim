@@ -294,7 +294,13 @@ static void check_proof() {
   }
 
   fclose(sr_file);
-  printf("s VERIFIED UNSAT\n");
+
+  if (derived_empty_clause == 0) {
+    printf("s VALID\n");
+    printf("c The proof was valid, but the empty clause was not derived.\n");
+  } else {
+    printf("s VERIFIED UNSAT\n");
+  }
 }
 
 int main(int argc, char *argv[]) {
