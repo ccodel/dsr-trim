@@ -47,6 +47,10 @@ Potential optimizations:
 #define INIT_CLAUSE_ID_HT_SIZE          (100000)
 #define INIT_CLAUSE_ID_BUCKET_SIZE      (8)
 
+// During backwards checking, literals store which clauses they are in.
+// We store these in dynamically resizing arrays, which start with this size.
+#define INIT_LIT_CLAUSES_SIZE           (4)
+
 // When setting literals "globally" under initial unit propagation, we use the
 // largest possible generation value.
 #define GLOBAL_GEN                (LLONG_MAX)
@@ -55,10 +59,10 @@ Potential optimizations:
 typedef enum sr_checking_mode {
   FORWARDS_CHECKING_MODE,
   BACKWARDS_CHECKING_MODE,
-} cmode_t;
+} checking_mode_t;
 
 // The checking mode. By default, it is set to `BACKWARDS_CHECKING_MODE`.
-static cmode_t cmode = BACKWARDS_CHECKING_MODE;
+static checking_mode_t ch_mode = BACKWARDS_CHECKING_MODE;
 
 // SR trim as a state machine, for different parts of UP.
 typedef enum sr_trim_state {
@@ -69,7 +73,8 @@ typedef enum sr_trim_state {
 
 static state_t state;
 
-// 2D array of watch pointers, indexed by literals. Initialized to NULL for each literal.
+// 2D array of watch pointers, indexed by literals.
+// Initialized to NULL for each literal.
 static srid_t **wps = NULL;
 
 // Allocated size of the 2D array of watch pointers.
@@ -128,9 +133,9 @@ static int RAT_marked_vars_size = 0;
 static int witness_has_direct_mapped_subst_lit = 0;
 
 // We store the RAT derivations as they come in "printable" format.
-static srid_t *lsr_line = NULL;
-static int lsr_line_alloc_size = 0;
-static int lsr_line_size = 0;
+// static srid_t *lsr_line = NULL;
+// static int lsr_line_alloc_size = 0;
+// static int lsr_line_size = 0;
 
 static FILE *sr_certificate_file = NULL;
 static srid_t current_line = 0; // For printing the correct line ID
@@ -168,26 +173,105 @@ static int deleted_clause_buf_alloc_size = 0;
 // but hash-table code is gathered lower in the file.
 static void add_clause_hash(srid_t clause);
 
-// Backwards checking minimizes the size of the resulting LSR proof by
-// removing unreferenced redundant clauses. Proof checking proceeds as normal,
-// 
+/*
+ * Backwards checking:
+ */
 
-/* Questions for Marijn:
+// The highest 0-indexed line ID that each clause appears in, in the proof.
+// By default, initialized to -1.
+// These IDs are set during backwards checking.
+// First, any clause that appears in the UP refutation of the empty clause
+// is marked.
+//
+// Uses `formula_size` and `formula_alloc_size` for allocation purposes.
+static srid_t *clause_last_used_id = NULL;
 
-  1. I notice that drat/dpr-trim parse the entire DRAT/DPR proof first to check
-     if the empty clause is added. Is this because backwards checking can't
-     be done on a valid-but-not-unsat proof?
+// Flag for whether we encountered a new marked clause during UP, during
+// backwards checking.
+//
+// We eagerly delete clauses that are no longer needed. We record their
+// IDs backwards in a stack, but to mark off when a new set of clauses are
+// marked, we record the first grouping with the negative of its ID.
+static char encountered_marked_clause = 0;
+
+static srid_t *marked_clause_stack = NULL;
+static int marked_clause_stack_size = 0;
+static int marked_clause_stack_alloc_size = 0;
+
+// Stores the index into each unit literal's watch pointer list
+// to reduce duplicate checks on SAT/unit clauses during backwards checking
+// unit propagation.
+//
+// Is kept as NULL if not doing backward checking.
+// See `set_unit_literal`.
+static int *unit_literals_wp_up_indexes = NULL;
+
+// 2-D array of witnesses, indexed by proof line minus orig formula size
+// Carefully replace the global `witness`, `witness_size` and
+// `witness_alloc_size` when calling `parse_sr_clause_and_witness()`.
+static int *witnesses = NULL;
+
+typedef struct witness_info {
+  int size;
+  int subst_index;
+} winfo_t;
+
+static winfo_t *winfos = NULL;
+
+// Stores the tokens for the generated LSR hints.
+// Used for backwards proof checking and printing.
+//
+// During backward checking, clauses are stored in the formula,
+// witnesses are stored in the 
+static srid_t *hints = NULL;
+static int hints_size = 0;
+static int hints_alloc_size = 0;
+static int *hint_indexes = NULL;
+
+static srid_t **lit_clauses = NULL;
+static int *lit_clauses_sizes = NULL;
+static int *lit_clauses_alloc_sizes = NULL;
+
+/*
+
+Notes from 10/31:
+
+- We assume that the clause IDs are strictly monotonically increasing,
+  as a matter of data structure design. In order to accomodate for
+  non-increasing clause IDs, we would need to have an actual 2D array
+  for the literals, or we have an {index, size} pair for each clause.
+  If we do try to keep a 1D flattened array,
+  garbage collection would be more challenging, because clauses can
+  "overwrite" other clauses, so there's no guarantee that we can
+  re-order the clauses.
+    - This is actually an extremely safe assumption, because the DSR files
+      don't refer to clause IDs at all. So we can safely assume that the
+      candidate clauses have IDs that are not only monotonically increasing,
+      but increase by 1 each time.
+
+- Refactor needed for how the hints are computed and stored.
+  Right now the API is hard-coded for emitting proof lines as they
+  are checked. But it might be faster to store the hints as they are
+  computed, and then read them off into IO. (It might also be faster
+  to store all the hints for *all* lines during forward checking,
+  and then emit them at the end.  But this probably gives only marginal
+  benefits over emitting line-by-line, and with the downside of
+  storing all the hints in memory anyways.)
+  In any case, redo the API to store/calculate the line/hints,
+  but emit/move on otherwise.
+    - Another thought: use multithreading to read the proof file
+      and another to check the lines. But this introduces mutexes/
+      synch problems, which the underlying IO system might take care of
+      anyway (i.e., prefetching blocks, etc.)
+
+- Ignore deletions during backwards checking.
+  Have a flag to emit a warning only once?
+
+- Index into line properties using (current_line - cnf_num_clauses)?
+  Then the indexes would be filled right-to-left, even as the hints,
+  etc. are filled left-to-right. 
 
 */
-
-// During backwards checing, we mark clauses as being active or not.
-// Active clauses are those clauses that were not involved in any UPs.
-// Uses `formula_size` and `formula_alloc_size` for allocation.
-// TODO: Figure out if a `char*` is the best structure for this.
-static char *clause_markings = NULL;
-
-// TODO: add first-last mentions for clauses (like for literals)
-//       to enable eager deletion
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -197,6 +281,8 @@ static void print_usage(FILE *f) {
   fprintf(f, "where [options] are among the following:\n\n");
   // printf("  -i    Specify that the input proof is in the binary format.\n");
   // printf("  -b      ");
+  fprintf(f, "  -b    Enable backwards checking. (Default behavior)\n");
+  fprintf(f, "  -f    Force forwards checking.\n");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -233,8 +319,8 @@ static void init_sr_trim_data(void) {
   RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
 
   // Allocate space for the printable LSR line, for RAT derivations.
-  lsr_line_alloc_size = formula_size;
-  lsr_line = xmalloc(lsr_line_alloc_size * sizeof(srid_t));
+  // lsr_line_alloc_size = formula_size;
+  // lsr_line = xmalloc(lsr_line_alloc_size * sizeof(srid_t));
 
   // Allocate space for the clause id hash table
   clause_id_ht_alloc_size = INIT_CLAUSE_ID_HT_SIZE;
@@ -250,6 +336,20 @@ static void init_sr_trim_data(void) {
   // Allocation of clause deletion buffer to arbitrary size
   deleted_clause_buf_alloc_size = max_var;
   deleted_clause_buf = xmalloc(deleted_clause_buf_alloc_size * sizeof(srid_t));
+
+  // If we are backwards checking, allocate additional structures
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    clause_last_used_id = xmalloc(formula_size * sizeof(srid_t));
+    memset(clause_last_used_id, 0xff, formula_size * sizeof(srid_t));
+
+    marked_clause_stack_alloc_size = formula_size / 4;
+    marked_clause_stack = xmalloc(marked_clause_stack_alloc_size * sizeof(srid_t));
+    marked_clause_stack_size = 0;
+
+    unit_literals_wp_up_indexes = xcalloc(units_alloc_size, sizeof(int));
+
+    // TODO: allocate more
+  }
 
   current_line = formula_size;
 }
@@ -273,26 +373,52 @@ static void resize_sr_trim_data(void) {
 
 static inline void resize_units(void) {
   if (unit_literals_size >= units_alloc_size) {
+    int old_size = units_alloc_size;
     units_alloc_size = RESIZE(unit_literals_size);
     unit_literals = xrealloc(unit_literals, units_alloc_size * sizeof(int));
     unit_clauses = xrealloc(unit_clauses, units_alloc_size * sizeof(srid_t));
+
+    if (ch_mode == BACKWARDS_CHECKING_MODE) {
+      unit_literals_wp_up_indexes = xrealloc(
+        unit_literals_wp_up_indexes, units_alloc_size * sizeof(int));
+      memset(unit_literals_wp_up_indexes + old_size, 0,
+        (units_alloc_size - old_size) * sizeof(int));
+    }
   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Prints the candidate clause (the one to add to the formula) to the LSR file.
-// Doesn't print anything if the empty clause has been derived.
-static void print_clause(void) {
-  if (!derived_empty_clause) {
-    for (srid_t i = formula[formula_size]; i < lits_db_size; i++) {
-      write_lit(lsr_proof_file, TO_DIMACS_LIT(lits_db[i]));
-    }
+// Prints the specified clause from the formula to the LSR proof file.
+static void print_clause(srid_t clause_id) {
+  // TODO: Determine if, after proving the empty clause,
+  // we close off the formula, etc.
+  int *clause = get_clause_start_unsafe(clause_id);
+  const int size = get_clause_size(clause_id);
+
+  for (int i = 0; i < size; i++) {
+    const int lit = clause[i];
+    write_lit(lsr_proof_file, TO_DIMACS_LIT(lit));
   }
 }
 
 // Prints the SR witness to the LSR file.
 // If the witness is empty, then nothing is printed.
+/** @brief Prints the current SR witness to the LSR proof file.
+ * 
+ * During forward proof checking, the current witness gets parsed into
+ * the global data pointer `witness`, with corresponding size `witness_size`.
+ * Before parsing a new line, this witness gets cleared by setting
+ * `witness_size` to 0.
+ * 
+ * During backwards proof checking, the witness is stored in the `witnesses`
+ * pointer. The checker must then manually set the `witness` and `witness_size`
+ * data to point at the correct section of `witnesses`. While this is quite
+ * manual, this ensures that
+ * 
+ * (1) the API for forward and backward proof checking is the same, and
+ * (2) that forward proof checking can save memory by re-using `witness`.
+ */
 static void print_witness(void) {
   if (witness_size == 0) return;
 
@@ -304,16 +430,12 @@ static void print_witness(void) {
   // substitution portion, then we can print the witness normally
   if (!witness_has_direct_mapped_subst_lit) {
     for (int i = 0; i < witness_size; i++) {
-      // Add the pivot as a separator, if there's a substitution part of the witness
-      if (i == subst_index) {
-        write_lit(lsr_proof_file, TO_DIMACS_LIT(pivot));
-      }
-
       write_lit(lsr_proof_file, TO_DIMACS_LIT(witness[i]));
     }
   } else {
     // We print the true/false portion first
-    for (int i = 0; i < subst_index; i++) {
+    char found_pivot_divider = 0;
+    for (int i = 0; i < witness_size; i++) {
       write_lit(lsr_proof_file, TO_DIMACS_LIT(witness[i]));
     }
 
@@ -509,7 +631,7 @@ static void store_RAT_dependencies() {
  * Removals are handled with an increasing "write pointer" that allows the
  * rest of the substitution to be shifted to fill in the holes.
  * 
- * At the end, `subst_index` and `witness_size` are decreased appropriately.
+ * At the end, the `witness_size` is decreased appropriately.
  * 
  * Note that l -> m set to l -> T/F stays in the substitution portion.
  * Printing must handle this case with a two-pass over the substitution portion.
@@ -666,6 +788,11 @@ static void set_unit_clause(int lit, srid_t clause, llong gen) {
   up_reasons[VAR_FROM_LIT(lit)] = clause;
 
   resize_units();
+
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    unit_literals_wp_up_indexes[unit_literals_size] = 0;
+  }
+
   unit_literals[unit_literals_size++] = lit;
   unit_clauses[unit_clauses_size++] = clause;
 }
@@ -716,10 +843,247 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
   // TODO: If below some threshold of size/alloc_sizes, shrink the array
 }
 
-// Performs unit propagation. Sets `up_falsified_clause` to the ID of
-// the falsified clause (the contradiction) if found, and to `-1` if not.
-// Any unit literals found are set to the provided generation value.
-static int perform_up(llong gen) {
+static void add_marked_clause(srid_t clause_id) {
+  // Assume that the clause is not yet marked
+  clause_last_used_id[clause_id] = current_line;
+
+  // Add the clause to the marked clause stack, setting its
+  // id to negative if we haven't yet encountered a marked clause
+  // this round of UP/line validation (TODO). This allows us to
+  // differentiate between marked clauses when determining which
+  // to delete between lines.
+  // (TODO: We could check the id of each clause in the line and
+  //  stop when we hit one that's different. Time vs. space tradeoff.)
+  RESIZE_ARR(marked_clause_stack, marked_clause_stack_alloc_size,
+    marked_clause_stack_size, sizeof(srid_t));
+  srid_t id_to_add = (encountered_marked_clause) ? clause_id : -clause_id;
+  marked_clause_stack[marked_clause_stack_size] = id_to_add;
+  marked_clause_stack_size++;
+  encountered_marked_clause = 1;
+}
+
+static void perform_up_for_backwards_checking(llong gen) {
+  // When performing UP for backwards checking, we do the same thing
+  // Except we skip unmarked clauses as possible units, in favor of
+  // marked clauses, to reduce the number of "dependent" clauses in the formula
+
+  // These are used to store potential new un-marked clauses while (i, j)
+  // continue ahead.
+
+  /*
+
+    Notes:
+
+    In the inner loop (j), any watch pointer with (j' < j) is either:
+      - A satisfied clause, via its first watch pointer
+      - A unit clause, made unit via its first watch pointer (which is then set to true)
+
+    This is because if a clause is falsified, it generates a contradiction,
+    and UP exits. If instead the first watch pointer is not satisfied, but
+    the clause contains a non-falsified literal to replace the considered
+    negated lit, then lit's watch pointer is removed.
+
+    As a result, if we prefer marked clauses for UP, then circle back,
+    the only clauses that "come before" will not have their truth values
+    changed.
+
+      (Lemma: when adding unit clauses/literals to be processed by UP,
+        we will never have both (l) and (-l) waiting to be processed,
+        since we already set the assignment.)
+
+    As for clauses that "come after" our bookmarked spot, they will be one of:
+      - A satisfied clause
+      - A unit clause
+      - An ignored, unmarked clause
+
+    Repeating the UP loop on these clauses generates the following behavior:
+      - Ignored (continue)
+      - Ignored (since its watch pointer has been set to true, making it satisfied)
+      - Actually do UP
+
+    One solution is to "bubble up" the ignored unmarked clauses, i.e.,
+    to "bubble down" the satisfied/unit clauses. One way to do this is
+    to save the earliest ignored index, and then maintain the following invariant:
+
+    | SAT | SAT | UNIT/SAT | ... | IGN | IGN | ... | new UNIT | ... |
+
+    Then the index of the ignored clause in `wps_list[j]` increments by one,
+    and the new unit/satisfied clause swaps with the earliest ignored clause:
+
+    | SAT | SAT | UNIT/SAT | ... | new unit | IGN | ... | IGN | ... |
+
+    This slightly changes the order of watch pointers within the list,
+    which could be more expensive than simply doing the redundant thing.
+
+    Running an experiment on packing.cnf gives about 5 billion SAT cases,
+    and only 126 million UNIT cases, which makes not repeating the SAT
+    cases a good thing to do, even if the swaps are expensive.
+
+    This also means that we not only need to store the (i, j) pair of a bookmark,
+    but we also need to store the (j' < j) index to swap ignored clauses with.
+    (Thus, if i == i', then both j' and j need to be incremented, etc.)
+
+      I think this means that we only have to set a bit if we ignored a clause
+      during the j run for some i, save the (i, j) pair of the ignored, and
+      restore it later
+
+    Another interesting point: ignored clauses can be any type
+    (SAT, UNIT, SWAP, CONTRA), we just don't know which one until we process.
+    From that point, swapping can still occur, but the invariant from "before"
+    is maintained, so we don't need to store anything special when processing,
+    aside from setting the ignored bit to 0.
+   */
+
+  int progressed_i = -1;
+  int bookmarked_i;
+  char accepting_unmarked_clauses = 0;
+
+  int i;
+  switch (state) {
+    case GLOBAL_UP:    i = global_up_literals_index;         break;
+    case CANDIDATE_UP: i = candidate_assumed_literals_index; break;
+    case RAT_UP:       i = RAT_assumed_literals_index;       break;
+    default: PRINT_ERR_AND_EXIT("Corrupted state.");
+  }
+
+  // Clear the clause ID of the previous clause that caused UP contradiction
+  up_falsified_clause = -1;
+
+restart_up:
+  bookmarked_i = INT_MAX;
+  for (; i < unit_literals_size; i++) {
+    int lit = NEGATE_LIT(unit_literals[i]);
+
+    // Iterate through its watch pointers and see if the clause becomes unit
+    srid_t *wp_list = wps[lit];
+
+    int j = unit_literals_wp_up_indexes[i];
+    int ignored_j = j;
+    for (; j < wp_sizes[lit]; j++) {
+      const srid_t clause_id = wp_list[j];
+      int *clause = get_clause_start_unsafe(clause_id);
+      const int clause_size = get_clause_size(clause_id);
+      
+      // Lemma: the clause is not a unit clause (yet), and its watch pointers are 
+      // the first two literals in the clause (we may reorder literals here).
+
+      // Place the other watch pointer first
+      if (clause[0] == lit) {
+        clause[0] = clause[1];
+        clause[1] = lit;
+      }
+
+      int first_wp = clause[0];
+      const peval_t first_peval = peval_lit_under_alpha(first_wp);
+
+      // If the first watch pointer is true, then the clause is satisfied (not unit)
+      if (first_peval == TT) {
+        // We swap the satisfied clause back in the wp_list,
+        // so that the ignored clauses get bubbled up to the end
+        if (j != ignored_j) {
+          wp_list[j] = wp_list[ignored_j];
+          wp_list[ignored_j] = clause_id; 
+        }
+
+        ignored_j++;
+        continue;
+      }
+
+      // Otherwise, scan the clause for a non-false literal
+      int found_new_wp = 0;
+      for (int k = 2; k < clause_size; k++) {
+        if (peval_lit_under_alpha(clause[k]) != FF) {
+          // The kth literal is non-false, so swap it with the first wp
+          int new_wp = clause[k];
+          clause[1] = new_wp;
+          clause[k] = lit;
+          add_wp_for_lit(new_wp, clause_id);
+          // Instead of calling remove_wp_for_lit, we can more intelligently swap
+          // These lines replace the jth watch pointer with the end of list
+          wp_list[j] = wp_list[wp_sizes[lit] - 1];
+          wp_sizes[lit]--;
+          found_new_wp = 1;
+          break;
+        }
+      }
+
+      if (found_new_wp) {
+        j--;       // We need to decrement, since we replaced wp_list[j]
+        continue;  
+      }
+
+      // We didn't find a replacement watch pointer. Is the first watch pointer false?
+      if (first_peval == FF) {
+        // Since all literals are false, we found a UP contradiction
+        up_falsified_clause = clause_id;
+        return;
+      } else {
+        // The first literal is unassigned, so we have a unit clause
+
+        // For backwards checking, we prefer already-marked clauses
+        // These are clauses whose last ids have been set
+
+        // If the clause has been marked
+        if (clause_last_used_id[clause_id] != -1) {
+          set_unit_clause(first_wp, clause_id, gen); // Add as a unit literal
+
+          // When setting a unit, we swap with ignored clauses
+          if (j != ignored_j) {
+            wp_list[j] = wp_list[ignored_j];
+            wp_list[ignored_j] = clause_id;
+          }
+
+          ignored_j++;
+        } else {
+          if (accepting_unmarked_clauses) {
+            // Add this as a unit clause, and mark it
+            // Jump back to the front
+            set_unit_clause(first_wp, clause_id, gen);
+            add_marked_clause(clause_id);
+            accepting_unmarked_clauses = 0;
+            i = progressed_i;
+
+            // Do the swap and store operations here
+            if (j != ignored_j) {
+              wp_list[j] = wp_list[ignored_j];
+              wp_list[ignored_j] = clause_id; 
+            }
+
+            unit_literals_wp_up_indexes[i] = j + 1;
+            goto restart_up;
+          } else {
+            // Save our progress and keep going
+            bookmarked_i = MIN(i, bookmarked_i);
+          }
+        }
+      }
+    }
+
+    unit_literals_wp_up_indexes[i] = ignored_j;
+  }
+
+  progressed_i = i;  // Lemma: (i == unit_literals_size)
+
+  if (!accepting_unmarked_clauses && bookmarked_i != INT_MAX) {
+    // We ignored at least one clause.
+    // Go back to the bookmarked i
+    // We restart UP at unit_literals_wp_up_indexes[i],
+    // and the goto label resets bookmarked_i
+    i = bookmarked_i;
+    accepting_unmarked_clauses = 1;
+    goto restart_up;
+  }
+  
+  // TODO: Figure out if this needs to get done.  
+  if (state == GLOBAL_UP) {
+    global_up_literals_index = unit_literals_size;
+  }
+}
+
+// Performs unit propagation. Sets the falsified clause (the contradiction) to
+// up_falsified_clause. -1 if not found.
+// Any literals found are set to the provided generation value.
+static void perform_up(llong gen) {
   /* The unit propagation algorithm is quite involved and immersed in invariants.
    * Buckle up, cowboys.
    *
@@ -760,41 +1124,20 @@ static int perform_up(llong gen) {
   // Clear the clause ID of the previous clause that caused UP contradiction
   up_falsified_clause = -1;
 
-  // Our unit propagation strategy
-  int skip_unmarked_clauses = 0;
-  int skipped_an_unmarked_clause = 0;
-
-  // Depending on whether we are skipping unmarked clauses,
-  // we adjust the start index of our search
-  int up_start_index = i;
-  int use_alternate_up = (cmode == BACKWARDS_CHECKING_MODE);
-
-restart_up:
-  // Swap UP modes if we backwards check (initial value is 1)
-  skip_unmarked_clauses ^= use_alternate_up;
-  skipped_an_unmarked_clause = 0;
-
-  for (i = up_start_index; i < unit_literals_size; i++) {
+  for (; i < unit_literals_size; i++) {
     int lit = NEGATE_LIT(unit_literals[i]);
 
     // Iterate through its watch pointers and see if the clause becomes unit
     srid_t *wp_list = wps[lit];
     for (int j = 0; j < wp_sizes[lit]; j++) {
       srid_t clause_id = wp_list[j];
-
-      // Skip unmarked clauses, if requested
-      if (skip_unmarked_clauses && clause_markings[clause_id] == 0) {
-        skipped_an_unmarked_clause = 1;
-        continue;
-      }
-
-      int *clause = get_clause_start(clause_id);
+      int *clause = get_clause_start_unsafe(clause_id);
       const int clause_size = get_clause_size(clause_id);
       
       // Lemma: the clause is not a unit clause (yet), and its watch pointers are 
       // the first two literals in the clause (we may reorder literals here).
 
-      // Place the other watch pointer first, (the falsified lit goes in the first index)
+      // Place the other watch pointer first
       if (clause[0] == lit) {
         clause[0] = clause[1];
         clause[1] = lit;
@@ -828,28 +1171,25 @@ restart_up:
         continue;  
       }
 
-      // We didn't find a replacement watch pointer, meaning literals [1..size] are false
-      // Is the first watch pointer false?
+      // We didn't find a replacement watch pointer. Is the first watch pointer false?
       if (peval_lit_under_alpha(first_wp) == FF) {
         // Since all literals are false, we found a UP contradiction
-        // printf("c       [%ld, UP] Found contradiction in clause %d\n", current_line + 1, clause_id + 1);
         up_falsified_clause = clause_id;
         return;
       } else {
         // The first literal is unassigned, so we have a unit clause
         set_unit_clause(first_wp, clause_id, gen); // Add as a unit literal
-
-        // If we are not skipping unmarked clauses
       }
     }
   }
 
+
+  // TODO: Figure out if this needs to get done.  
+  
   // TODO: Figure out if this needs to get done.  
   if (state == GLOBAL_UP) {
     global_up_literals_index = unit_literals_size;
   }
-
-  return skipped_clauses;
 }
 
 // Adds watch pointers / sets units and performs unit propagation.
@@ -1330,7 +1670,7 @@ static void check_sr_line(void) {
 candidate_valid:
   unassume_candidate_clause();
   add_clause_hash(formula_size);
-  insert_clause_first_last_update(); // Officially add the clause to the formula
+  commit_clause_first_last_update(); // Officially add the clause to the formula
   add_wps_and_perform_up();
 }
 
@@ -1364,6 +1704,34 @@ static void process_sr_certificate(void) {
   }
 }
 
+// Creates the `lit_clauses` arrays, but only for backwards checking.
+static void process_cnf(void) {
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    lit_clauses = xmalloc(2 * max_var * sizeof(srid_t *));
+    lit_clauses_sizes = xcalloc(2 * max_var, sizeof(int));
+    lit_clauses_alloc_sizes = xcalloc(2 * max_var, sizeof(int));
+
+    for (int c = 0; c < cnf_num_clauses; c++) {
+      int *clause = get_clause_start_unsafe(c);
+      int clause_size = get_clause_size(c);
+      for (int l = 0; l < clause_size; l++) {
+        int lit = clause[l];
+        if (lit_clauses_alloc_sizes[lit] == 0) {
+          lit_clauses[lit] = xmalloc(INIT_LIT_CLAUSES_SIZE * sizeof(srid_t));
+          lit_clauses_alloc_sizes[lit] = INIT_LIT_CLAUSES_SIZE;
+          lit_clauses_sizes[lit] = 0;
+        }
+
+        RESIZE_ARR(lit_clauses[lit], lit_clauses_alloc_sizes[lit], 
+          lit_clauses_sizes[lit], sizeof(srid_t));
+
+        lit_clauses[lit][lit_clauses_sizes[lit]] = c;
+        lit_clauses_sizes[lit]++;
+      }
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   if (argc < 3) {
     print_usage((argc == 1) ? stdout : stderr);
@@ -1384,6 +1752,7 @@ int main(int argc, char **argv) {
   lsr_proof_file = (argc == 3) ? stdout : xfopen(argv[3], "w");
 
   parse_cnf(cnf_file);
+  process_cnf();
   init_sr_trim_data();
 
   printf("c Formula has ");

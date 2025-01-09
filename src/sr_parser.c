@@ -12,31 +12,25 @@
 
 #include "global_data.h"
 #include "global_parsing.h"
+#include "range_array.h"
 #include "xmalloc.h"
 #include "sr_parser.h"
 
+// A flag where 1 indicates that a mapping in the subsitution witness
+// hasn't been completely parsed yet.
 static int subst_pair_incomplete = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void init_sr_parser(void) {
-  witness_alloc_size = max_var * 2;
-  witness_size = 0;
-  witness = xmalloc(witness_alloc_size * sizeof(int));
-}
+void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
+  if (p_strategy == PS_EAGER) {
+    ra_commit_empty_ranges_until(&witnesses, line_num);
+  } else {
+    ra_reset(&witnesses);
+  }
 
-static inline void insert_witness_lit(int lit) {
-  // TODO: Can be more restrictive by saving "max_var" before parsing the new clause
-  // Can also restrict the first lit in a subst pair to be a positive val (a var)
-  PRINT_ERR_AND_EXIT_IF(VAR_FROM_LIT(lit) > max_var, "Variable out of range.");
-  RESIZE_ARR(witness, witness_alloc_size, witness_size, sizeof(int));
-  witness[witness_size++] = lit;
-}
-
-void parse_sr_clause_and_witness(FILE *f) {
-  witness_size = new_clause_size = 0;
+  new_clause_size = 0;
   int res, token, lit, num_times_found_pivot = 0;
-  subst_index = INT_MAX;
   subst_pair_incomplete = 0;
 
   // Read the SR clause and witness until a 0 is read
@@ -48,32 +42,31 @@ void parse_sr_clause_and_witness(FILE *f) {
     } else if (lit == pivot) {
       num_times_found_pivot++;
       if (num_times_found_pivot == 3) {
-        // The third time we see the pivot, it's as a separator
-        continue;
+        // The occurrence of the pivot acts as a separator
+        // Add it to the witness, but account for a now incomplete "pair"
+        subst_pair_incomplete = !subst_pair_incomplete;
       }
     }
 
-    // TODO: Allow for a witness that only has a substitution portion?
-    // Marijn suggests using a thrice-repeated pivot as a marker for this
     switch (num_times_found_pivot) {
       case 1: // We're reading the clause
         insert_lit_no_first_last_update(lit);
         new_clause_size++;
         break;
       default: // We're reading the substitution part of the witness (waterfall!)
-        subst_index = (subst_index == INT_MAX) ? witness_size : subst_index;
         subst_pair_incomplete = !subst_pair_incomplete;
       case 2: // We're reading the witness (waterfalls from above)
-        insert_witness_lit(lit);
+        PRINT_ERR_AND_EXIT_IF(VAR_FROM_LIT(lit) > max_var, "Var out of range.");
+        ra_insert_int_elt(&witnesses, lit);
         break;
     }
   }
 
   PRINT_ERR_AND_EXIT_IF(subst_pair_incomplete, "Missing half of subst map.");
 
-  if (subst_index == INT_MAX) {
-    subst_index = witness_size;
-  }
+  // For minimization reasons, we add an extra 0 and commit the range
+  ra_insert_int_elt(&witnesses, WITNESS_TERM);
+  ra_commit_range(&witnesses);
 
-  // TODO: Sort anything after the pivot in the new clause and remove duplicate literals?
+  // TODO: Remove duplicate literals in the clause or witness?
 }

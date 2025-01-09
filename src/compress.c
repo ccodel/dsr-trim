@@ -90,8 +90,8 @@ static void init_data(void) {
     data = xmalloc(data_alloc_size * sizeof(srid_t));
 
     data_mappings_alloc_size = INIT_SIZE;
-    data_mappings = xmalloc(data_mappings_alloc_size * sizeof(srid_t));
-    memset(data_mappings, 0xff, data_mappings_alloc_size * sizeof(srid_t));
+    data_mappings = xrealloc_memset(data_mappings, 0,  
+      data_mappings_alloc_size * sizeof(srid_t), 0xff);
   }
 }
 
@@ -131,8 +131,8 @@ static void compress_lsr_input(void) {
 
     if (mapping >= data_mappings_alloc_size) {
       srid_t old_size = data_mappings_alloc_size;
-      RESIZE_ARR(data_mappings, data_mappings_alloc_size, mapping, sizeof(srid_t));
-      memset(data_mappings + old_size, 0xff, (data_mappings_alloc_size - old_size) * sizeof(srid_t));
+      RESIZE_MEMSET_ARR(data_mappings, data_mappings_alloc_size,
+        mapping, sizeof(srid_t), 0xff);
     }
 
     PRINT_ERR_AND_EXIT_IF(data_mappings[mapping] != -1, "Map already exists.");

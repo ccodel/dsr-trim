@@ -113,7 +113,7 @@ void write_sr_line_end(FILE *f);
 // If not binary, ignores whitespace until the start of the line is found.
 // Returns 1 if another line could exist, and `f` points to the start of the line.
 // Returns 0 if EOF encountered.
-// Errors and exits if an unexpected character found.
+// Errors and exits if an unexpected character is found.
 int has_another_line(FILE *f);
 
 #endif /* _GLOBAL_PARSING_H_ */

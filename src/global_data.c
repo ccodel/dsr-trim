@@ -39,6 +39,8 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
+parsing_strategy_t p_strategy = PS_EAGER;
+
 int *lits_db = NULL;
 srid_t lits_db_size = 0;
 srid_t lits_db_alloc_size = 0;
@@ -60,6 +62,9 @@ srid_t *formula = NULL;
 srid_t formula_size = 0;
 srid_t formula_alloc_size = 0;
 
+srid_t num_cnf_clauses;
+int num_cnf_vars;
+
 srid_t *lits_first_clause = NULL;
 srid_t *lits_last_clause = NULL;
 
@@ -70,36 +75,34 @@ int alpha_subst_alloc_size = 0;
 llong alpha_generation = 0;
 llong subst_generation = 0;
 
-int *witness = NULL;
-int witness_size = 0;
-int witness_alloc_size = 0;
+range_array_t witnesses;
+
 int pivot = 0;
 
 srid_t min_clause_to_check = 0;
 srid_t max_clause_to_check = 0;
 
 int new_clause_size = 0;
-int subst_index = 0;
 int max_var = 0;
 int derived_empty_clause = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-int intcmp (const void *a, const void *b) {
+int intcmp(const void *a, const void *b) {
   return (*(int*)a - *(int*)b); 
 }
 
-int absintcmp (const void *a, const void *b) {
+int absintcmp(const void *a, const void *b) {
   int ia = *(int*)a;
   int ib = *(int*)b;
   return (ABS(ia) - ABS(ib)); 
 }
 
-int llongcmp (const void *a, const void *b) {
+int llongcmp(const void *a, const void *b) {
   return (*(llong*)a - *(llong*)b); 
 }
 
-int absllongcmp (const void *a, const void *b) {
+int absllongcmp(const void *a, const void *b) {
   llong ia = *(llong*)a;
   llong ib = *(llong*)b;
   return (llabs(ia) - llabs(ib)); 
@@ -107,12 +110,12 @@ int absllongcmp (const void *a, const void *b) {
 
 // TODO: determine how to mark functions as inline wrt header files. Profile later?
 
-void init_global_data(srid_t num_clauses, int num_vars) {
+void init_global_data(void) {
   // TODO: Refine multipliers later
-  lits_db_alloc_size = num_clauses * 10;
-  formula_alloc_size = num_clauses * 2;
-  alpha_subst_alloc_size = num_vars * 10;
-  max_var = num_vars; // TODO: Should increment based on seen, or on CNF header?
+  lits_db_alloc_size = num_cnf_clauses * 10;
+  formula_alloc_size = num_cnf_clauses * 2;
+  alpha_subst_alloc_size = num_cnf_vars * 10;
+  max_var = num_cnf_vars; // TODO: Should increment based on seen, or on CNF header?
 
   lits_db_size = 0;
   formula_size = 0;
@@ -121,38 +124,31 @@ void init_global_data(srid_t num_clauses, int num_vars) {
   formula = xmalloc(formula_alloc_size * sizeof(srid_t));
   formula[0] = 0;
 
-  lits_first_clause = xmalloc(alpha_subst_alloc_size * sizeof(srid_t));
-  lits_last_clause = xmalloc(alpha_subst_alloc_size * sizeof(srid_t));
-  memset(lits_first_clause, 0xff, alpha_subst_alloc_size * sizeof(srid_t));
-  memset(lits_last_clause, 0xff, alpha_subst_alloc_size * sizeof(srid_t));
+  lits_first_clause = xrealloc_memset(lits_first_clause,
+    0, alpha_subst_alloc_size * sizeof(srid_t), 0xff);
+  lits_last_clause = xrealloc_memset(lits_last_clause,
+    0, alpha_subst_alloc_size * sizeof(srid_t), 0xff);
 
   alpha = xcalloc(alpha_subst_alloc_size, sizeof(llong));
   subst_generations = xcalloc(alpha_subst_alloc_size, sizeof(llong));
   subst_mappings = xmalloc(alpha_subst_alloc_size * sizeof(int));
 
-  witness_alloc_size = max_var * 2;
-  witness_size = 0;
-  witness = xmalloc(witness_alloc_size * sizeof(int));
+  switch (p_strategy) {
+    case PS_EAGER:
+      // When eagerly parsing, we want a good amount of pre-allocated memory
+      ra_init(&witnesses, num_cnf_clauses * 5, formula_alloc_size, sizeof(int));
+      break;
+    case PS_STREAMING:
+      // When streaming, we only expect a single witness at a time, which is
+      // roughly bounded above by twice the number of variables
+      ra_init(&witnesses, num_cnf_vars * 2, 2, sizeof(int));
+      break;
+    default: PRINT_ERR_AND_EXIT("Unknown parsing strategy.");
+  }
 }
 
 // Assumes that VAR_FROM_LIT(lit) < alpha_subst_size
 inline void set_lit_for_alpha(int lit, llong gen) {
-
-// Check if the mapping already exists in the global partial assignment
-/*
-  switch (peval_lit_under_alpha(lit)) {
-    case FF:
-      printf("    Literal %d is already false under alpha, setting it to true.\n",
-        TO_DIMACS_LIT(lit));
-      break;
-    case TT:
-      printf("    Literal %d is already true under alpha, setting it to true.\n",
-        TO_DIMACS_LIT(lit));
-      break;
-    case UNASSIGNED: break;
-    default: PRINT_ERR_AND_EXIT("Corrupted peval value.");
-  } */
-
   if (IS_POS_LIT(lit)) {
     alpha[VAR_FROM_LIT(lit)] = gen;
   } else {
@@ -173,22 +169,6 @@ inline peval_t peval_lit_under_alpha(int lit) {
 inline void set_mapping_for_subst(int lit, int lit_mapping, llong gen) {
   int var = VAR_FROM_LIT(lit);
   subst_generations[var] = gen;
-
-  // Check if the mapping already exists in the global partial assignment
-  /*
-  switch (peval_lit_under_alpha(lit)) {
-    case FF:
-      printf("    Literal %d is already false under alpha, setting it to %d.\n",
-        TO_DIMACS_LIT(lit), lit_mapping);
-      break;
-    case TT:
-      printf("    Literal %d is already true under alpha, setting it to %d.\n",
-        TO_DIMACS_LIT(lit), lit_mapping);
-      break;
-    case UNASSIGNED: break;
-    default: PRINT_ERR_AND_EXIT("Corrupted peval value.");
-  } */
-
   if (IS_POS_LIT(lit)) {
     subst_mappings[var] = lit_mapping;
   } else {
@@ -212,16 +192,16 @@ inline int get_lit_from_subst(int lit) {
 }
 
 // Updates the first and last appearances of this literal
-static inline void update_first_last(int lit) {
-  lits_last_clause[lit] = formula_size;
+static inline void update_first_last(int lit, srid_t clause_index) {
+  lits_last_clause[lit] = clause_index;
   if (lits_first_clause[lit] == -1) {
-    lits_first_clause[lit] = formula_size;
-  } 
+    lits_first_clause[lit] = clause_index;
+  }
 }
 
 void insert_lit(int lit) {
   insert_lit_no_first_last_update(lit);
-  update_first_last(lit);
+  update_first_last(lit, formula_size);
 }
 
 // Updates max_var and resizes global_data arrays that depend on max_var.
@@ -236,22 +216,39 @@ void insert_lit_no_first_last_update(int lit) {
   if (max_var >= alpha_subst_alloc_size) {
     int old_size = alpha_subst_alloc_size;
     alpha_subst_alloc_size = RESIZE(max_var);
-    alpha = xrealloc(alpha, alpha_subst_alloc_size * sizeof(llong));
-    subst_generations = xrealloc(subst_generations, alpha_subst_alloc_size * sizeof(llong));
+    alpha = xrecalloc(alpha, old_size * sizeof(llong),
+      alpha_subst_alloc_size * sizeof(llong));
+    subst_generations = xrecalloc(subst_generations, old_size * sizeof(llong),
+      alpha_subst_alloc_size * sizeof(llong));
+    lits_first_clause = xrealloc_memset(lits_first_clause,
+      old_size * sizeof(srid_t), alpha_subst_alloc_size * sizeof(srid_t), 0xff);
+    lits_last_clause = xrealloc_memset(lits_last_clause,
+      old_size * sizeof(srid_t), alpha_subst_alloc_size * sizeof(srid_t), 0xff);
     subst_mappings = xrealloc(subst_mappings, alpha_subst_alloc_size * sizeof(int));
-    lits_first_clause = xrealloc(lits_first_clause, alpha_subst_alloc_size * sizeof(srid_t));
-    lits_last_clause = xrealloc(lits_last_clause, alpha_subst_alloc_size * sizeof(srid_t));
-
-    // Set to default values in the new allocated regions
-    int added_size = alpha_subst_alloc_size - old_size;
-    memset(alpha + old_size, 0, added_size * sizeof(llong));
-    memset(subst_generations + old_size, 0, added_size * sizeof(llong));
-    memset(lits_first_clause + old_size, 0xff, added_size * sizeof(srid_t));
-    memset(lits_last_clause + old_size, 0xff, added_size * sizeof(srid_t));
   }
 }
 
-void insert_clause(void) {
+void perform_clause_first_last_update(srid_t clause_index) {
+  int *clause = get_clause_start_unsafe(clause_index);
+  int clause_size = get_clause_size(clause_index);
+
+  for (int i = 0; i < clause_size; i++) {
+    update_first_last(clause[i], clause_index);
+  }
+}
+
+/** @brief Commits the current set of uncommitted literals to a new 
+ * formula clause.
+ * 
+ * This function officially adds the set of uncommitted literals that
+ * were added via `insert_lit()` or `insert_lit_no_first_last_update()`
+ * to the formula by increasing the `formula_size` by 1 and adding an index
+ * "pointer" to the next set of uncommitted literals.
+ * 
+ * The function resizes the `formula` array containing the clause index
+ * pointers if the array is too small.
+ */
+void commit_clause(void) {
   // We increment formula_size first to ensure that one past the last entry is allocated
   // We use this to store the clause_index for the incoming clause
   formula_size++;  // Cap off the current clause and prepare the next one
@@ -259,12 +256,47 @@ void insert_clause(void) {
   formula[formula_size] = lits_db_size;
 }
 
-void insert_clause_first_last_update(void) {
-  for (srid_t i = formula[formula_size]; i < lits_db_size; i++) {
-    update_first_last(lits_db[i]);
-  }
+/** @brief Commits the current set of uncommitted literals to a new
+ * formula clause, and also updates the first/last clause index for
+ * each literal in the clause.
+ * 
+ * The global arrays `lits_first_clause` and `lits_last_clause` are indexed
+ * by literal and track the first/last clause index that that literal
+ * appears in. This function runs over the uncommitted literals and
+ * updates those values before calling `commit_clause()`.
+ */
+void commit_clause_with_first_last_update(void) {
+  perform_clause_first_last_update(formula_size);
+  commit_clause();
+}
 
-  insert_clause();
+/** @brief Uncommits the final clause from the formula.
+ * 
+ * The literals in `lits_db` are not deleted. Rather, the `formula_size`
+ * is decreased by 1, and for each literal in the uncommitted clause,
+ * their `lits_last_clause` value are decreased to the clause before this
+ * one that contains the literal. If no other clause contains the literal,
+ * then the value is set to -1.
+ * 
+ * The caller must ensure that no clauses are committed and no literals
+ * are added after this function * returns, and that there are currently
+ * no uncommitted literals.
+ * 
+ * TODO: question: what should we do about clauses that haven't been marked
+ * yet in dsr-trim when doing backwards checking, since we might not want
+ * to check those clauses that ultimately won't be used in the final proof?
+ */
+void uncommit_clause_with_first_last_update(void) {
+  // Reverse direction of `commit_clause_w_f_l_update()`.
+  formula_size--;
+  int *clause = get_clause_start_unsafe(formula_size);
+  int clause_size = get_clause_size(formula_size);
+
+  for (int i = 0; i < clause_size; i++) {
+    // TODO: efficiency for finding the clause before this one that
+    // mentions the literal
+    // Use a char array to mark (1), then scan backwards?
+  }
 }
 
 inline int is_clause_deleted(srid_t clause_index) {
@@ -359,6 +391,22 @@ inline int get_clause_size(srid_t clause_index) {
   }
 }
 
+static inline int *get_witness_start(srid_t line_num) {
+  if (p_strategy == PS_EAGER) {
+    return ((int *) ra_get_range_start(&witnesses, line_num));
+  } else {
+    return ((int *) ra_get_range_start(&witnesses, 0));
+  }
+}
+
+static inline int *get_witness_end(srid_t line_num) {
+  if (p_strategy == PS_EAGER) {
+    return ((int *) ra_get_range_start(&witnesses, line_num + 1));
+  } else {
+    return ((int *) ra_get_range_start(&witnesses, 1));
+  }
+}
+
 static void set_min_and_max_clause_to_check(int lit) {
   update_first_last_clause(lit);
   if (lits_first_clause[lit] != -1) {
@@ -367,39 +415,59 @@ static void set_min_and_max_clause_to_check(int lit) {
   }
 }
 
-// Assumes the substitution witness, if it exists. If it doesn't, it uses
-// the pivot (the first literal in the clause to be added).
-// The candidate clause associated with the witness must be nonempty.
-// Updates the min/max_clause_check_to_check
-void assume_subst(void) {
+/**
+ * @brief Moves the substitution mappings into `subst`. Sets the values for
+ *        `min/max_clause_to_check`.
+ * 
+ * If the witness is empty, it uses the pivot literal (the first literal
+ * of the candidate clause). The caller should ensure that `pivot` is set
+ * before calling this function.
+ * 
+ * @param line_id The 0-indexed line ID of the substitution witness.
+ *  If the parsing strategy is `PS_EAGER`, this ID corresponds to the
+ *  range array index in `witnesses`. Otherwise, the line ID is ignored.
+ */
+void assume_subst(srid_t line_num) {
   min_clause_to_check = formula_size - 1;
   max_clause_to_check = 0;
+  char seen_pivot_divider = 0;
+  const int pivot_var = VAR_FROM_LIT(pivot);
 
   // Set the pivot, just in case the witness is empty
   set_mapping_for_subst(pivot, SUBST_TT, subst_generation);
   set_min_and_max_clause_to_check(NEGATE_LIT(pivot));
 
+  int *witness_iter = get_witness_start(line_num) + 1;
+  int *witness_end = get_witness_end(line_num);
+
   // For all other literals l in the witness
   // 1. Check that var(l) hasn't been set yet (compare gen against subst_generation)
   // 2. Set its mapping
-  for (int i = 1; i < witness_size; i++) {
-    int lit = witness[i];
+  for (; witness_iter < witness_end; witness_iter++) {
+    int lit = *witness_iter;
+    if (lit == WITNESS_TERM) break;
     int neg_lit = NEGATE_LIT(lit);
     int var = VAR_FROM_LIT(lit);
 
     // Error if we have already set a variable in the substitution.
     // This ensures no variable appears twice.
-    PRINT_ERR_AND_EXIT_IF(subst_generations[var] == subst_generation,
+    // Note that the pivot can be re-set in the substitution portion
+    PRINT_ERR_AND_EXIT_IF(
+      subst_generations[var] == subst_generation && var != pivot_var,
       "Literal in witness was already set.");
-    
-    if (i < subst_index) {
-      set_mapping_for_subst(lit, SUBST_TT, subst_generation);
-      set_min_and_max_clause_to_check(neg_lit);
+
+    if (!seen_pivot_divider) {
+      if (lit == pivot) {
+        seen_pivot_divider = 1; // Skip the pivot divider
+      } else {
+        set_mapping_for_subst(lit, SUBST_TT, subst_generation);
+        set_min_and_max_clause_to_check(neg_lit);
+      }
     } else {
-      set_mapping_for_subst(lit, witness[i + 1], subst_generation);
+      witness_iter++;
+      set_mapping_for_subst(lit, *witness_iter, subst_generation);
       set_min_and_max_clause_to_check(lit);
       set_min_and_max_clause_to_check(neg_lit);
-      i++;
     }
   }
 }
@@ -409,6 +477,13 @@ void assume_negated_clause(srid_t clause_index, llong gen) {
     "assume_negated_clause: Clause index was out of bounds.");
 
   if (clause_index == formula_size) {
+    int i = formula[formula_size];
+
+    // Only set the pivot if the clause is non-empty
+    if (i < lits_db_size) {
+      pivot = lits_db[i];
+    }
+
     for (int i = formula[formula_size]; i < lits_db_size; i++) {
       int lit = lits_db[i];
       set_lit_for_alpha(NEGATE_LIT(lit), gen);
@@ -416,6 +491,11 @@ void assume_negated_clause(srid_t clause_index, llong gen) {
   } else {
     int *clause_ptr = get_clause_start(clause_index);
     int *end = get_clause_start(clause_index + 1);
+
+    if (clause_ptr < end) {
+      pivot = *clause_ptr;
+    }
+
     for (; clause_ptr < end; clause_ptr++) {
       set_lit_for_alpha(NEGATE_LIT(*clause_ptr), gen);
     }

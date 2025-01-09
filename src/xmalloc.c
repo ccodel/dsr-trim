@@ -15,6 +15,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "xmalloc.h"
 
@@ -69,23 +70,40 @@ void *xrealloc(void *ptr, size_t size) {
   return new_ptr;
 }
 
-
-/** @brief Exit() wrapper around reallocf().
- *
- *  Because the behavior of reallocf() is to free the provided pointer if
- *  the new pointer cannot be allocated, due to calling exit(-1) on memory
- *  allocation, the pointer will not be freed. Thus, the behavior of
- *  xreallocf() is identical to xrealloc(), and so the latter is called in
- *  place of an implementation for the former.
- *
- *  @param ptr  The old pointer.
- *  @param size The size of the new pointer, in bytes.
- *  @return The result of reallocf().
+/**
+ * @brief Exit() wrapper around a `realloc()`-`memset()` fusion.
+ * 
+ * Attempts to reallocate the pointer to the requested size. Any additional
+ * memory is set to the byte in `c`.
+ * 
+ * See `man memset`.
+ * 
+ * @param ptr The old pointer.
+ * @param old_size The old size of the allocated region, in bytes.
+ * @param size The size of the new pointer, in bytes.
+ * @param c The byte to set the new memory to.
  */
-void *xreallocf(void *ptr, size_t size) {
-  return xrealloc(ptr, size);
+void *xrealloc_memset(void *ptr, size_t old_size, size_t size, int c) {
+  void *new_ptr = xrealloc(ptr, size);
+  if (size > old_size) {
+    memset(((char *) new_ptr) + old_size, c, size - old_size);
+  }
+  return new_ptr;
 }
 
+/** @brief Exit() wrapper around a `realloc()`-`calloc()` fusion.
+ * 
+ * Attempts to reallocate the pointer to the requested size. Any additional
+ * memory is zero-filled.
+ * 
+ * @param ptr The old pointer.
+ * @param old_size The old size of the allocated region, in bytes.
+ * @param size The size of the new pointer, in bytes.
+ * @return The result of realloc().
+ */
+void *xrecalloc(void *ptr, size_t old_size, size_t size) {
+  return xrealloc_memset(ptr, old_size, size, 0);
+}
 
 /** @brief Wrapper for free().
  *

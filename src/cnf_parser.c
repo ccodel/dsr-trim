@@ -30,7 +30,7 @@ int parse_clause(FILE *f) {
   // Now we sort the literals in the clause
   // Then, we efficiently remove duplicate literals and detect tautologies
   int *write_ptr, *read_ptr = get_clause_start(formula_size);
-  qsort((void *) read_ptr, new_clause_size, sizeof(int), intcmp);
+  qsort((void *) read_ptr, new_clause_size, sizeof(int), absintcmp);
   int is_tautology = 0;
   int skipped_lits = 0;
   int lit, next_lit = read_ptr[0];
@@ -66,8 +66,7 @@ int parse_clause(FILE *f) {
 }
 
 void parse_cnf(FILE *f) {
-  srid_t num_clauses;
-  int res, num_vars, found_problem_line = 0;
+  int res, found_problem_line = 0;
   while (!found_problem_line) {
     int c = getc_unlocked(f);
     switch (c) {
@@ -77,7 +76,7 @@ void parse_cnf(FILE *f) {
         break;
       case DIMACS_PROBLEM_LINE:
         found_problem_line = 1;
-        res = fscanf(f, CNF_HEADER_STR, &num_vars, &num_clauses);
+        res = fscanf(f, CNF_HEADER_STR, &num_cnf_vars, &num_cnf_clauses);
         PRINT_ERR_AND_EXIT_IF(res < 0, "Read error on problem line.");
         break;
       default:
@@ -85,25 +84,25 @@ void parse_cnf(FILE *f) {
     }
   }
 
-  if (num_vars <= 0 || num_clauses <= 0) {
+  if (num_cnf_vars <= 0 || num_cnf_clauses <= 0) {
     PRINT_ERR_AND_EXIT("The number of variables or clauses wasn't positive.");
   }
 
-  init_global_data(num_clauses, num_vars);
+  init_global_data();
 
   // Now parse in the rest of the CNF file
   // We assume that no more comment lines can appear, and will error if a non-number is parsed
-  while (formula_size < num_clauses) {
+  while (formula_size < num_cnf_clauses) {
     int is_tautology = parse_clause(f);
     if (new_clause_size == 0) {
       derived_empty_clause = 1;
-      insert_clause();
+      commit_clause();
       break;
     } else if (is_tautology) {
-      insert_clause();
+      commit_clause();
       delete_clause(formula_size - 1);
     } else {
-      insert_clause_first_last_update();
+      commit_clause_with_first_last_update();
     }
   }
 

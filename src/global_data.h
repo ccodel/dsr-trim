@@ -11,43 +11,12 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <limits.h>
+
+#include "global_types.h"
+#include "range_array.h"
 
 ////////////////////////////////////////////////////////////////////////////////
-
-#ifndef ABS
-#define ABS(x)     (((x) < 0) ? -(x) : (x))
-#endif
-
-#ifndef MIN
-#define MIN(x, y)  (((x) < (y)) ? (x) : (y))
-#endif
-
-#ifndef MAX
-#define MAX(x, y)  (((x) > (y)) ? (x) : (y))
-#endif
-
-#ifndef MSB
-#define MSB32                     (1  << 31)
-#define MSB64                     (1L << 63)
-
-#define INT_SET_BIT(s)            (1  << (s))
-#define LONG_SET_BIT(s)           (1L << (s))
-#endif
-
-#ifndef llong
-typedef long long llong;
-typedef unsigned long long ullong;
-#endif
-
-// If the SR proofs are massive, then `long long`s should be used. But for most
-// purposes, an int can be used instead.
-#ifdef LONGTYPE
-typedef llong srid_t;
-#define SRID_MSB                MSB64
-#else
-typedef int srid_t;
-#define SRID_MSB                MSB32
-#endif
 
 #define FROM_DIMACS_LIT(x)      (((x) < 0) ? (((-(x)) << 1) - 1) : (((x) << 1) - 2))
 #define TO_DIMACS_LIT(x)        (((x) % 2) ? (((x) / -2) - 1) : (((x) / 2) + 1))
@@ -56,27 +25,18 @@ typedef int srid_t;
 #define IS_NEG_LIT(x)           ((x) & 0x1)
 #define NEGATE_LIT(x)           ((x) ^ 0x1)
 
-/** Resizes an "allocation size value" when the container gets full. */
-#define RESIZE(x)               (((x) * 3) >> 1)
-
-#define RESIZE_ARR(arr, alloc_size, size, data_size)       do {                \
-    if (size >= alloc_size) {                                                  \
-      alloc_size = RESIZE(size);                                               \
-      arr = xrealloc(arr, alloc_size * data_size);                             \
-    }                                                                          \
-  } while (0)
-
-#define PRINT_ERR_AND_EXIT(s)      do {                                        \
-    fprintf(stderr, "c Error: %s\n", s); exit(-1);                             \
-  } while (0)
-
-#define PRINT_ERR_AND_EXIT_IF(cond, s)    do {                                 \
-    if (cond) {                                                                \
-      fprintf(stderr, "c Error: %s\n", s); exit(-1);                           \
-    }                                                                          \
-  } while (0)
-
 ////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * @brief The maximum length a file string have during CLI parsing.
+ * 
+ * The `dsr-trim` and `lsr-check` tools both provide a `--dir` option to
+ * help minimize the amount of typing to specify the file paths to CNF and
+ * proof files in the same or similar directories. However, this means that
+ * the directory and file strings are separate, and so to cap the length of
+ * a string buffer, we use this macro.
+ */
+#define MAX_FILE_PATH_LEN         (256)
 
 // A typed result of an evaluation under a partial assignment
 // TODO: Rename, so name doesn't directly clash with SUBST_TT, etc.
@@ -97,12 +57,56 @@ typedef enum peval {
 #define SUBST_FF                 (-2)
 #define SUBST_UNASSIGNED         (-3)
 
-#define DELETION_LINE            (10)
-#define ADDITION_LINE            (20)
+/**
+ * @brief Signals the end of a witness. Always included at the end when parsing.
+ * 
+ * We must use a terminator to indicate the end of a witness because dsr-trim
+ * may minimize a witness. Since we are storing all witness information in a
+ * single flat array (a `range_array_t`), we may reduce the size of the witness
+ * beyond what the beginning of the next witness might suggest.
+ */
+#define WITNESS_TERM       (INT_MIN)
 
-/* Note that the partial assignments and substitutions need to use longs for the
- * generation values, since the number of lines in a proof can exceed 2^32. But
- * literals must be < 2^32.
+/**
+ * @brief The type of a line in an SR proof file.
+ *
+ * Each `ADDITION_LINE` adds a redundant clause to the formula, while
+ * each `DELETION_LINE` removes one or more clauses from the formula. 
+ */
+typedef enum line_type {
+  DELETION_LINE = 10,
+  ADDITION_LINE = 20
+} line_type_t;
+
+/** 
+ * @brief The parsing strategy when parsing proof files.
+ * 
+ * Proof files can either be parsed eagerly, meaning the entire proof file
+ * is read into memory before any proof lines are checked; or the proof can
+ * be parsed in streaming mode, meaning that a single line is read and then
+ * checked before the next line is parsed. Streaming mode is great for
+ * proofs that are too large to write down to disk or store completely in
+ * memory at one time, such as for extremely large proofs accompanying
+ * SAT results like the Pythegorean triples or the chromatic tiling 
+ * number of the plane. Otherwise, eager should be the default, as it
+ * benefits from I/O caching and fetching.
+ * 
+ * While the parsing and storage of redundant clauses is largely the same
+ * across the two proof modes, the storage of substitution witnesses,
+ * LSR unit propagation hints, and deletion lines is handled differently.
+ */
+typedef enum parsing_strategy {
+  PS_EAGER = 3,
+  PS_STREAMING = 8
+} parsing_strategy_t;
+
+// The global parsing strategy. By default, `PS_EAGER` is used.
+extern parsing_strategy_t p_strategy;
+
+/* 
+ * Note that the partial assignments and substitutions need to use longs for the
+ * timpstamp values, since the number of lines in a proof can exceed 2^32. But
+ * literals must be < 2^32, according to the DIMACS format.
  */
 
 /** 
@@ -126,6 +130,14 @@ extern srid_t lits_db_alloc_size; // Allocated size of the database
 extern srid_t *formula;
 extern srid_t formula_size;        // Number of clauses in the database
 extern srid_t formula_alloc_size;  // Allocated size of the clauses array
+
+// The original number of clauses in the parsed CNF formula.
+// Its value is set via a call to `parse_cnf()`.
+extern srid_t num_cnf_clauses;
+
+// The original number of variables in the parsed CNF formula.
+// Its value is set via a call to `parse_cnf()`.
+extern int num_cnf_vars;
 
 // The first clause index each literal appears in. Initialized to -1.
 extern srid_t *lits_first_clause;
@@ -154,10 +166,15 @@ extern llong alpha_generation;
 // Generation for substitution. Assume once per SR line, clear by incrementing.
 extern llong subst_generation;
 
-// The witness portion of an SR certificate or proof line.
-extern int *witness;
-extern int witness_size;
-extern int witness_alloc_size;
+/**
+ * @brief The witness portion of the SR line.
+ * 
+ * When the parsing strategy is `PS_STREAMING`, the `range_array_t` is cleared
+ * before parsing a new witness. This ensures that memory is reused.
+ * 
+ * When the parsing strategy is `PS_EAGER`, the `range_array_t` works normally.
+ */
+extern range_array_t witnesses;
 
 // If a witness is provided, the first literal of the clause is the pivot.
 extern int pivot;
@@ -181,13 +198,6 @@ extern srid_t max_clause_to_check;
 // Cached size of the new SR clause. Equal to get_clause_size(formula_size).
 extern int new_clause_size; 
 
-/** Witnesses in SR can have literals set to true/false, as in LRAT/LPR, or
- *  they can set variables to other literals. The point at which the witness
- *  switches to substitution is updated when an SR proof line is parsed.
- *  If no switch occurs, then subst_index is set to witness_size.
- */
-extern int subst_index;
-
 // Maximum 0-indexed variable ID parsed so far. Used for resizing arrays.
 extern int max_var;
 
@@ -201,7 +211,7 @@ int intcmp (const void *a, const void *b);
 int absintcmp (const void *a, const void *b);
 
 // Allocates and initializes global data structures, given the size of a CNF formula.
-void init_global_data(srid_t num_clauses, int num_vars);
+void init_global_data(void);
 
 void set_lit_for_alpha(int lit, llong gen);
 peval_t peval_lit_under_alpha(int lit);
@@ -217,9 +227,10 @@ int get_lit_from_subst(int lit);
 void insert_lit(int lit);
 void insert_lit_no_first_last_update(int lit);
 
-// Caps the current clause and increments the clause count. Clauses can be empty.
-void insert_clause(void);
-void insert_clause_first_last_update(void);
+void perform_clause_first_last_update(srid_t clause_index);
+void commit_clause(void);
+void commit_clause_with_first_last_update(void);
+void uncommit_clause_with_first_last_update(void);
 int  is_clause_deleted(srid_t clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
@@ -229,7 +240,7 @@ int *get_clause_start_unsafe(srid_t clause_index);
 int *get_clause_start(srid_t clause_index);
 int  get_clause_size(srid_t clause_index);
 
-void assume_subst(void);
+void assume_subst(srid_t line_num);
 void assume_negated_clause(srid_t clause_index, llong gen);
 int  assume_negated_clause_under_subst(srid_t clause_index, llong gen);
 int  reduce_subst_mapped(srid_t clause_index);
