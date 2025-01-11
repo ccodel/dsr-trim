@@ -27,17 +27,6 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
-/**
- * @brief The maximum length a file string have during CLI parsing.
- * 
- * The `dsr-trim` and `lsr-check` tools both provide a `--dir` option to
- * help minimize the amount of typing to specify the file paths to CNF and
- * proof files in the same or similar directories. However, this means that
- * the directory and file strings are separate, and so to cap the length of
- * a string buffer, we use this macro.
- */
-#define MAX_FILE_PATH_LEN         (256)
-
 // A typed result of an evaluation under a partial assignment
 // TODO: Rename, so name doesn't directly clash with SUBST_TT, etc.
 typedef enum peval {

@@ -81,11 +81,12 @@
 #include <getopt.h>
 
 #include "xio.h"
+#include "xmalloc.h"
 #include "logger.h"
 #include "global_data.h"
 #include "global_parsing.h"
 #include "range_array.h"
-#include "xmalloc.h"
+#include "cli.h"
 #include "cnf_parser.h"
 #include "sr_parser.h"
 
@@ -784,11 +785,11 @@ static void check_proof(void) {
     fclose(lsr_file);
   }
 
-  if (derived_empty_clause == 0) {
+  if (derived_empty_clause) {
+    log_msg(VL_QUIET, "s VERIFIED UNSAT\n");
+  } else {
     log_msg(VL_QUIET, "s VALID\n");
     log_msg(VL_NORMAL, "c A valid proof, without an empty clause.\n.");
-  } else {
-    log_msg(VL_QUIET, "s VERIFIED UNSAT\n");
   }
 }
 
@@ -801,98 +802,34 @@ int main(int argc, char *argv[]) {
   }
 
   p_strategy = PS_STREAMING;
-  int eager_strategy_set = 0;
-  int streaming_strategy_set = 0;
-  int verbose_mode_set = 0;
-  int quiet_mode_set = 0;
-  int dir_provided = 0;
-  int name_provided = 0;
-  char cnf_file_path_buf[MAX_FILE_PATH_LEN];
-  char lsr_file_path_buf[MAX_FILE_PATH_LEN];
-  char *cnf_file_path = NULL;
-  char *lsr_file_path = NULL;
-  size_t dir_len = 0;
+  cli_opts_t cli;
+  cli_init(&cli);
 
   // Parse CLI arguments
   int ch;
+  cli_res_t cli_res;
   while ((ch = getopt_long(argc, argv, OPT_STR, longopts, NULL)) != -1) {
     switch (ch) {
-      case HELP_MSG_OPT:
-        print_short_help_msg(stdout);
-        return 0;
-      case QUIET_MODE_OPT:
-        verbosity_level = VL_QUIET;
-        quiet_mode_set = 1;
-        break;
-      case VERBOSE_MODE_OPT:
-        verbosity_level = VL_VERBOSE;
-        verbose_mode_set = 1;
-        break;
-      case EAGER_OPT:
-        p_strategy = PS_EAGER;
-        eager_strategy_set = 1;
-        break;
-      case STREAMING_OPT:
-        p_strategy = PS_STREAMING;
-        streaming_strategy_set = 1;
-        break;
-      case DIR_OPT:
-        dir_provided = 1;
-        PRINT_ERR_AND_EXIT_IF(name_provided, 
-          "Cannot provide both a directory and a name.");
-
-        dir_len = strlcpy(cnf_file_path_buf, optarg, MAX_FILE_PATH_LEN);
-        PRINT_ERR_AND_EXIT_IF(dir_len >= MAX_FILE_PATH_LEN,
-          "CNF file path too long.");
-        PRINT_ERR_AND_EXIT_IF(dir_len == 0, "Empty directory provided");
-        cnf_file_path = ((char *) cnf_file_path_buf) + dir_len;
-
-        dir_len = strlcpy(lsr_file_path_buf, optarg, MAX_FILE_PATH_LEN);
-        lsr_file_path = ((char *) lsr_file_path_buf) + dir_len;
-
-        if (cnf_file_path[-1] != '/') {
-          memcpy(cnf_file_path++, "/", 2);
-          memcpy(lsr_file_path++, "/", 2);
-          dir_len++;
-        }
-        break;
-      case NAME_OPT:
-        name_provided = 1;
-        PRINT_ERR_AND_EXIT_IF(dir_provided, 
-          "Cannot provide both a directory and a name.");
-
-        dir_len = strlcpy(cnf_file_path_buf, optarg, MAX_FILE_PATH_LEN);
-        PRINT_ERR_AND_EXIT_IF(dir_len >= MAX_FILE_PATH_LEN,
-          "CNF file path too long.");
-        cnf_file_path = ((char *) cnf_file_path_buf) + dir_len;
-
-        dir_len = strlcpy(lsr_file_path_buf, optarg, MAX_FILE_PATH_LEN);
-        lsr_file_path = ((char *) lsr_file_path_buf) + dir_len;
-        break;
-      case '?': // Unknown option used
-        fprintf(stderr, "Unknown option provided.\n");
-        print_short_help_msg(stderr);
-        return 1;
-      case ':': // Missing an option argument where one was required
-        fprintf(stderr, "Missing argument for option.\n");
-        print_short_help_msg(stderr);
-        return 1;
-      case 0: // Long options without a short option
+      case 0: // Defined long options without a corresponding short option
         if (long_help_msg_flag) {
           print_long_help_msg(stdout);
           return 0;
+        } else {
+          PRINT_ERR_AND_EXIT("Unimplemented long option.");
         }
-        break;
       default:
-        print_short_help_msg(stderr);
-        return 1;
+        cli_res = cli_handle_opt(&cli, ch, optopt, optarg);
+        switch (cli_res) {
+          case CLI_UNRECOGNIZED:
+            fprintf(stderr, "Error: Unimplemented option.\n");
+          case CLI_HELP_MESSAGE:
+            print_short_help_msg(stderr);
+            return 1;
+          case CLI_SUCCESS: break;
+          default: PRINT_ERR_AND_EXIT("Corrupted CLI result.");
+        }
     }
   }
-
-  PRINT_ERR_AND_EXIT_IF(quiet_mode_set && verbose_mode_set,
-    "Cannot set both quiet and verbose modes.");
-  PRINT_ERR_AND_EXIT_IF(eager_strategy_set && streaming_strategy_set,
-    "Cannot set both eager and streaming strategies.");
 
   // `getopt_long()` sets `optind` to the index of the first non-option argument
   // It also shuffles all of the non-option arguments to the end of `argv`
@@ -900,46 +837,27 @@ int main(int argc, char *argv[]) {
   //   (modulo some behavior changes due to `-n` and `-d` flags)
   switch (argc - optind) {
     case 0:
-      PRINT_ERR_AND_EXIT_IF(!name_provided, "No CNF file path provided.");
-      memcpy(cnf_file_path, ".cnf", 5);
-      cnf_file_path = cnf_file_path_buf;
-
-      memcpy(lsr_file_path, ".lsr", 5);
-      lsr_file_path = lsr_file_path_buf;
+      PRINT_ERR_AND_EXIT_IF(!cli.name_provided, "No file prefix provided.");
+      cli_concat_path_extensions(&cli, ".cnf", ".dsr", ".lsr");
       break;
     case 1:
-      PRINT_ERR_AND_EXIT_IF(dir_provided,
+      PRINT_ERR_AND_EXIT_IF(cli.dir_provided,
         "Cannot provide a directory without an LSR file path.");
 
-      if (name_provided) {
-        // Assume a ".cnf" file extension
-        memcpy(cnf_file_path, ".cnf", 5);
-        cnf_file_path = cnf_file_path_buf;
-
-        // Copy over the provided proof file extension
-        // TODO: Check out of bounds here?
-        strlcpy(lsr_file_path, argv[optind], MAX_FILE_PATH_LEN - dir_len);
-        lsr_file_path = lsr_file_path_buf;
+      if (cli.name_provided) {
+        cli_concat_path_extensions(&cli, ".cnf", "", argv[optind]);
       } else {
         // The CNF file is provided as a normal file path
-        cnf_file_path = argv[optind];
+        cli.cnf_file_path = argv[optind];
+        cli.lsr_file_path = NULL;
       }
       break;
     case 2:
-      if (dir_provided || name_provided) {
-        // Concatenate the file paths or file extensions with the prefix
-        size_t len = strlcpy(cnf_file_path, argv[optind], MAX_FILE_PATH_LEN - dir_len);
-        PRINT_ERR_AND_EXIT_IF(len + dir_len >= MAX_FILE_PATH_LEN,
-          "The concatenated CNF file path was too long.");
-        cnf_file_path = cnf_file_path_buf;
-
-        len = strlcpy(lsr_file_path, argv[optind + 1], MAX_FILE_PATH_LEN - dir_len);
-        PRINT_ERR_AND_EXIT_IF(len + dir_len >= MAX_FILE_PATH_LEN,
-          "The concatenated LSR file path was too long.");
-        lsr_file_path = lsr_file_path_buf;
+      if (cli.dir_provided || cli.name_provided) {
+        cli_concat_path_extensions(&cli, argv[optind], "", argv[optind + 1]);
       } else {
-        cnf_file_path = argv[optind];
-        lsr_file_path = argv[optind + 1];
+        cli.cnf_file_path = argv[optind];
+        cli.lsr_file_path = argv[optind + 1];
       }
       break;
     default:
@@ -949,20 +867,20 @@ int main(int argc, char *argv[]) {
   }
 
   // Open the files first, to ensure we don't do work unless they exist
-  FILE *cnf_file = xfopen(cnf_file_path, "r");
-  if (lsr_file_path == NULL) {
+  FILE *cnf_file = xfopen(cli.cnf_file_path, "r");
+  if (cli.lsr_file_path == NULL) {
     PRINT_ERR_AND_EXIT_IF(p_strategy == PS_EAGER,
       "Cannot use eager strategy with `stdin` as the LSR file.");
     lsr_file = stdin;
   } else {
-    lsr_file = xfopen(lsr_file_path, "r");
+    lsr_file = xfopen(cli.lsr_file_path, "r");
   }
 
-  log_msg(VL_NORMAL, "c CNF file path: %s\n", cnf_file_path);
+  log_msg(VL_NORMAL, "c CNF file path: %s\n", cli.cnf_file_path);
   if (lsr_file == stdin) {
     log_msg(VL_NORMAL, "c No LSR file path provided, using stdin.\n");
   } else {
-    log_msg(VL_NORMAL, "c LSR file path: %s\n", lsr_file_path);
+    log_msg(VL_NORMAL, "c LSR file path: %s\n", cli.lsr_file_path);
   }
 
   if (p_strategy == PS_EAGER) {
