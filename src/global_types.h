@@ -60,6 +60,18 @@ typedef int srid_t;
     }                                                                          \
   } while (0)
 
+#define RESIZE_ARR_CONCAT(arr, data_size)                                      \
+  RESIZE_ARR(arr, arr ## _alloc_size, arr ## _size, data_size)
+
+#define INSERT_ARR_ELT(arr, alloc_size, size, data_size, elt)    do {          \
+    RESIZE_ARR(arr, alloc_size, size, data_size);                              \
+    arr[size] = elt;                                                           \
+    size++;                                                                    \
+  } while (0)
+
+#define INSERT_ARR_ELT_CONCAT(arr, data_size, elt)                             \
+  INSERT_ARR_ELT(arr, arr ## _alloc_size, arr ## _size, data_size, elt)
+
 #define RECALLOC_ARR(arr, alloc_size, size, data_size)     do {                \
     if (size >= alloc_size) {                                                  \
       arr = xrecalloc(arr, alloc_size * data_size,                             \
@@ -73,16 +85,6 @@ typedef int srid_t;
       arr = xrealloc_memset(arr, alloc_size * data_size,                       \
         RESIZE(size) * data_size, c);                                          \
       alloc_size = RESIZE(size);                                               \
-    }                                                                          \
-  } while (0)
-
-#define PRINT_ERR_AND_EXIT(s)      do {                                        \
-    fprintf(stderr, "c Error: %s\n", s); exit(-1);                             \
-  } while (0)
-
-#define PRINT_ERR_AND_EXIT_IF(cond, s)    do {                                 \
-    if (cond) {                                                                \
-      fprintf(stderr, "c Error: %s\n", s); exit(-1);                           \
     }                                                                          \
   } while (0)
 
