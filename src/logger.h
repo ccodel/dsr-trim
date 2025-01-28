@@ -9,6 +9,12 @@
 #ifndef _LOGGER_H_
 #define _LOGGER_H_
 
+#define FATAL_ERR_IF(cond, ...) do { \
+  if (cond) { \
+    log_fatal_err(__VA_ARGS__); \
+  } \
+} while (0)
+
 /**
  * @brief The verbosity levels.
  * 
@@ -31,5 +37,8 @@ void log_msg(vlevel_t level, const char *format, ...);
 
 // Logs a message to `stderr`.
 void log_err(const char *format, ...);
+
+// Logs a fatal error and exits.
+void log_fatal_err(const char *format, ...);
 
 #endif /* _LOGGER_H_ */

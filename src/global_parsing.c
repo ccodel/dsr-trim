@@ -165,7 +165,7 @@ static inline int scan_until_char(FILE *f, int match) {
   PRINT_ERR_AND_EXIT("EOF while scanning for character.");
 }
 
-int read_dsr_line_start(FILE *f) {
+line_type_t read_dsr_line_start(FILE *f) {
   if (read_binary) {
     // The next character should be 'a' or 'd'
     int c = getc_unlocked(f);
@@ -186,7 +186,7 @@ int read_dsr_line_start(FILE *f) {
   return ADDITION_LINE;
 }
 
-int read_lsr_line_start(FILE *f, srid_t *line_id) {
+line_type_t read_lsr_line_start(FILE *f, srid_t *line_id) {
   if (read_binary) {
     // Scan for addition/deletion line, then a clause id
     int res = read_dsr_line_start(f);
@@ -196,42 +196,42 @@ int read_lsr_line_start(FILE *f, srid_t *line_id) {
     // Scan the line ID first, and then check for a deletion line.
     int res;
     READ_CLAUSE_ID(res, f, line_id);
+    PRINT_ERR_AND_EXIT_IF(*line_id <= 0, "Line ID is not positive");
     return read_dsr_line_start(f);
   }
 }
 
-void write_dsr_line_start(FILE *f, int is_deletion_line) {
+void write_dsr_addition_line_start(FILE *f) {
   if (write_binary) {
-    if (is_deletion_line) {
-      putc_unlocked(BINARY_DELETION_LINE_START, f);
-    } else {
-      putc_unlocked(BINARY_ADDITION_LINE_START, f);
-    }
-  } else {
-    // An addition line starts with a literal, so no need to write anything.
-    if (is_deletion_line) {
-      putc_unlocked('d', f);
-      putc_unlocked(' ', f);
-    }
+    putc_unlocked(BINARY_ADDITION_LINE_START, f);
   }
 }
 
-void write_lsr_line_start(FILE *f, srid_t line_id, int is_deletion_line) {
+void write_dsr_deletion_line_start(FILE *f) {
   if (write_binary) {
-    // Write the line ID after the addition/deletion character.
-    if (is_deletion_line) {
-      putc_unlocked(BINARY_DELETION_LINE_START, f);
-    } else {
-      putc_unlocked(BINARY_ADDITION_LINE_START, f);
-    }
-
+    putc_unlocked(BINARY_DELETION_LINE_START, f);
+  } else {
+    putc_unlocked('d', f);
+    putc_unlocked(' ', f);
+  }
+}
+void write_lsr_addition_line_start(FILE *f, srid_t line_id) {
+  if (write_binary) {
+    putc_unlocked(BINARY_ADDITION_LINE_START, f);
     write_clause_id_binary(f, line_id);
   } else {
     write_clause_id(f, line_id);
-    if (is_deletion_line) {
-      putc_unlocked('d', f);
-      putc_unlocked(' ', f);
-    }
+  }
+}
+
+void write_lsr_deletion_line_start(FILE *f, srid_t line_id) {
+  if (write_binary) {
+    putc_unlocked(BINARY_DELETION_LINE_START, f);
+    write_clause_id_binary(f, line_id);
+  } else {
+    write_clause_id(f, line_id);
+    putc_unlocked('d', f);
+    putc_unlocked(' ', f);
   }
 }
 

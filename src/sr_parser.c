@@ -15,6 +15,7 @@
 #include "range_array.h"
 #include "xmalloc.h"
 #include "sr_parser.h"
+#include "logger.h"
 
 // A flag where 1 indicates that a mapping in the subsitution witness
 // hasn't been completely parsed yet.
@@ -50,23 +51,24 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
 
     switch (num_times_found_pivot) {
       case 1: // We're reading the clause
-        insert_lit_no_first_last_update(lit);
+        insert_lit(lit);
         new_clause_size++;
         break;
       default: // We're reading the substitution part of the witness (waterfall!)
         subst_pair_incomplete = !subst_pair_incomplete;
       case 2: // We're reading the witness (waterfalls from above)
-        PRINT_ERR_AND_EXIT_IF(VAR_FROM_LIT(lit) > max_var, "Var out of range.");
+        FATAL_ERR_IF(VAR_FROM_LIT(lit) > max_var, "Var %d out of range.",
+          VAR_FROM_LIT(lit));
         ra_insert_int_elt(&witnesses, lit);
         break;
     }
   }
 
-  PRINT_ERR_AND_EXIT_IF(subst_pair_incomplete, "Missing half of subst map.");
+  FATAL_ERR_IF(subst_pair_incomplete, "Missing half of subst map.");
 
-  // For minimization reasons, we add an extra 0 and commit the range
+  // Because the witness might get minimized, we add the witness terminator
   ra_insert_int_elt(&witnesses, WITNESS_TERM);
   ra_commit_range(&witnesses);
-
+  commit_clause();
   // TODO: Remove duplicate literals in the clause or witness?
 }

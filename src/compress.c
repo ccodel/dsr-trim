@@ -16,6 +16,7 @@
 #include "xmalloc.h"
 #include "global_data.h"
 #include "global_parsing.h"
+#include "logger.h"
 
 #define INIT_SIZE    (10000)
 #define ZEROS_FOR_ADDITION    (2)
@@ -96,8 +97,7 @@ static void init_data(void) {
 }
 
 static inline void store_atom(srid_t atom) {
-  RESIZE_ARR(data, data_alloc_size, data_size, sizeof(srid_t));
-  data[data_size++] = atom;
+  INSERT_ARR_ELT_CONCAT(data, sizeof(srid_t), atom);
 }
 
 // Compresses the DSR input file.
@@ -106,7 +106,11 @@ static void compress_dsr_input(void) {
   srid_t token;
   while (has_another_line(input)) {
     int line_type = read_dsr_line_start(input);
-    write_dsr_line_start(output, (line_type == DELETION_LINE) ? 1 : 0);
+    if (line_type == DELETION_LINE) {
+      write_dsr_deletion_line_start(output);
+    } else {
+      write_dsr_addition_line_start(output);
+    }
 
     // Keep reading atoms until 0 is read
     do {
@@ -126,7 +130,7 @@ static void compress_lsr_input(void) {
     max_line_id = MAX(max_line_id, line_id);
     
     // Check that this line type and line ID doesn't exist in the mappings yet
-    PRINT_ERR_AND_EXIT_IF(line_id < 0, "Line id is negative.");
+    FATAL_ERR_IF(line_id < 0, "Line id is negative.");
     srid_t mapping = (line_id << 1) | ((line_type == ADDITION_LINE) ? 0 : 1);
 
     if (mapping >= data_mappings_alloc_size) {
@@ -135,7 +139,7 @@ static void compress_lsr_input(void) {
         mapping, sizeof(srid_t), 0xff);
     }
 
-    PRINT_ERR_AND_EXIT_IF(data_mappings[mapping] != -1, "Map already exists.");
+    FATAL_ERR_IF(data_mappings[mapping] != -1, "Map already exists.");
     
     // Now store where the data for this line starts
     data_mappings[mapping] = data_size;
@@ -159,7 +163,12 @@ static void compress_lsr_input(void) {
       int zeros_left = (is_deletion_line) ? ZEROS_FOR_DELETION : ZEROS_FOR_ADDITION;
       srid_t *data_ptr = data + data_mappings[i];
 
-      write_lsr_line_start(output, line_id, is_deletion_line);
+      if (is_deletion_line) {
+        write_lsr_deletion_line_start(output, line_id);
+      } else {
+        write_lsr_addition_line_start(output, line_id);
+      }
+
       while (zeros_left > 0) {
         srid_t atom = *data_ptr++;
         write_clause_id(output, atom);

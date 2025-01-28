@@ -42,6 +42,7 @@ void ra_insert_long_elt(range_array_t *ra, llong elt);
 void ra_insert_srid_elt(range_array_t *ra, srid_t elt);
 void ra_commit_range(range_array_t *ra);
 void ra_commit_empty_ranges_until(range_array_t *ra, ullong range_index);
+void ra_uncommit_data_by(range_array_t *ra, ullong amount);
 
 void *ra_get_range_start(range_array_t *ra, ullong range_index);
 ullong ra_get_range_size(range_array_t *ra, ullong range_index);

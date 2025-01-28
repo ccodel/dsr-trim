@@ -98,13 +98,16 @@ srid_t read_clause_id(FILE *f);
 void write_clause_id_binary(FILE *f, srid_t clause_id);
 
 // Takes a clause ID in 1-indexed format and writes it to the file according to `write_binary`.
+// If `write_binary == 0`, then an ASCII space is written after the clause ID.
 void write_clause_id(FILE *f, srid_t clause_id);
 
-int read_dsr_line_start(FILE *f);
-int read_lsr_line_start(FILE *f, srid_t *line_id);
+line_type_t read_dsr_line_start(FILE *f);
+line_type_t read_lsr_line_start(FILE *f, srid_t *line_id);
 
-void write_dsr_line_start(FILE *f, int is_deletion_line);
-void write_lsr_line_start(FILE *f, srid_t line_id, int is_deletion_line);
+void write_dsr_addition_line_start(FILE *f);
+void write_dsr_deletion_line_start(FILE *f);
+void write_lsr_addition_line_start(FILE *f, srid_t line_id);
+void write_lsr_deletion_line_start(FILE *f, srid_t line_id);
 
 // Ends the line. Prints a 0 and a newline character, if applicable.
 void write_sr_line_end(FILE *f);

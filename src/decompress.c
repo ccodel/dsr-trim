@@ -16,6 +16,7 @@
 #include "xmalloc.h"
 #include "global_data.h"
 #include "global_parsing.h"
+#include "logger.h"
 
 #define INIT_SIZE    (10000)
 #define ZEROS_FOR_ADDITION    (2)
@@ -40,7 +41,11 @@ static void decompress_dsr_input(void) {
   srid_t token;
   while (has_another_line(input)) { 
     int line_type = read_dsr_line_start(input);
-    write_dsr_line_start(output, (line_type == DELETION_LINE) ? 1 : 0);
+    if (line_type == DELETION_LINE) {
+      write_dsr_deletion_line_start(output);
+    } else {
+      write_dsr_addition_line_start(output);
+    }
 
     // Keep reading atoms until 0 is read
     while ((token = read_clause_id(input)) != 0) {
@@ -55,10 +60,15 @@ static void decompress_lsr_input(void) {
   srid_t token, line_id;
   while (has_another_line(input)) {
     int line_type = read_lsr_line_start(input, &line_id);
-    PRINT_ERR_AND_EXIT_IF(line_id < 0, "Negative line id encountered.");
+    FATAL_ERR_IF(line_id < 0, "Negative line id encountered.");
     int zeros_left = (line_type == ADDITION_LINE) ? 
       ZEROS_FOR_ADDITION : ZEROS_FOR_DELETION;
-    write_lsr_line_start(output, line_id, (line_type == DELETION_LINE) ? 1 : 0);
+
+    if (line_type == DELETION_LINE) {
+      write_lsr_deletion_line_start(output, line_id);
+    } else {
+      write_lsr_addition_line_start(output, line_id);
+    }
 
     // Keep reading atoms until enough zeros are read
     while (zeros_left > 0) {

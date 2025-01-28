@@ -18,12 +18,30 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#define FROM_RAT_CLAUSE(x)      (-(x) - 1)
+#define FROM_DIMACS_CLAUSE(x)   ((x) - 1)
+#define TO_DIMACS_CLAUSE(x)     ((x) + 1)
 #define FROM_DIMACS_LIT(x)      (((x) < 0) ? (((-(x)) << 1) - 1) : (((x) << 1) - 2))
 #define TO_DIMACS_LIT(x)        (((x) % 2) ? (((x) / -2) - 1) : (((x) / 2) + 1))
 #define VAR_FROM_LIT(x)         ((x) >> 1)
 #define IS_POS_LIT(x)           (!((x) & 0x1))
 #define IS_NEG_LIT(x)           ((x) & 0x1)
 #define NEGATE_LIT(x)           ((x) ^ 0x1)
+
+/*
+ * Each LSR proof line starts with a line ID. This ID (almost always) starts
+ * at one more than the number of CNF clauses. These IDs are 1-indexed, so
+ * we must subtract 1 when referring to the formula data structure.
+ * 
+ * However, we 0-index these line IDs when referring to witnesses, hints,
+ * and deletions, and we start them at 0. These macros do the conversions
+ * we need, with the convention that the `line_num` is 0-indexed, while
+ * the `line_id` is essentially `num_cnf_clauses`-indexed.
+ */
+
+#define LINE_ID_FROM_LINE_NUM(line_num)   ((line_num) + num_cnf_clauses + 1)
+#define LINE_NUM_FROM_LINE_ID(line_id)    ((line_id) - (num_cnf_clauses + 1))
+#define CLAUSE_ID_FROM_LINE_NUM(line_num) ((line_num) + num_cnf_clauses)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -120,13 +138,20 @@ extern srid_t *formula;
 extern srid_t formula_size;        // Number of clauses in the database
 extern srid_t formula_alloc_size;  // Allocated size of the clauses array
 
+extern srid_t **lits_clauses;
+extern uint *lits_clauses_sizes;
+extern uint *lits_clauses_alloc_sizes;
+
+//extern uint occ_counter;
+//extern uint occ_counter_end;
+
 // The original number of clauses in the parsed CNF formula.
 // Its value is set via a call to `parse_cnf()`.
 extern srid_t num_cnf_clauses;
 
 // The original number of variables in the parsed CNF formula.
 // Its value is set via a call to `parse_cnf()`.
-extern int num_cnf_vars;
+extern uint num_cnf_vars;
 
 // The first clause index each literal appears in. Initialized to -1.
 extern srid_t *lits_first_clause;
@@ -202,19 +227,17 @@ int absintcmp (const void *a, const void *b);
 // Allocates and initializes global data structures, given the size of a CNF formula.
 void init_global_data(void);
 
+// Prints either `VERIFIED UNSAT` or `VALID`, depending on whether
+// the empty clause was derived (`derived_empty_clause`).
+void print_proof_checking_result(void);
+
 void set_lit_for_alpha(int lit, llong gen);
 peval_t peval_lit_under_alpha(int lit);
 
 void set_mapping_for_subst(int lit, int lit_mapping, llong gen);
 int get_lit_from_subst(int lit);
 
-/** Inserts a literal into the database. Handles resizing of the appropriate global_data
- *  arrays. To mark a clause as finished, call `insert_clause`.
- * 
- *  The lit is expected to be in 0-indexed format, using FROM_DIMACS_LIT.
- */
 void insert_lit(int lit);
-void insert_lit_no_first_last_update(int lit);
 
 void perform_clause_first_last_update(srid_t clause_index);
 void commit_clause(void);
@@ -229,7 +252,11 @@ int *get_clause_start_unsafe(srid_t clause_index);
 int *get_clause_start(srid_t clause_index);
 int  get_clause_size(srid_t clause_index);
 
+int *get_witness_start(srid_t line_num);
+int *get_witness_end(srid_t line_num);
+int  get_witness_size(srid_t line_num);
 void assume_subst(srid_t line_num);
+
 void assume_negated_clause(srid_t clause_index, llong gen);
 int  assume_negated_clause_under_subst(srid_t clause_index, llong gen);
 int  reduce_subst_mapped(srid_t clause_index);

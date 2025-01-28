@@ -13,6 +13,7 @@
 
 #include "xmalloc.h"
 #include "global_data.h"
+#include "logger.h"
 
 #ifdef LONGTYPE
 /** Determines if the sign bit is set to mark a deleted clause. */
@@ -36,6 +37,9 @@
 
 // TODO: Instead of floating point, use numerator and denominator.
 #define DELETION_GC_THRESHOLD     (0.3)
+
+// Minimum size for number of occurrences of literal. Doubles from there.
+#define INIT_LITS_CLAUSES_SIZE     (4)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -62,8 +66,14 @@ srid_t *formula = NULL;
 srid_t formula_size = 0;
 srid_t formula_alloc_size = 0;
 
+// Indexed by literal, counts the number of clauses the literal appears in.
+// Uses `alpha_subst_alloc_size` for its alloc size.
+srid_t **lits_clauses = NULL;
+uint *lits_clauses_sizes = NULL;
+uint *lits_clauses_alloc_sizes = NULL;
+
 srid_t num_cnf_clauses;
-int num_cnf_vars;
+uint num_cnf_vars;
 
 srid_t *lits_first_clause = NULL;
 srid_t *lits_last_clause = NULL;
@@ -124,6 +134,10 @@ void init_global_data(void) {
   formula = xmalloc(formula_alloc_size * sizeof(srid_t));
   formula[0] = 0;
 
+  lits_clauses = xcalloc(alpha_subst_alloc_size, sizeof(srid_t *));
+  lits_clauses_sizes = xcalloc(alpha_subst_alloc_size, sizeof(uint));
+  lits_clauses_alloc_sizes = xcalloc(alpha_subst_alloc_size, sizeof(uint));
+
   lits_first_clause = xrealloc_memset(lits_first_clause,
     0, alpha_subst_alloc_size * sizeof(srid_t), 0xff);
   lits_last_clause = xrealloc_memset(lits_last_clause,
@@ -143,7 +157,16 @@ void init_global_data(void) {
       // roughly bounded above by twice the number of variables
       ra_init(&witnesses, num_cnf_vars * 2, 2, sizeof(int));
       break;
-    default: PRINT_ERR_AND_EXIT("Unknown parsing strategy.");
+    default: log_fatal_err("Unknown parsing strategy: %d.", p_strategy);
+  }
+}
+
+void print_proof_checking_result(void) {
+  if (derived_empty_clause) {
+    log_msg(VL_QUIET, "s VERIFIED UNSAT\n");
+  } else {
+    log_msg(VL_QUIET, "s VALID\n");
+    log_msg(VL_NORMAL, "c A valid proof, without an empty clause.\n.");
   }
 }
 
@@ -197,34 +220,59 @@ static inline void update_first_last(int lit, srid_t clause_index) {
   if (lits_first_clause[lit] == -1) {
     lits_first_clause[lit] = clause_index;
   }
+
+  RESIZE_ARR(lits_clauses[lit], lits_clauses_alloc_sizes[lit],
+    lits_clauses_sizes[lit], sizeof(srid_t));
+  lits_clauses[lit][lits_clauses_sizes[lit]] = clause_index;
+  lits_clauses_sizes[lit]++;
 }
 
+/**
+ * @brief Inserts a literal into the literal database.
+ * 
+ * In addition, this function updates `max_var` and allocates data structures
+ * that depend on `max_var` for their allocation size, if necessary.
+ * 
+ * Does not perform first-last updates. For that, call either
+ * `commit_clause_with_first_last_update()` or
+ * `perform_clause_first_last_update()`.
+ * 
+ * @param lit The 0-indexed, non-DIMACS literal to insert.
+ */
 void insert_lit(int lit) {
-  insert_lit_no_first_last_update(lit);
-  update_first_last(lit, formula_size);
-}
-
-// Updates max_var and resizes global_data arrays that depend on max_var.
-void insert_lit_no_first_last_update(int lit) {
   // Insert the literal into the literal database
-  RESIZE_ARR(lits_db, lits_db_alloc_size, lits_db_size, sizeof(int));
-  lits_db[lits_db_size++] = lit;
+  INSERT_ARR_ELT_CONCAT(lits_db, sizeof(int), lit);
 
   // Resize the other var-indexed arrays if new max would exceed allocated size
   int var = VAR_FROM_LIT(lit);
   max_var = MAX(max_var, var);
   if (max_var >= alpha_subst_alloc_size) {
     int old_size = alpha_subst_alloc_size;
+
     alpha_subst_alloc_size = RESIZE(max_var);
     alpha = xrecalloc(alpha, old_size * sizeof(llong),
       alpha_subst_alloc_size * sizeof(llong));
     subst_generations = xrecalloc(subst_generations, old_size * sizeof(llong),
       alpha_subst_alloc_size * sizeof(llong));
+    subst_mappings = xrealloc(subst_mappings,
+      alpha_subst_alloc_size * sizeof(int));
+
+    lits_clauses = xrealloc(lits_clauses,
+      alpha_subst_alloc_size * sizeof(srid_t *));
+    lits_clauses_sizes = xrecalloc(lits_clauses_sizes, old_size * sizeof(uint),
+      alpha_subst_alloc_size * sizeof(uint));
+    lits_clauses_alloc_sizes = xrealloc(lits_clauses_alloc_sizes,
+      alpha_subst_alloc_size * sizeof(uint));
+
+    for (int i = old_size; i < alpha_subst_alloc_size; i++) {
+      lits_clauses_alloc_sizes[i] = INIT_LITS_CLAUSES_SIZE;
+      lits_clauses[i] = xmalloc(lits_clauses_alloc_sizes[i] * sizeof(srid_t));
+    }
+
     lits_first_clause = xrealloc_memset(lits_first_clause,
       old_size * sizeof(srid_t), alpha_subst_alloc_size * sizeof(srid_t), 0xff);
     lits_last_clause = xrealloc_memset(lits_last_clause,
       old_size * sizeof(srid_t), alpha_subst_alloc_size * sizeof(srid_t), 0xff);
-    subst_mappings = xrealloc(subst_mappings, alpha_subst_alloc_size * sizeof(int));
   }
 }
 
@@ -233,7 +281,9 @@ void perform_clause_first_last_update(srid_t clause_index) {
   int clause_size = get_clause_size(clause_index);
 
   for (int i = 0; i < clause_size; i++) {
-    update_first_last(clause[i], clause_index);
+    int lit = *clause;
+    clause++;
+    update_first_last(lit, clause_index);
   }
 }
 
@@ -300,14 +350,16 @@ void uncommit_clause_with_first_last_update(void) {
 }
 
 inline int is_clause_deleted(srid_t clause_index) {
-  PRINT_ERR_AND_EXIT_IF(clause_index < 0 || clause_index > formula_size,
-    "is_clause_deleted: Clause index was out of bounds.");
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "is_clause_deleted(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
   return IS_DELETED_CLAUSE(formula[clause_index]);
 }
 
-/** Copies memory to an address lower in the address space.
+/** 
+ * @brief Copies memory to an address lower in the address space.
  * 
- *  Checks if the regions overlap to choose `memcpy` or `memmove`.
+ *  Checks if the regions overlap to choose `memcpy()` or `memmove()`.
  */
 static inline void memshift(void *restrict dst, const void *restrict src, size_t n) {
   // TODO: Technically suffers from overflow bug
@@ -356,18 +408,39 @@ static inline void gc_lits_db(void) {
 }
 
 void delete_clause(srid_t clause_index) {
-  PRINT_ERR_AND_EXIT_IF(clause_index < 0 || clause_index > formula_size,
-    "delete_clause: Clause index was out of bounds.");
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "delete_clause(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
+  
   srid_t clause_ptr = formula[clause_index];
-  if (IS_DELETED_CLAUSE(clause_ptr)) {
-    PRINT_ERR_AND_EXIT("The clause was already deleted.");
-  } else {
-    // TODO: Could break if delete clause just added(?)
-    srid_t next_clause_ptr = CLAUSE_IDX(formula[clause_index + 1]);
-    lits_db_deleted_size += next_clause_ptr - clause_ptr;
-    formula[clause_index] = DELETE_CLAUSE(clause_ptr);
-    gc_lits_db(); // If we deleted too much from `lits_db`, garbage collect
+  
+  FATAL_ERR_IF(IS_DELETED_CLAUSE(clause_ptr),
+    "Clause %lld was already deleted.", TO_DIMACS_CLAUSE(clause_index));
+
+  srid_t next_clause_ptr = CLAUSE_IDX(formula[clause_index + 1]);
+
+  // For each literal, remove this clause from its occurrences list
+  int size = (int) (next_clause_ptr - clause_ptr);
+  for (int l = 0; l < size; l++) {
+    int lit = lits_db[clause_ptr + l];
+    // We (probably) don't care about the ordering of the clauses in this list
+    // So we can O(1) swap, as opposed to a `memmove()` call
+    // Unfortunately, we must iterate through the occurrences list
+    srid_t *clauses = lits_clauses[lit];
+    srid_t *clauses_iter = clauses;
+    while (*clauses_iter != clause_index) {
+      clauses_iter++;
+    }
+
+    // Now swap with the end
+    *clauses_iter = clauses[lits_clauses_sizes[lit] - 1];
+    lits_clauses_sizes[lit]--;
   }
+
+  // TODO: Could break if delete clause just added(?)
+  lits_db_deleted_size += next_clause_ptr - clause_ptr;
+  formula[clause_index] = DELETE_CLAUSE(clause_ptr);
+  gc_lits_db(); // If we deleted too much from `lits_db`, garbage collect
 }
 
 inline int *get_clause_start_unsafe(srid_t clause_index) {
@@ -375,15 +448,18 @@ inline int *get_clause_start_unsafe(srid_t clause_index) {
 }
 
 inline int *get_clause_start(srid_t clause_index) {
-  PRINT_ERR_AND_EXIT_IF(clause_index < 0 || clause_index > formula_size,
-    "get_clause_start: Clause index was out of bounds.");
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "get_clause_start(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
   return lits_db + CLAUSE_IDX(formula[clause_index]);
 }
 
 // TODO: What should this return for the new clause, if not yet added?
 inline int get_clause_size(srid_t clause_index) {
-  PRINT_ERR_AND_EXIT_IF(clause_index < 0 || clause_index > formula_size,
-    "get_clause_size: Clause index was out of bounds.");
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "get_clause_size(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
+
   if (clause_index == formula_size) {
     return lits_db_size - CLAUSE_IDX(formula[clause_index]);
   } else {
@@ -391,7 +467,7 @@ inline int get_clause_size(srid_t clause_index) {
   }
 }
 
-static inline int *get_witness_start(srid_t line_num) {
+inline int *get_witness_start(srid_t line_num) {
   if (p_strategy == PS_EAGER) {
     return ((int *) ra_get_range_start(&witnesses, line_num));
   } else {
@@ -399,12 +475,16 @@ static inline int *get_witness_start(srid_t line_num) {
   }
 }
 
-static inline int *get_witness_end(srid_t line_num) {
+inline int *get_witness_end(srid_t line_num) {
   if (p_strategy == PS_EAGER) {
     return ((int *) ra_get_range_start(&witnesses, line_num + 1));
   } else {
     return ((int *) ra_get_range_start(&witnesses, 1));
   }
+}
+
+inline int get_witness_size(srid_t line_num) {
+  return (int) (get_witness_end(line_num) - get_witness_start(line_num));
 }
 
 static void set_min_and_max_clause_to_check(int lit) {
@@ -430,12 +510,16 @@ static void set_min_and_max_clause_to_check(int lit) {
 void assume_subst(srid_t line_num) {
   min_clause_to_check = formula_size - 1;
   max_clause_to_check = 0;
-  char seen_pivot_divider = 0;
+  int seen_pivot_divider = 0;
   const int pivot_var = VAR_FROM_LIT(pivot);
 
   // Set the pivot, just in case the witness is empty
   set_mapping_for_subst(pivot, SUBST_TT, subst_generation);
   set_min_and_max_clause_to_check(NEGATE_LIT(pivot));
+  //occ_counter_end = lits_occ[NEGATE_LIT(pivot)]; // TODO remap pivot needs to subtract
+  //printf("c    Adding %d to counter_end for literal %d\n",
+    //lits_occ[NEGATE_LIT(pivot)], TO_DIMACS_LIT(NEGATE_LIT(pivot)));
+  //occ_counter = 0;
 
   int *witness_iter = get_witness_start(line_num) + 1;
   int *witness_end = get_witness_end(line_num);
@@ -452,9 +536,8 @@ void assume_subst(srid_t line_num) {
     // Error if we have already set a variable in the substitution.
     // This ensures no variable appears twice.
     // Note that the pivot can be re-set in the substitution portion
-    PRINT_ERR_AND_EXIT_IF(
-      subst_generations[var] == subst_generation && var != pivot_var,
-      "Literal in witness was already set.");
+    FATAL_ERR_IF(subst_generations[var] == subst_generation && var != pivot_var,
+      "Literal %d in witness was already set.", TO_DIMACS_LIT(lit));
 
     if (!seen_pivot_divider) {
       if (lit == pivot) {
@@ -462,43 +545,42 @@ void assume_subst(srid_t line_num) {
       } else {
         set_mapping_for_subst(lit, SUBST_TT, subst_generation);
         set_min_and_max_clause_to_check(neg_lit);
+        //printf("c    Adding %d to counter_end for literal %d\n",
+          //lits_occ[neg_lit], TO_DIMACS_LIT(neg_lit));
+        //occ_counter_end += lits_occ[neg_lit];
       }
     } else {
       witness_iter++;
-      set_mapping_for_subst(lit, *witness_iter, subst_generation);
+      int mapped_lit = *witness_iter;
+      set_mapping_for_subst(lit, mapped_lit, subst_generation);
       set_min_and_max_clause_to_check(lit);
       set_min_and_max_clause_to_check(neg_lit);
+      //occ_counter_end += lits_occ[lit];
+      //occ_counter_end += lits_occ[neg_lit];
+      //printf("c    Adding %d to counter_end for literal %d\n",
+          //lits_occ[neg_lit], TO_DIMACS_LIT(neg_lit));
+      //printf("c    Adding %d to counter_end for literal %d\n",
+          //lits_occ[lit], TO_DIMACS_LIT(lit));
     }
   }
 }
 
 void assume_negated_clause(srid_t clause_index, llong gen) {
-  PRINT_ERR_AND_EXIT_IF(clause_index < 0 || clause_index > formula_size,
-    "assume_negated_clause: Clause index was out of bounds.");
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "assume_negated_clause(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
 
-  if (clause_index == formula_size) {
-    int i = formula[formula_size];
+  int *clause_iter = get_clause_start(clause_index);
+  int *end = get_clause_start(clause_index + 1);
 
-    // Only set the pivot if the clause is non-empty
-    if (i < lits_db_size) {
-      pivot = lits_db[i];
-    }
+  // Only set the pivot if the clause is nonempty
+  if (clause_iter < end) {
+    pivot = *clause_iter;
+  }
 
-    for (int i = formula[formula_size]; i < lits_db_size; i++) {
-      int lit = lits_db[i];
-      set_lit_for_alpha(NEGATE_LIT(lit), gen);
-    }
-  } else {
-    int *clause_ptr = get_clause_start(clause_index);
-    int *end = get_clause_start(clause_index + 1);
-
-    if (clause_ptr < end) {
-      pivot = *clause_ptr;
-    }
-
-    for (; clause_ptr < end; clause_ptr++) {
-      set_lit_for_alpha(NEGATE_LIT(*clause_ptr), gen);
-    }
+  for (; clause_iter < end; clause_iter++) {
+    int lit = *clause_iter;
+    set_lit_for_alpha(NEGATE_LIT(lit), gen);
   }
 }
 
@@ -509,8 +591,9 @@ void assume_negated_clause(srid_t clause_index, llong gen) {
 // and 0 otherwise.
 int assume_negated_clause_under_subst(srid_t clause_index, llong gen) {
   // TODO: Excludes the clause to be added (at formula_size)
-  PRINT_ERR_AND_EXIT_IF(clause_index < 0 || clause_index >= formula_size,
-    "assume_negated_clause_under_subst: Clause index was out of bounds.");
+  FATAL_ERR_IF(clause_index < 0 || clause_index >= formula_size,
+    "assume_nc_under_subst(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
   
   int *clause_ptr = get_clause_start(clause_index);
   int *end = get_clause_start(clause_index + 1);
@@ -523,13 +606,14 @@ int assume_negated_clause_under_subst(srid_t clause_index, llong gen) {
       case SUBST_FF: break; // Ignore the literal
       case SUBST_UNASSIGNED: // TODO: See note in get_lit_from_subst
         mapped_lit = lit;
-      default:
+      default:;
         // Now evaluate the mapped literal under alpha. If it's unassigned, set it
-        switch (peval_lit_under_alpha(mapped_lit)) {
+        int mapped_eval = peval_lit_under_alpha(mapped_lit);
+        switch (mapped_eval) {
           case FF: break; // Ignore the literal
           case TT: return SATISFIED_OR_MUL;
           case UNASSIGNED: set_lit_for_alpha(NEGATE_LIT(mapped_lit), gen); break;
-          default: PRINT_ERR_AND_EXIT("Corrupted peval value.");
+          default: log_fatal_err("Corrupted peval value: %d.", mapped_eval);
         }
     }
   }
@@ -537,15 +621,18 @@ int assume_negated_clause_under_subst(srid_t clause_index, llong gen) {
   return 0;
 }
 
-// Evaluate the clause under the substitution. SATISFIED_OR_MUL is satisfied only.
+// Evaluate the clause under the substitution.
+// A return value of `SATISFIED_OR_MUL` means the clause is satisfied only.
 int reduce_subst_mapped(srid_t clause_index) {
-  PRINT_ERR_AND_EXIT_IF(is_clause_deleted(clause_index),
-    "Trying to apply substitution reduction on a deleted clause.");
+  FATAL_ERR_IF(is_clause_deleted(clause_index),
+    "Trying to reduce a deleted clause (%lld).",
+    TO_DIMACS_CLAUSE(clause_index));
 
   int id_mapped_lits = 0, falsified_lits = 0;
   int *start = get_clause_start(clause_index);
   int *end = get_clause_start(clause_index + 1);
   int size = end - start;
+  int res = REDUCED;
 
   // Evaluate the literals under the substitution first
   // If the witness is a substitution, tautologies can be produced. But we don't
@@ -555,12 +642,20 @@ int reduce_subst_mapped(srid_t clause_index) {
     int lit = *start;
     int mapped_lit = get_lit_from_subst(lit);
     switch (mapped_lit) {
-      case SUBST_TT: return SATISFIED_OR_MUL;
-      case SUBST_FF: falsified_lits++; break;
+      case SUBST_TT:
+        // return SATISFIED_OR_MUL;
+        res = SATISFIED_OR_MUL;
+        break;
+      case SUBST_FF:
+        falsified_lits++;
+        //occ_counter++;
+        break;
       case SUBST_UNASSIGNED: mapped_lit = lit;
       default:
         if (mapped_lit == lit) {
           id_mapped_lits++;
+        } else {
+          //occ_counter++;
         }
     }
   }
@@ -570,7 +665,7 @@ int reduce_subst_mapped(srid_t clause_index) {
   } else if (id_mapped_lits == size) {
     return NOT_REDUCED;
   } else {
-    return REDUCED;
+    return res;
   }
 }
 

@@ -20,7 +20,7 @@
  * the directory and file strings are separate, and so to cap the length of
  * a string buffer, we use this macro.
  */
-#define MAX_FILE_PATH_LEN         (256)
+#define MAX_FILE_PATH_LEN       (256)
 
 #define HELP_MSG_OPT            ('h')
 #define QUIET_MODE_OPT          ('q')

@@ -39,6 +39,8 @@ static void copy_and_update_bufs(cli_opts_t *cli, size_t len) {
 // Handles the common CLI options.
 cli_res_t cli_handle_opt(cli_opts_t *cli, int option, int optopt, char *optarg) {
   switch (option) {
+  case HELP_MSG_OPT:
+    return CLI_HELP_MESSAGE;
   case QUIET_MODE_OPT:
     err_if_option_already_set(cli->quiet_mode_set, optopt);
     PRINT_ERR_AND_EXIT_IF(cli->verbose_mode_set,

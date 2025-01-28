@@ -13,23 +13,25 @@
 #include "global_data.h"
 #include "global_parsing.h"
 #include "cnf_parser.h"
+#include "logger.h"
 
 int parse_clause(FILE *f) {
   new_clause_size = 0;
   int parsed_lit = 0;
   while ((parsed_lit = read_lit(f)) != 0) {
     int lit = FROM_DIMACS_LIT(parsed_lit);
-    insert_lit_no_first_last_update(lit);
+    insert_lit(lit);
     new_clause_size++;
   }
 
+  // TODO: Pull this out into helper for sr_parser?
+  int *write_ptr, *read_ptr = get_clause_start(formula_size);
   if (new_clause_size <= 1) {
     return 0;
   }
 
   // Now we sort the literals in the clause
   // Then, we efficiently remove duplicate literals and detect tautologies
-  int *write_ptr, *read_ptr = get_clause_start(formula_size);
   qsort((void *) read_ptr, new_clause_size, sizeof(int), absintcmp);
   int is_tautology = 0;
   int skipped_lits = 0;
@@ -95,10 +97,10 @@ void parse_cnf(FILE *f) {
   while (formula_size < num_cnf_clauses) {
     int is_tautology = parse_clause(f);
     if (new_clause_size == 0) {
-      derived_empty_clause = 1;
-      commit_clause();
-      break;
+      PRINT_ERR_AND_EXIT("The empty clause was found in the CNF.");
     } else if (is_tautology) {
+      log_msg(VL_NORMAL, "c Tautology in clause %lld detected, deleting\n",
+        (llong) formula_size);
       commit_clause();
       delete_clause(formula_size - 1);
     } else {
@@ -107,6 +109,9 @@ void parse_cnf(FILE *f) {
   }
 
   fclose(f);
+
+  log_msg(VL_NORMAL, "c The CNF formula has %lld clauses and %d variables.\n",
+    ((llong) formula_size), max_var);
 }
 
 void print_cnf(void) {
@@ -115,10 +120,10 @@ void print_cnf(void) {
       continue;
     }
 
-    int *clause_ptr = get_clause_start(c);
+    int *clause_iter = get_clause_start(c);
     int *clause_end = get_clause_start(c + 1);
-    for (; clause_ptr < clause_end; clause_ptr++) {
-      printf("%d ", TO_DIMACS_LIT(*clause_ptr));
+    for (; clause_iter < clause_end; clause_iter++) {
+      printf("%d ", TO_DIMACS_LIT(*clause_iter));
     }
     printf("0\n");
   }

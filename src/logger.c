@@ -6,6 +6,7 @@
  * @date 2025-01-08
  */
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
 
@@ -27,4 +28,13 @@ void log_err(const char *format, ...) {
   va_start(ap, format);
   vfprintf(stderr, format, ap);
   va_end(ap);
+}
+
+void log_fatal_err(const char *format, ...) {
+  va_list ap;
+  va_start(ap, format);
+  vfprintf(stderr, format, ap);
+  va_end(ap);
+  fprintf(stderr, "\n");
+  exit(1);
 }
