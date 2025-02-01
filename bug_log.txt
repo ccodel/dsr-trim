@@ -22,6 +22,7 @@ dsr-trim:
     - (4/14/24) Was not removing the added literals to lits_db when deleting a clause in the DSR format. As a result, the next addition clause included all the literals of the previous deletion clause.
     - (4/15/24) When deleting a clause, the watch pointers must also be removed. But the call to delete_clause() came first, which caused a garbage collection/realloc() call to shift the underlying literals, and so the correct watch pointers weren't removed at all, leading to a spurious RAT check.
     - (4/30/24) When adding a unit clause, it is possible that global UP has already set the unit literal to true. In that case, marking which clauses to include in global UP hints stops at the newly-added unit clause, but the reason is the prior clause, which may depend on other UP hints. The fix is to replace the unit literal's reason, and the unit_clause, with the newly-added unit clause. TODO is what to do if the previous clause is also unit (meaning there is a duplicate), and whether to delete the previous clause. Debugging method was to print when clauses became globally unit and detecting that the global unit matched the unit clause added in Schur.
+    - (1/30/25) minimize_witness() had an off-by-one error when setting the write_iter, leading to a malformed minimized witness.
 
 global_parsing.c:
     - Not taking the absolute value of a token, meaning that negative tokens get "mapped twice."

@@ -8,6 +8,7 @@
 
 #include "hash_table.h"
 #include "xmalloc.h"
+#include "logger.h"
 
 void ht_init(ht_t *ht, uint load) {
   uint alloc_size = MAX(load, INIT_HT_BUCKETS_SIZE);
@@ -43,7 +44,7 @@ htb_t *ht_get_bucket(ht_t *ht, uint hash) {
 
 // Remove the entry at the provided index.
 void ht_remove_at_index(htb_t *bucket, uint index) {
-  PRINT_ERR_AND_EXIT_IF(index >= bucket->size, "Index out of bounds.");
+  FATAL_ERR_IF(index >= bucket->size, "Index out of bounds.");
 
   if (bucket->size > 1) {
     bucket->entries[index] = bucket->entries[bucket->size - 1];

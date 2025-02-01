@@ -36,10 +36,8 @@
 #endif
 
 // TODO: Instead of floating point, use numerator and denominator.
-#define DELETION_GC_THRESHOLD     (0.3)
-
-// Minimum size for number of occurrences of literal. Doubles from there.
-#define INIT_LITS_CLAUSES_SIZE     (4)
+#define DELETION_GC_NUMER           1
+#define DELETION_GC_DENOM           4
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -66,12 +64,6 @@ srid_t *formula = NULL;
 srid_t formula_size = 0;
 srid_t formula_alloc_size = 0;
 
-// Indexed by literal, counts the number of clauses the literal appears in.
-// Uses `alpha_subst_alloc_size` for its alloc size.
-srid_t **lits_clauses = NULL;
-uint *lits_clauses_sizes = NULL;
-uint *lits_clauses_alloc_sizes = NULL;
-
 srid_t num_cnf_clauses;
 uint num_cnf_vars;
 
@@ -92,8 +84,8 @@ int pivot = 0;
 srid_t min_clause_to_check = 0;
 srid_t max_clause_to_check = 0;
 
-int new_clause_size = 0;
-int max_var = 0;
+uint new_clause_size = 0;
+uint max_var = 0;
 int derived_empty_clause = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -134,10 +126,6 @@ void init_global_data(void) {
   formula = xmalloc(formula_alloc_size * sizeof(srid_t));
   formula[0] = 0;
 
-  lits_clauses = xcalloc(alpha_subst_alloc_size, sizeof(srid_t *));
-  lits_clauses_sizes = xcalloc(alpha_subst_alloc_size, sizeof(uint));
-  lits_clauses_alloc_sizes = xcalloc(alpha_subst_alloc_size, sizeof(uint));
-
   lits_first_clause = xrealloc_memset(lits_first_clause,
     0, alpha_subst_alloc_size * sizeof(srid_t), 0xff);
   lits_last_clause = xrealloc_memset(lits_last_clause,
@@ -161,12 +149,22 @@ void init_global_data(void) {
   }
 }
 
+/**
+ * @brief Prints the result of proof checking.
+ * 
+ * If the empty clause was derived and `derived_empty_clause` was set,
+ * then the proof has been `VERIFIED UNSAT`. Otherwise, (assuming forwards
+ * proof checking), the proof is `VALID`.
+ * 
+ * The result is printed regardless of the verbosity level, but other
+ * comments explaining the result can be suppressed with the `-q` flag.
+ */
 void print_proof_checking_result(void) {
   if (derived_empty_clause) {
-    log_msg(VL_QUIET, "s VERIFIED UNSAT\n");
+    log_raw(VL_QUIET, "s VERIFIED UNSAT\n");
   } else {
-    log_msg(VL_QUIET, "s VALID\n");
-    log_msg(VL_NORMAL, "c A valid proof, without an empty clause.\n.");
+    log_raw(VL_QUIET, "s VALID\n");
+    logc("A valid proof, without an empty clause.");
   }
 }
 
@@ -220,11 +218,6 @@ static inline void update_first_last(int lit, srid_t clause_index) {
   if (lits_first_clause[lit] == -1) {
     lits_first_clause[lit] = clause_index;
   }
-
-  RESIZE_ARR(lits_clauses[lit], lits_clauses_alloc_sizes[lit],
-    lits_clauses_sizes[lit], sizeof(srid_t));
-  lits_clauses[lit][lits_clauses_sizes[lit]] = clause_index;
-  lits_clauses_sizes[lit]++;
 }
 
 /**
@@ -256,18 +249,6 @@ void insert_lit(int lit) {
       alpha_subst_alloc_size * sizeof(llong));
     subst_mappings = xrealloc(subst_mappings,
       alpha_subst_alloc_size * sizeof(int));
-
-    lits_clauses = xrealloc(lits_clauses,
-      alpha_subst_alloc_size * sizeof(srid_t *));
-    lits_clauses_sizes = xrecalloc(lits_clauses_sizes, old_size * sizeof(uint),
-      alpha_subst_alloc_size * sizeof(uint));
-    lits_clauses_alloc_sizes = xrealloc(lits_clauses_alloc_sizes,
-      alpha_subst_alloc_size * sizeof(uint));
-
-    for (int i = old_size; i < alpha_subst_alloc_size; i++) {
-      lits_clauses_alloc_sizes[i] = INIT_LITS_CLAUSES_SIZE;
-      lits_clauses[i] = xmalloc(lits_clauses_alloc_sizes[i] * sizeof(srid_t));
-    }
 
     lits_first_clause = xrealloc_memset(lits_first_clause,
       old_size * sizeof(srid_t), alpha_subst_alloc_size * sizeof(srid_t), 0xff);
@@ -371,7 +352,8 @@ static inline void memshift(void *restrict dst, const void *restrict src, size_t
 }
 
 static inline void gc_lits_db(void) {
-  if (lits_db_deleted_size > DELETION_GC_THRESHOLD * lits_db_size) {
+  if (lits_db_deleted_size * DELETION_GC_DENOM
+        > lits_db_size * DELETION_GC_NUMER) {
     srid_t insert_index = 0;
     srid_t clause_idx;
     srid_t next_clause_idx = formula[0]; // First loop takes value of next_clause_ptr
@@ -418,24 +400,6 @@ void delete_clause(srid_t clause_index) {
     "Clause %lld was already deleted.", TO_DIMACS_CLAUSE(clause_index));
 
   srid_t next_clause_ptr = CLAUSE_IDX(formula[clause_index + 1]);
-
-  // For each literal, remove this clause from its occurrences list
-  int size = (int) (next_clause_ptr - clause_ptr);
-  for (int l = 0; l < size; l++) {
-    int lit = lits_db[clause_ptr + l];
-    // We (probably) don't care about the ordering of the clauses in this list
-    // So we can O(1) swap, as opposed to a `memmove()` call
-    // Unfortunately, we must iterate through the occurrences list
-    srid_t *clauses = lits_clauses[lit];
-    srid_t *clauses_iter = clauses;
-    while (*clauses_iter != clause_index) {
-      clauses_iter++;
-    }
-
-    // Now swap with the end
-    *clauses_iter = clauses[lits_clauses_sizes[lit] - 1];
-    lits_clauses_sizes[lit]--;
-  }
 
   // TODO: Could break if delete clause just added(?)
   lits_db_deleted_size += next_clause_ptr - clause_ptr;
@@ -537,7 +501,8 @@ void assume_subst(srid_t line_num) {
     // This ensures no variable appears twice.
     // Note that the pivot can be re-set in the substitution portion
     FATAL_ERR_IF(subst_generations[var] == subst_generation && var != pivot_var,
-      "Literal %d in witness was already set.", TO_DIMACS_LIT(lit));
+      "[line %lld] Literal %d in witness was already set.",
+      LINE_ID_FROM_LINE_NUM(line_num), TO_DIMACS_LIT(lit));
 
     if (!seen_pivot_divider) {
       if (lit == pivot) {

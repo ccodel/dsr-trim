@@ -33,12 +33,21 @@ typedef enum verbosity_level {
 extern vlevel_t verbosity_level;
 
 // Logs a message to `stdout` if the provided `level` is `<= verbosity_level`.
+// Does not begin with a `"c "` or end with a newline `'\n'`.
+void log_raw(vlevel_t level, const char *format, ...);
+
+// Logs a message to `stdout` if the provided `level` is `<= verbosity_level`.
+// Begins the message with `"c "` and ends it with a newline `'\n'`.
 void log_msg(vlevel_t level, const char *format, ...);
 
+// Alias for `log_msg(VL_NORMAL, ...)`.
+void logc(const char *format, ...);
+
 // Logs a message to `stderr`.
+// Begins the message with `"Error "` and end the message with a newline `'\n'`.
 void log_err(const char *format, ...);
 
-// Logs a fatal error and exits.
+// Logs a fatal error (along with a newline `'\n'`) and exits.
 void log_fatal_err(const char *format, ...);
 
 #endif /* _LOGGER_H_ */

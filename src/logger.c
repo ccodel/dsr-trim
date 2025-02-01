@@ -14,7 +14,7 @@
 
 vlevel_t verbosity_level = VL_NORMAL;
 
-void log_msg(vlevel_t level, const char *format, ...) {
+void log_raw(vlevel_t level, const char *format, ...) {
   if (level <= verbosity_level) {
     va_list ap;
     va_start(ap, format);
@@ -23,10 +23,34 @@ void log_msg(vlevel_t level, const char *format, ...) {
   }
 }
 
+void log_msg(vlevel_t level, const char *format, ...) {
+  if (level <= verbosity_level) {
+    va_list ap;
+    va_start(ap, format);
+    fprintf(stdout, "c ");
+    vfprintf(stdout, format, ap);
+    fprintf(stdout, "\n");
+    va_end(ap);
+  }
+}
+
+void logc(const char *format, ...) {
+  if (VL_NORMAL <= verbosity_level) {
+    va_list ap;
+    va_start(ap, format);
+    fprintf(stdout, "c ");
+    vfprintf(stdout, format, ap);
+    fprintf(stdout, "\n");
+    va_end(ap);
+  }
+}
+
 void log_err(const char *format, ...) {
   va_list ap;
   va_start(ap, format);
+  fprintf(stderr, "Error: ");
   vfprintf(stderr, format, ap);
+  fprintf(stderr, "\n");
   va_end(ap);
 }
 

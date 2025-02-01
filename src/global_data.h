@@ -138,13 +138,6 @@ extern srid_t *formula;
 extern srid_t formula_size;        // Number of clauses in the database
 extern srid_t formula_alloc_size;  // Allocated size of the clauses array
 
-extern srid_t **lits_clauses;
-extern uint *lits_clauses_sizes;
-extern uint *lits_clauses_alloc_sizes;
-
-//extern uint occ_counter;
-//extern uint occ_counter_end;
-
 // The original number of clauses in the parsed CNF formula.
 // Its value is set via a call to `parse_cnf()`.
 extern srid_t num_cnf_clauses;
@@ -210,10 +203,10 @@ extern srid_t min_clause_to_check;
 extern srid_t max_clause_to_check;
 
 // Cached size of the new SR clause. Equal to get_clause_size(formula_size).
-extern int new_clause_size; 
+extern uint new_clause_size; 
 
 // Maximum 0-indexed variable ID parsed so far. Used for resizing arrays.
-extern int max_var;
+extern uint max_var;
 
 // Flag for whether the empty clause has been derived.
 // Can be set during CNF parsing if the empty clause is added.

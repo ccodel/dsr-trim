@@ -9,7 +9,6 @@
 #include "global_data.h"
 #include "global_parsing.h"
 
-#include <stdio.h>
 #include <ctype.h>
 
 int read_binary = 0;
@@ -20,7 +19,7 @@ int read_lit_binary(FILE *f) {
   int new_lsb, shift = 0;
   do {
     new_lsb = getc_unlocked(f);
-    PRINT_ERR_AND_EXIT_IF(new_lsb == EOF, "EOF while parsing binary lit.");
+    FATAL_ERR_IF(new_lsb == EOF, "EOF while parsing binary lit.");
 
     x |= (new_lsb & 0x7f) << shift;
     shift += 7;
@@ -162,7 +161,7 @@ static inline int scan_until_char(FILE *f, int match) {
     }
   }
 
-  PRINT_ERR_AND_EXIT("EOF while scanning for character.");
+  log_fatal_err("EOF while scanning for character.");
 }
 
 line_type_t read_dsr_line_start(FILE *f) {
@@ -172,13 +171,13 @@ line_type_t read_dsr_line_start(FILE *f) {
     switch (c) {
       case BINARY_ADDITION_LINE_START: return ADDITION_LINE;
       case BINARY_DELETION_LINE_START: return DELETION_LINE;
-      default: PRINT_ERR_AND_EXIT("Line didn't start with a good character.");
+      default: log_fatal_err("Line didn't start with a good character.");
     }
   } else {
     if (scan_until_char(f, 'd')) {
       // Check that the next character is whitespace
       int c = getc_unlocked(f);
-      PRINT_ERR_AND_EXIT_IF(!isspace(c), "Expected whitespace after 'd'.");
+      FATAL_ERR_IF(!isspace(c), "Expected whitespace after 'd'.");
       return DELETION_LINE;
     }
   }
@@ -196,7 +195,7 @@ line_type_t read_lsr_line_start(FILE *f, srid_t *line_id) {
     // Scan the line ID first, and then check for a deletion line.
     int res;
     READ_CLAUSE_ID(res, f, line_id);
-    PRINT_ERR_AND_EXIT_IF(*line_id <= 0, "Line ID is not positive");
+    FATAL_ERR_IF(*line_id <= 0, "Line ID is not positive");
     return read_dsr_line_start(f);
   }
 }
@@ -254,7 +253,7 @@ int has_another_line(FILE *f) {
         ungetc(c, f);
         return 1;
       case EOF: return 0;
-      default:  PRINT_ERR_AND_EXIT("Unexpected binary character found.");
+      default:  log_fatal_err("Unexpected binary character found.");
     }
   } else {
     // Ignore whitespace until a digit is found. Error if non-digit found.
@@ -264,7 +263,7 @@ int has_another_line(FILE *f) {
           ungetc(c, f);
           return 1;
         } else {
-          PRINT_ERR_AND_EXIT("Found a non-digit at start of line.");
+          log_fatal_err("Found a non-digit at start of line.");
         }
       }
     }

@@ -122,29 +122,29 @@ static up_state_t up_state = GLOBAL_UP;
 static srid_t **wps = NULL;
 
 // Allocated size of the 2D array of watch pointers.
-static int wps_alloc_size = 0;
+static uint wps_alloc_size = 0;
 
 // Allocated size of watch pointer array for each literal.
 // Invariant: if wps[i] == NULL, then wp_alloc_sizes[i] = 0.
-static int *wp_alloc_sizes = NULL;
+static uint *wp_alloc_sizes = NULL;
 
 // Number of watch pointers under each literal.
 // Invariant: if wps[i] == NULL, then wp_sizes[i] = 0.
-static int *wp_sizes = NULL; // TODO: New name
+static uint *wp_sizes = NULL; // TODO: New name
 
 // Array containing the clause ID "reason" causing the variable to be set. Indexed by variable.
 // The MSB is set during RAT assumption to let global UP clauses be marked globally. (TODO: update docs later.)
 static srid_t *up_reasons = NULL;
-static int up_reasons_alloc_size = 0; // TODO: use alpha_subst_alloc_size for this?
+static uint up_reasons_alloc_size = 0; // TODO: use alpha_subst_alloc_size for this?
 
 // A list of literals, in order of when they become unit.
 static int *unit_literals = NULL;
 
 // A list of clauses, in order of when they became unit.
 static srid_t *unit_clauses = NULL;
-static int units_alloc_size = 0;
-static int unit_literals_size = 0;
-static int unit_clauses_size = 0;
+static uint units_alloc_size = 0;
+static uint unit_literals_size = 0;
+static uint unit_clauses_size = 0;
 
 static int candidate_unit_clauses_index = 0;
 static int RAT_unit_clauses_index = 0;
@@ -168,8 +168,8 @@ static srid_t dependencies_alloc_size = 0;
 // marked variables here for tautology checking. Cleared when a trivial
 // UP derivation is not found, or if one is found not based on a RAT-marked var.
 static int *RAT_marked_vars = NULL;
-static int RAT_marked_vars_alloc_size = 0;
-static int RAT_marked_vars_size = 0;
+static uint RAT_marked_vars_alloc_size = 0;
+static uint RAT_marked_vars_size = 0;
 
 static FILE *dsr_file = NULL;
 static FILE *lsr_file = NULL;
@@ -179,6 +179,11 @@ static srid_t num_parsed_add_lines = 0;
 
 // 0-indexed current line ID.
 static srid_t current_line = 0;
+
+// Records the 0-indexed line number of the maximum line with RAT hint groups.
+// This is used to reduce unhelpful deletions when the rest of the proof is
+// only normal UP derivations.
+static srid_t max_RAT_line = -1;
 
 static srid_t *clause_id_map = NULL;
 // static llong generation_before_line_checking = 0;
@@ -205,9 +210,8 @@ static void remove_wp_for_lit(int lit, srid_t clause);
 // These IDs are set during backwards checking.
 // First, any clause that appears in the UP refutation of the empty clause
 // is marked.
-//
-// Uses `formula_size` and `formula_alloc_size` for allocation purposes.
 static srid_t *clause_last_used_id = NULL;
+static uint clause_last_used_id_alloc_size = 0;
 
 // Flag for whether we encountered a new marked clause during UP, during
 // backwards checking.
@@ -419,9 +423,6 @@ static inline void store_derived_deletion(srid_t clause_id) {
   // as we won't actually delete these
   if (current_line == num_parsed_add_lines - 1) return;
 
-  //log_msg(VL_NORMAL, "c [line %lld] Storing a derived deletion for clause %d\n",
-    //current_line + 1, TO_DIMACS_CLAUSE(clause_id));
-
   ra_insert_srid_elt(&derived_deletions, clause_id);
 }
 
@@ -513,16 +514,23 @@ static void generate_clause_id_map(void) {
   }
 }
 
+static inline void resize_last_used_ids(void) {
+  FATAL_ERR_IF(ch_mode != BACKWARDS_CHECKING_MODE,
+    "Last used IDs are only resized during backwards checking.");
+  RESIZE_MEMSET_ARR(clause_last_used_id,
+    clause_last_used_id_alloc_size, formula_size, sizeof(srid_t), 0xff);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 static void print_last_used_ids(void) {
   for (int i = 0; i < formula_size; i++) {
     if (i % 5 == 4) {
-      log_msg(VL_NORMAL, "[%d] ", TO_DIMACS_CLAUSE(i));
+      log_raw(VL_NORMAL, "[%d] ", TO_DIMACS_CLAUSE(i));
     }
-    log_msg(VL_NORMAL, "%d ", clause_last_used_id[i]);
+    log_raw(VL_NORMAL, "%d ", clause_last_used_id[i]);
   }
-  log_msg(VL_NORMAL, "\n");
+  log_raw(VL_NORMAL, "\n");
 }
 
 /**
@@ -720,17 +728,13 @@ static int print_derived_deletions(srid_t line_num) {
 static void print_hints(srid_t line_num) {
   srid_t *hints_iter = get_up_hints_start(line_num);
   srid_t *hints_end = get_up_hints_end(line_num);
-
-  //log_msg(VL_NORMAL, " [uph] ");
   for (; hints_iter < hints_end; hints_iter++) {
-    srid_t hint = *hints_iter; // Hints are already added in DIMACS format
+    srid_t hint = *hints_iter; // Hints are already in DIMACS format
     print_mapped_hint(hint);
   }
 
   srid_t *rat_hints_iter = get_RAT_hints_start(line_num);
   srid_t *rat_hints_end = get_RAT_hints_end(line_num);
-
-  //log_msg(VL_NORMAL, " [rath] ");
   for (; rat_hints_iter < rat_hints_end; rat_hints_iter++) {
     srid_t rat_hint = *rat_hints_iter; // Hints are already in DIMACS format
     print_mapped_hint(rat_hint);
@@ -897,6 +901,7 @@ static void delete_parsed_clause(void) {
       delete_clause(clause_match);
       break;
     case BACKWARDS_CHECKING_MODE:
+      resize_last_used_ids();
       clause_last_used_id[clause_match] = current_line;
       break;
     default: log_fatal_err("Invalid checking mode: %d\n", ch_mode);
@@ -921,6 +926,7 @@ static inline int parse_dsr_line(void) {
       break;
     case ADDITION_LINE:
       print_lsr_deletion_line(); // TODO refactor with deletions
+      ra_commit_range(&deletions);
       parse_sr_clause_and_witness(dsr_file, num_parsed_add_lines);
       num_parsed_add_lines++;
       break;
@@ -947,13 +953,13 @@ static void parse_entire_dsr_file(void) {
   }
 
   fclose(dsr_file);
-  log_msg(VL_NORMAL, "c Parsed %d addition lines.\n", num_parsed_add_lines);
+  logc("Parsed %lld addition lines.", num_parsed_add_lines);
 
   FATAL_ERR_IF(!detected_empty_clause && ch_mode == BACKWARDS_CHECKING_MODE,
     "Cannot backwards check without the empty clause.");
 
   if (detected_empty_clause) {
-    log_msg(VL_NORMAL, "c Detected the empty clause on proof line %lld.\n",
+    logc("Detected the empty clause on proof line %lld.",
         num_parsed_add_lines);   
   }
 }
@@ -963,25 +969,24 @@ static void parse_entire_dsr_file(void) {
 static void prepare_dsr_trim_data(void) {
   // Allocate an empty watch pointer array for each literal
   // Allocate some additional space, since we'll probably add new literals later
-  //wps_alloc_size = max_var * 4;
-  wps_alloc_size = 4;
+  wps_alloc_size = (max_var + 1) * 4;
   wps = xcalloc(wps_alloc_size, sizeof(srid_t *));
-  wp_alloc_sizes = xcalloc(wps_alloc_size, sizeof(int)); 
-  wp_sizes = xcalloc(wps_alloc_size, sizeof(int));
+  wp_alloc_sizes = xcalloc(wps_alloc_size, sizeof(uint)); 
+  wp_sizes = xcalloc(wps_alloc_size, sizeof(uint));
 
   // Only allocate initial watch pointer space for literals in the formula 
-  /*for (int i = 0; i < max_var * 2; i++) {
+  for (int i = 0; i < (max_var + 1) * 2; i++) {
     wp_alloc_sizes[i] = INIT_LIT_WP_ARRAY_SIZE;
     wps[i] = xmalloc(INIT_LIT_WP_ARRAY_SIZE * sizeof(srid_t));
-  }*/
+  }
 
   // Allocate empty reasons array for each variable, plus extra space
-  up_reasons_alloc_size = max_var * 2;
+  up_reasons_alloc_size = (max_var + 1);
   up_reasons = xmalloc(up_reasons_alloc_size * sizeof(srid_t));
   memset(up_reasons, 0xff, up_reasons_alloc_size * sizeof(srid_t)); // Set to -1
 
   // Allocate space for the unit lists. Probably won't be too large
-  units_alloc_size = max_var * 2;
+  units_alloc_size = (max_var + 1);
   unit_literals = xmalloc(units_alloc_size * sizeof(int));
   unit_clauses = xmalloc(units_alloc_size * sizeof(srid_t));
 
@@ -989,7 +994,7 @@ static void prepare_dsr_trim_data(void) {
   dependencies_alloc_size = formula_size * 2;
   dependency_markings = xcalloc(dependencies_alloc_size, sizeof(llong));
 
-  RAT_marked_vars_alloc_size = max_var;
+  RAT_marked_vars_alloc_size = (max_var + 1);
   RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
 
   // Hash all formula clauses
@@ -1002,6 +1007,7 @@ static void prepare_dsr_trim_data(void) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     // TODO: use new malloc() shorthands
     // TODO: set to formula_size when resizing?
+    clause_last_used_id_alloc_size = formula_size * 2;
     clause_last_used_id = xmalloc(formula_size * 2 * sizeof(srid_t));
     memset(clause_last_used_id, 0xff, formula_size * 2 * sizeof(srid_t));
 
@@ -1033,22 +1039,26 @@ static void prepare_dsr_trim_data(void) {
   }
 }
 
+static void resize_wps(void) {
+  if ((max_var + 1) * 2 > wps_alloc_size) {
+    uint old_size = wps_alloc_size;
+    wps_alloc_size = RESIZE((max_var + 1) * 2);
+    wps = xrecalloc(wps,
+      old_size * sizeof(srid_t *), wps_alloc_size * sizeof(srid_t *));
+    wp_alloc_sizes = xrecalloc(wp_alloc_sizes,
+      old_size * sizeof(uint), wps_alloc_size * sizeof(uint));
+    wp_sizes = xrecalloc(wp_sizes,
+      old_size * sizeof(uint), wps_alloc_size * sizeof(uint));
+  }
+}
+
 static void resize_sr_trim_data(void) {
   // Resize arrays that depend on max_var and formula_size
-  // The memset() calls don't do anything in the case of no allocation
-  // TODO Use RESIZE_MEMSET and the like
-  int old_size = up_reasons_alloc_size;
-  RESIZE_ARR(up_reasons, up_reasons_alloc_size, max_var, sizeof(srid_t));
-  memset(up_reasons + old_size, 0xff, (up_reasons_alloc_size - old_size) * sizeof(srid_t));
-
-  old_size = wps_alloc_size;
-  RESIZE_ARR(wps, wps_alloc_size, max_var * 2, sizeof(srid_t *));
-  memset(wps + old_size, 0, (wps_alloc_size - old_size) * sizeof(srid_t *));
-
-  srid_t old_dep_size = dependencies_alloc_size;
-  RESIZE_ARR(dependency_markings, dependencies_alloc_size, formula_size, sizeof(llong));
-  memset(dependency_markings + old_dep_size, 0, 
-    (dependencies_alloc_size - old_dep_size) * sizeof(llong));
+  resize_wps();
+  RESIZE_MEMSET_ARR(up_reasons,
+    up_reasons_alloc_size, (max_var + 1), sizeof(srid_t), 0xff);
+  RECALLOC_ARR(dependency_markings,
+    dependencies_alloc_size, formula_size, sizeof(llong));
 }
 
 static inline void resize_units(void) {
@@ -1255,7 +1265,7 @@ static void print_stored_lsr_proof(void) {
   // Only prints a stored proof during backwards checking,
   // since we emit proof lines as we go during forwards checking
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    print_last_used_ids();
+    //print_last_used_ids();
     generate_clause_id_map();
     print_initial_clause_deletions();
 
@@ -1274,14 +1284,16 @@ static void print_stored_lsr_proof(void) {
         printed_line_id++;
       }
 
-      if (get_num_deletions(line) > 0) {
-        if (!is_active_deletion_line) {
-          is_active_deletion_line = 1;
-          write_lsr_deletion_line_start(lsr_file, printed_line_id - 1);
-        }
+      if (line < max_RAT_line) {
+        if (get_num_deletions(line) > 0) {
+          if (!is_active_deletion_line) {
+            is_active_deletion_line = 1;
+            write_lsr_deletion_line_start(lsr_file, printed_line_id - 1);
+          }
 
-        print_deletions(line);
-        print_derived_deletions(line);
+          print_deletions(line);
+          print_derived_deletions(line);
+        }
       }
     }
 
@@ -1469,7 +1481,7 @@ static void store_RAT_dependencies(srid_t from_clause) {
  * is bad for locality, and the witness is not usually minimized (that much).
  */
 static void minimize_witness(void) {
-  int *witness_iter = get_witness_start(current_line) + 1;
+  int *witness_iter = get_witness_start(current_line) + 1; // (+1) skips pivot
   int *witness_end = get_witness_end(current_line);
   int *write_iter = NULL;
   int seen_pivot_divider = 0;
@@ -1486,6 +1498,7 @@ static void minimize_witness(void) {
 
     if (!seen_pivot_divider && lit == pivot) {
       seen_pivot_divider = 1;
+      witness_iter--; // Gets incremented before looping
       goto write_lit_at_write_iter;
     }
 
@@ -1495,19 +1508,18 @@ static void minimize_witness(void) {
 
     // If we are in the substitution portion, check the truth value of `m`
     if (seen_pivot_divider) {
-      witness_iter++;
-      int mapped_lit = *witness_iter;
+      int mapped_lit = witness_iter[1];
       switch (peval_lit_under_alpha(mapped_lit)) {
         case FF:
           // printf("c   (%d -> %d), but latter was found to be globally false\n",
           //   TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
-          *witness_iter = SUBST_FF;
+          witness_iter[1] = SUBST_FF;
           lit_subst = FF;
           break;
         case TT:
           // printf("c   (%d -> %d), but latter was found to be globally true\n",
           //   TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
-          *witness_iter = SUBST_TT;
+          witness_iter[1] = SUBST_TT;
           lit_subst = TT;
           break;
         default: break;
@@ -1524,6 +1536,7 @@ static void minimize_witness(void) {
           (int) (witness_iter - get_witness_start(current_line)));
         keep_lit = 0;
         if (write_iter == NULL) {
+          // Adjust write_iter in order to start writing over this lit (pair)
           write_iter = witness_iter;
         }
       } else if (lit_alpha == -lit_subst) {
@@ -1536,7 +1549,7 @@ static void minimize_witness(void) {
     }
 
     // Overwrite bad literals as we find good literals
-write_lit_at_write_iter:
+  write_lit_at_write_iter:
     if (keep_lit && write_iter != NULL) {
       *write_iter = lit;
       write_iter++;
@@ -1544,6 +1557,10 @@ write_lit_at_write_iter:
         *write_iter = witness_iter[1];
         write_iter++;
       }
+    }
+
+    if (seen_pivot_divider) {
+      witness_iter++;
     }
   }
 
@@ -1636,19 +1653,12 @@ static void set_unit_clause(int lit, srid_t clause, llong gen) {
 // Adds a watch pointer for the lit at the specified clause ID
 static void add_wp_for_lit(int lit, srid_t clause) {
   // Resize the literal-indexes arrays if lit is outside our allocated bounds
-  if (max_var * 2 >= wps_alloc_size) {
-    int old_size = wps_alloc_size;
-    wps_alloc_size = RESIZE(max_var * 2);
-    wps = xrecalloc(wps,
-      old_size * sizeof(srid_t *), wps_alloc_size * sizeof(srid_t *));
-    wp_alloc_sizes = xrecalloc(wp_alloc_sizes,
-      old_size * sizeof(int), wps_alloc_size * sizeof(int));
-    wp_sizes = xrecalloc(wp_sizes,
-      old_size * sizeof(int), wps_alloc_size * sizeof(int));
-  }
+  resize_wps();
 
   // Now allocate more space in the wp[lit] array, if needed
   // Handles the case where both are 0 (uninitialized)
+  FATAL_ERR_IF(lit < 0 || lit >= wps_alloc_size, "Invalid literal %d", lit);
+
   if (wp_sizes[lit] == wp_alloc_sizes[lit]) {
     wp_alloc_sizes[lit] = MAX(INIT_LIT_WP_ARRAY_SIZE, RESIZE(wp_alloc_sizes[lit]));
     wps[lit] = xrealloc(wps[lit], wp_alloc_sizes[lit] * sizeof(srid_t));
@@ -1672,6 +1682,9 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
       return;
     }
   }
+
+  log_fatal_err("Clause %lld not found in watch pointer list for literal %d",
+    TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
 
   // TODO: If below some threshold of size/alloc_sizes, shrink the array
 }
@@ -1793,6 +1806,7 @@ restart_up:
   // TODO: Should we *really* restart at 0 every time???
   bookmarked_i = INT_MAX;
 restart_up_without_restarting_bookmark:
+  FATAL_ERR_IF(i < 0 || i > unit_literals_size, "Invalid i: %d", i);
   for (; i < unit_literals_size; i++) {
     FATAL_ERR_IF(i < 0, "negative i: %d", i);
     int lit = NEGATE_LIT(unit_literals[i]);
@@ -1900,6 +1914,9 @@ restart_up_without_restarting_bookmark:
       }
     }
 
+    FATAL_ERR_IF(ignored_j < 0 || ignored_j > wp_size,
+      "Invalid ignored_j: %d", ignored_j);
+    FATAL_ERR_IF(wp_size < 0, "Negative wp_size: %d", wp_size);
     unit_literals_wp_up_indexes[i] = ignored_j;
     wp_sizes[lit] = wp_size;
   }
@@ -2216,9 +2233,7 @@ static void unassume_candidate_clause(srid_t clause_index) {
 }
 
 static inline void add_RAT_marked_var(int marked_var) {
-  RESIZE_ARR(RAT_marked_vars, RAT_marked_vars_alloc_size, 
-    RAT_marked_vars_size, sizeof(int));
-  RAT_marked_vars[RAT_marked_vars_size++] = marked_var;
+  INSERT_ARR_ELT_CONCAT(RAT_marked_vars, sizeof(int), marked_var);
 }
 
 static inline void clear_RAT_marked_vars(void) {
@@ -2415,6 +2430,7 @@ static void check_dsr_line(void) {
   FATAL_ERR_IF(new_clause_size == 0, "Didn't derive empty clause.");
 
   // Now we turn to RAT checking - apply the witness
+  max_RAT_line = MAX(max_RAT_line, current_line);
   minimize_witness();
   assume_subst(current_line);
 
@@ -2422,7 +2438,7 @@ static void check_dsr_line(void) {
   max_clause_to_check = MIN(max_clause_to_check, efs); // TODO: Fix this later
 
   // Now do RAT checking between min and max clauses to check (inclusive)
-  log_msg(VL_NORMAL, "c   [%d] Checking clauses %d to %d\n", 
+  log_msg(VL_VERBOSE, "  [%d] Checking clauses %lld to %lld", 
     current_line + 1, min_clause_to_check + 1, max_clause_to_check + 1);
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
   int clause_size;
@@ -2509,9 +2525,6 @@ static void check_proof_backwards(void) {
   // TODO off by one error here
   // current_line = LINE_NUM_FROM_LINE_ID(formula_size + 1);
   // We're assuming the final clause is empty and added to the formula
-
-  log_msg(VL_NORMAL, "c The current line is %d\n", current_line + 1);
-  log_msg(VL_NORMAL, "Formula size is %d\n", formula_size);
  
   // This should basically have no effect
   uncommit_clause_and_set_as_candidate();
@@ -2573,22 +2586,18 @@ print_result:
     fclose(dsr_file);
   }
 
+  print_proof_checking_result();
   print_stored_lsr_proof();
-  if (lsr_file != stdout) {
-    fclose(lsr_file);
-  }
-
-  if (derived_empty_clause) {
-    log_msg(VL_QUIET, "s VERIFIED UNSAT\n");
-  } else {
-    log_msg(VL_QUIET, "s VALID\n");
-    log_msg(VL_NORMAL, "c A valid proof, without an empty clause.\n.");
-  }
 }
 
 static void add_wps_and_up_initial_clauses(void) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     current_line = num_parsed_add_lines - 1;
+
+    // TODO: Encapsulate better
+    // TODO: No need to RESIZE from formula_size when this is the largest it'll be
+    resize_sr_trim_data();
+    resize_last_used_ids();
     uncommit_clause_and_set_as_candidate();
 
     // Add implied unit clauses, clause by clause
@@ -2603,8 +2612,6 @@ static void add_wps_and_up_initial_clauses(void) {
 
     log_msg(VL_VERBOSE,
       "c A UP refutation was successfully found for the empty clause.\n");
-    
-    print_lsr_line(current_line, LINE_ID_FROM_LINE_NUM(current_line));
   } else {
     add_wps_and_perform_up(formula_size, 0);
   }
@@ -2631,35 +2638,6 @@ static void check_proof(void) {
 
   print_proof_checking_result();
   print_stored_lsr_proof();
-}
-
-// Creates the `lit_clauses` arrays, but only for backwards checking.
-static void process_cnf(void) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    return;
-    /*lit_clauses = xmalloc(2 * max_var * sizeof(srid_t *));
-    lit_clauses_sizes = xcalloc(2 * max_var, sizeof(int));
-    lit_clauses_alloc_sizes = xcalloc(2 * max_var, sizeof(int));
-
-    for (int c = 0; c < num_cnf_clauses; c++) {
-      int *clause = get_clause_start_unsafe(c);
-      int clause_size = get_clause_size(c);
-      for (int l = 0; l < clause_size; l++) {
-        int lit = clause[l];
-        if (lit_clauses_alloc_sizes[lit] == 0) {
-          lit_clauses[lit] = xmalloc(INIT_LIT_CLAUSES_SIZE * sizeof(srid_t));
-          lit_clauses_alloc_sizes[lit] = INIT_LIT_CLAUSES_SIZE;
-          lit_clauses_sizes[lit] = 0;
-        }
-
-        RESIZE_ARR(lit_clauses[lit], lit_clauses_alloc_sizes[lit], 
-          lit_clauses_sizes[lit], sizeof(srid_t));
-
-        lit_clauses[lit][lit_clauses_sizes[lit]] = c;
-        lit_clauses_sizes[lit]++;
-      }
-    } */
-  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2703,7 +2681,7 @@ int main(int argc, char **argv) {
         cli_res = cli_handle_opt(&cli, ch, optopt, optarg);
         switch (cli_res) {
           case CLI_UNRECOGNIZED:
-            fprintf(stderr, "Error: Unimplemented option.\n");
+            log_err("Unimplemented option.");
             print_short_help_msg(stderr);
             return 1;
           case CLI_HELP_MESSAGE:
@@ -2752,48 +2730,43 @@ int main(int argc, char **argv) {
       }
       break;
     default:
-      fprintf(stderr, "Error: Invalid number of non-option arguments: %d.\n",
-        argc - optind);
+      log_err("Invalid number of non-option arguments: %d.", argc - optind);
       print_short_help_msg(stderr);
       return 1;
   }
 
-  log_msg(VL_NORMAL, "c OVERRIDE using stdout for proof\n");
-  cli.lsr_file_path = NULL;
-  
   // Open the files first, to ensure we don't do work unless they exist
-  log_msg(VL_NORMAL, "c CNF file path: %s\n", cli.cnf_file_path);
+  logc("CNF file path: %s", cli.cnf_file_path);
   FILE *cnf_file = xfopen(cli.cnf_file_path, "r");
   
   if (cli.dsr_file_path == NULL) {
     FATAL_ERR_IF(p_strategy == PS_EAGER,
       "Cannot use eager strategy with `stdin` as the DSR file.");
-    log_msg(VL_NORMAL, "c No DSR file path provided, using stdin.\n");
+    logc("No DSR file path provided, using stdin.");
     dsr_file = stdin;
   } else {
-    log_msg(VL_NORMAL, "c DSR file path: %s\n", cli.dsr_file_path);
+    logc("DSR file path: %s", cli.dsr_file_path);
     dsr_file = xfopen(cli.dsr_file_path, "r");
   }
 
   if (cli.lsr_file_path == NULL) {
-    log_msg(VL_NORMAL, "c No LSR file path provided, using stdout.\n");
-    log_msg(VL_NORMAL, "c (That means the proof will appear below.)\n");
+    logc("No LSR file path provided, using stdout.");
     lsr_file = stdout;
   } else {
-    log_msg(VL_NORMAL, "c LSR file path: %s\n", cli.lsr_file_path);
+    logc("LSR file path: %s", cli.lsr_file_path);
     lsr_file = xfopen(cli.lsr_file_path, "w");
   }
 
   if (p_strategy == PS_EAGER) {
-    log_msg(VL_NORMAL, "c Using an EAGER parsing strategy.\n");
+    logc("Using an EAGER parsing strategy.");
   } else {
-    log_msg(VL_NORMAL, "c Using a STREAMING parsing strategy.\n");
+    logc("Using a STREAMING parsing strategy.");
   }
 
   if (ch_mode == FORWARDS_CHECKING_MODE) {
-    log_msg(VL_NORMAL, "c Doing FORWARDS proof checking.\n");
+    logc("Doing FORWARDS proof checking.");
   } else {
-    log_msg(VL_NORMAL, "c Doing BACKWARDS proof checking.\n");
+    logc("Doing BACKWARDS proof checking.");
   }
 
   if (ch_mode == FORWARDS_CHECKING_MODE && p_strategy == PS_EAGER) {
@@ -2801,7 +2774,6 @@ int main(int argc, char **argv) {
   }
 
   parse_cnf(cnf_file);
-  process_cnf();
   prepare_dsr_trim_data();
   check_proof();
 

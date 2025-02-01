@@ -21,11 +21,8 @@ void cli_init(cli_opts_t *cli) {
   cli->lsr_file_path_buf[MAX_FILE_PATH_LEN - 1] = '\0';
 }
 
-static void err_if_option_already_set(int val, int optopt) {
-  if (val) {
-    fprintf(stderr, "Error: Option \"-%c\" was already set.\n", (char) optopt);
-    exit(1);
-  }
+static inline void err_if_option_already_set(int val, int optopt) {
+  FATAL_ERR_IF(val, "Error: Option \"-%c\" was already set.", (char) optopt);
 }
 
 static void copy_and_update_bufs(cli_opts_t *cli, size_t len) {
@@ -37,48 +34,48 @@ static void copy_and_update_bufs(cli_opts_t *cli, size_t len) {
 }
 
 // Handles the common CLI options.
-cli_res_t cli_handle_opt(cli_opts_t *cli, int option, int optopt, char *optarg) {
-  switch (option) {
+cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
+  switch (opt) {
   case HELP_MSG_OPT:
     return CLI_HELP_MESSAGE;
   case QUIET_MODE_OPT:
     err_if_option_already_set(cli->quiet_mode_set, optopt);
-    PRINT_ERR_AND_EXIT_IF(cli->verbose_mode_set,
+    FATAL_ERR_IF(cli->verbose_mode_set,
       "Cannot set both quiet and verbose modes.");
     verbosity_level = VL_QUIET;
     cli->quiet_mode_set = 1;
     break;
   case VERBOSE_MODE_OPT:
     err_if_option_already_set(cli->verbose_mode_set, optopt);
-    PRINT_ERR_AND_EXIT_IF(cli->quiet_mode_set,
+    FATAL_ERR_IF(cli->quiet_mode_set,
       "Cannot set both quiet and verbose modes.");
     verbosity_level = VL_VERBOSE;
     cli->verbose_mode_set = 1;
     break;
   case EAGER_OPT:
     err_if_option_already_set(cli->eager_strategy_set, optopt);
-    PRINT_ERR_AND_EXIT_IF(cli->streaming_strategy_set,
+    FATAL_ERR_IF(cli->streaming_strategy_set,
       "Cannot set both eager and streaming parsing strategies.");
     p_strategy = PS_EAGER;
     cli->eager_strategy_set = 1;
     break;
   case STREAMING_OPT:
     err_if_option_already_set(cli->streaming_strategy_set, optopt);
-    PRINT_ERR_AND_EXIT_IF(cli->eager_strategy_set,
+    FATAL_ERR_IF(cli->eager_strategy_set,
       "Cannot set both eager and streaming parsing strategies.");
     p_strategy = PS_STREAMING;
     cli->streaming_strategy_set = 1;
     break;
   case DIR_OPT:
     err_if_option_already_set(cli->dir_provided, optopt);
-    PRINT_ERR_AND_EXIT_IF(cli->name_provided,
+    FATAL_ERR_IF(cli->name_provided,
       "Cannot provide both a name and a directory prefix.");
     cli->dir_provided = 1;
 
     size_t len = strlcpy(cli->cnf_file_path_buf, optarg, MAX_FILE_PATH_LEN);
-    PRINT_ERR_AND_EXIT_IF(len >= MAX_FILE_PATH_LEN,
+    FATAL_ERR_IF(len >= MAX_FILE_PATH_LEN,
       "Directory prefix too long.");
-    PRINT_ERR_AND_EXIT_IF(len == 0, "Empty directory provided.");
+    FATAL_ERR_IF(len == 0, "Empty directory provided.");
     cli->cnf_file_path = ((char *) cli->cnf_file_path_buf) + len;
 
     // Add an ending directory '/' if one was omitted
@@ -91,20 +88,20 @@ cli_res_t cli_handle_opt(cli_opts_t *cli, int option, int optopt, char *optarg) 
     break;
   case NAME_OPT:
     err_if_option_already_set(cli->name_provided, optopt);
-    PRINT_ERR_AND_EXIT_IF(cli->dir_provided,
+    FATAL_ERR_IF(cli->dir_provided,
       "Cannot provide both a name and a directory prefix.");
     cli->name_provided = 1;
 
     len = strlcpy(cli->cnf_file_path_buf, optarg, MAX_FILE_PATH_LEN);
-    PRINT_ERR_AND_EXIT_IF(len >= MAX_FILE_PATH_LEN, "Name prefix too long.");
+    FATAL_ERR_IF(len >= MAX_FILE_PATH_LEN, "Name prefix too long.");
     cli->cnf_file_path = ((char *) cli->cnf_file_path_buf) + len;
     copy_and_update_bufs(cli, len);
     break;
   case '?':
-    fprintf(stderr, "Unknown option provided.\n");
+    log_err("Unknown option provided.");
     return CLI_HELP_MESSAGE;
   case ':':
-    fprintf(stderr, "Argument missing for option \"-%c\".\n", (char) optopt);
+    log_err("Argument missing for option \"-%c\".", (char) optopt);
     return CLI_HELP_MESSAGE;
   default:
     return CLI_UNRECOGNIZED;

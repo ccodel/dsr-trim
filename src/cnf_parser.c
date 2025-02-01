@@ -79,28 +79,29 @@ void parse_cnf(FILE *f) {
       case DIMACS_PROBLEM_LINE:
         found_problem_line = 1;
         res = fscanf(f, CNF_HEADER_STR, &num_cnf_vars, &num_cnf_clauses);
-        PRINT_ERR_AND_EXIT_IF(res < 0, "Read error on problem line.");
+        FATAL_ERR_IF(res < 0, "Read error on problem header line.");
         break;
       default:
-        PRINT_ERR_AND_EXIT("Char wasn't a comment or a problem line.");
+        log_fatal_err("Char wasn't a comment or a problem line.");
     }
   }
 
-  if (num_cnf_vars <= 0 || num_cnf_clauses <= 0) {
-    PRINT_ERR_AND_EXIT("The number of variables or clauses wasn't positive.");
-  }
+  FATAL_ERR_IF(num_cnf_vars <= 0,
+    "The problem header variable number (%d) was not positive.", num_cnf_vars);
+  FATAL_ERR_IF(num_cnf_clauses <= 0,
+    "The problem header clause number (%d) was not positive.", num_cnf_clauses);
 
   init_global_data();
 
   // Now parse in the rest of the CNF file
-  // We assume that no more comment lines can appear, and will error if a non-number is parsed
+  // We assume that no more comment lines can appear
   while (formula_size < num_cnf_clauses) {
     int is_tautology = parse_clause(f);
     if (new_clause_size == 0) {
-      PRINT_ERR_AND_EXIT("The empty clause was found in the CNF.");
+      log_fatal_err("The empty clause was found at clause %lld in the CNF.",
+        formula_size);
     } else if (is_tautology) {
-      log_msg(VL_NORMAL, "c Tautology in clause %lld detected, deleting\n",
-        (llong) formula_size);
+      logc("Tautology in clause %lld detected, deleting...", formula_size);
       commit_clause();
       delete_clause(formula_size - 1);
     } else {
@@ -110,8 +111,8 @@ void parse_cnf(FILE *f) {
 
   fclose(f);
 
-  log_msg(VL_NORMAL, "c The CNF formula has %lld clauses and %d variables.\n",
-    ((llong) formula_size), max_var);
+  logc("The CNF formula has %lld clauses and %d variables.",
+    formula_size, max_var);
 }
 
 void print_cnf(void) {
@@ -123,8 +124,8 @@ void print_cnf(void) {
     int *clause_iter = get_clause_start(c);
     int *clause_end = get_clause_start(c + 1);
     for (; clause_iter < clause_end; clause_iter++) {
-      printf("%d ", TO_DIMACS_LIT(*clause_iter));
+      log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(*clause_iter));
     }
-    printf("0\n");
+    log_raw(VL_NORMAL, "0\n");
   }
 }

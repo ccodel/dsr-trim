@@ -28,7 +28,7 @@
  */
 #define NULL_POINTER(ptr, func) \
   if ((ptr) == NULL) {                                   \
-    fprintf(stderr, "Ran out of memory on %s\n", func);  \
+    fprintf(stderr, "Ran out of memory on %s()\n", func);  \
     exit(-1);                                            \
   }
 

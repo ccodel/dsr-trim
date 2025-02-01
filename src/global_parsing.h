@@ -10,6 +10,7 @@
 #define _GLOBAL_PARSING_H_
 
 #include "global_data.h"
+#include "logger.h"
 #include <stdio.h>
 
 /** DIMACS character that starts a comment line. */
@@ -25,16 +26,16 @@
 
 #define READ_LONG_TOKEN(res, f, ptr)            do {                           \
     res = fscanf(f, "%lld ", ptr);                                             \
-    PRINT_ERR_AND_EXIT_IF(res == 0, "Token was expected to be a number.");     \
-    PRINT_ERR_AND_EXIT_IF(res == EOF, "EOF unexpectedly reached.");            \
-    PRINT_ERR_AND_EXIT_IF(res < 0, "Other error encountered while parsing.");  \
+    FATAL_ERR_IF(res == 0, "Token was expected to be a number.");              \
+    FATAL_ERR_IF(res == EOF, "EOF unexpectedly reached.");                     \
+    FATAL_ERR_IF(res < 0, "Other error encountered while parsing.");           \
   } while (0)
 
 #define READ_INT_TOKEN(res, f, ptr)             do {                           \
     res = fscanf(f, "%d ", ptr);                                               \
-    PRINT_ERR_AND_EXIT_IF(res == 0, "Token was expected to be a number.");     \
-    PRINT_ERR_AND_EXIT_IF(res == EOF, "EOF unexpectedly reached.");            \
-    PRINT_ERR_AND_EXIT_IF(res < 0, "Other error encountered while parsing.");  \
+    FATAL_ERR_IF(res == 0, "Token was expected to be a number.");              \
+    FATAL_ERR_IF(res == EOF, "EOF unexpectedly reached.");                     \
+    FATAL_ERR_IF(res < 0, "Other error encountered while parsing.");           \
   } while (0)
 
 // Reads a literal from `f`. Literals are assumed to always fit in an `int`.
