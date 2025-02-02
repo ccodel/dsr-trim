@@ -1,5 +1,5 @@
 /**
- * @file sr-check.c
+ * @file lsr-check.c
  * @brief A linear substitution redundancy checker, based on lpr-check.
  * 
  *  This tool checks linear substitution redundancy (LSR) proofs produced
@@ -10,6 +10,8 @@
  *  The proof checker must determine that these clauses are redundant, meaning
  *  that adding them to the formula does not affect satisfiability.
  *  (In other words, that F and (F and C) are equisatisfiable.)
+ *  When a chain of additions is shown to be redundant, then the two formulas
+ *  are equisatisfiable.
  * 
  *  In most cases, LSR proofs are *unsatisfiability* proofs, meaning that
  *  the empty clause is eventually shown to be redundant. Since the empty
@@ -54,7 +56,7 @@
  *  true or false; or from variables to other literals.
  * 
  *  [UP hints] and [RAT hints] are groups of clause IDs that guide
- *  unit propagation. Each group of RAT hints start with the negative
+ *  unit propagation. Each group of RAT hints starts with the negative
  *  clause ID of the RAT clause to check.
  * 
  *  Deletion lines specify the clause IDs of the clauses to delete from
@@ -63,9 +65,9 @@
  * 
  *  `lsr-check` contains two parsing strategies: eager and streaming.
  *  When eagerly parsing, the entire proof is read into memory before
- *  proof checking begins. Otherwise, the proof is streamed (perhaps from
- *  `stdin`), and the proof is checked as it is read. THis is helpful for
- *  very large proofs that cannot be written to disk.
+ *  proof checking begins. Otherwise, the proof is streamed (potentially from
+ *  `stdin`), and the proof is checked as it is read. This can be used 
+ *  to check very large proofs that cannot be written to disk.
  *
  *  More details can be found in `dsr-trim`, or in the paper:
  * 
@@ -90,21 +92,6 @@
 #include "cnf_parser.h"
 #include "sr_parser.h"
 
-/*
- * Each LSR proof line starts with a line iD. This ID (almost always) starts
- * at one more than the number of CNF clauses. These IDs are 1-indexed, so
- * we must subtract 1 when referring to the formula data structure.
- * 
- * However, we 0-index these line IDs when referring to witnesses, hints,
- * and deletions, and we start them at 0. These macros do the conversions
- * we need, with the convention that the `line_num` is 0-indexed, while
- * the `line_id` is essentially `num_cnf_clauses`-indexed.
- */
-
-#define LINE_ID_FROM_LINE_NUM(line_num)   ((line_num) + num_cnf_clauses + 1)
-#define CLAUSE_ID_FROM_LINE_NUM(line_num) ((line_num) + num_cnf_clauses)
-#define LINE_NUM_FROM_LINE_ID(line_id)    ((line_id) - (num_cnf_clauses + 1))
-
 ////////////////////////////////////////////////////////////////////////////////
 
 // Max line identifier checked/parsed. Is 1-indexed and in DIMACS form.
@@ -117,7 +104,7 @@ static srid_t current_line_num = 0;
 // the hints are indexed by line number. Otherwise, they are at index 0.
 static range_array_t hints;
 
-// When the parsing strategy is `PS_STREAMING`, this tractks the number of
+// When the parsing strategy is `PS_STREAMING`, this tracks the number of
 // RAT hint groups for the parsed line. Otherwise, it is ignored.
 static uint num_RAT_hints = 0;
 
@@ -141,29 +128,28 @@ static range_array_t deletions;
 // The active LSR proof file. Assigned in `main()`. Can be `stdin`.
 static FILE *lsr_file = NULL;
 
+// Indexed by literal. Counts the number of clauses each literal appears in.
+// These can be used to check just the claimed RAT clauses.
+static uint *lits_occurrences = NULL;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 // Help messages and command line options
 
-#define HELP_MSG_OPT            ('h')
-#define QUIET_MODE_OPT          ('q')
-#define VERBOSE_MODE_OPT        ('v')
-#define DIR_OPT                 ('d')
-#define NAME_OPT                ('n')
-#define EAGER_OPT               ('e')
-#define STREAMING_OPT           ('s')
-#define OPT_STR                 ("d:ehn:qsv")
+// The option string used by `getopt_long()`.
+// Specifies the (short) command line options and whether they take arguments.
+#define OPT_STR  ("d:ehn:qsv")
 
 // A flag that is set when the CLI arguments request the longer help message.
 static int long_help_msg_flag = 0;
 
 // The set of "long options" for CLI argument parsing. Used by `getopt_long()`.
-static struct option longopts[] = {
-  { "help", no_argument, &long_help_msg_flag, 1 },
-  { "dir", required_argument, NULL, DIR_OPT },
-  { "name", required_argument, NULL, NAME_OPT },
-  { "eager", no_argument, NULL, EAGER_OPT },
-  { "streaming", no_argument, NULL, STREAMING_OPT },
+static struct option const longopts[] = {
+  { "help",      no_argument,       &long_help_msg_flag, 1 },
+  { "dir",       required_argument, NULL, DIR_OPT },
+  { "name",      required_argument, NULL, NAME_OPT },
+  { "eager",     no_argument,       NULL, EAGER_OPT },
+  { "streaming", no_argument,       NULL, STREAMING_OPT },
   { NULL, 0, NULL, 0 }  // The array of structs must be NULL/0-terminated
 };
 
@@ -182,11 +168,11 @@ static void print_short_help_msg(FILE *f) {
   "  -q        Quiet mode.\n"
   "  -v        Verbose mode.\n"
   "\n"
-  "  --dir=<dir>  | -d dir   The common directory for the CNF and LSR files.\n"
-  "  --eager      | -e       Parse the entire LSR file before proof checking.\n"
-  "  --streaming  | -s       Stream the LSR proof. (Used by default.)\n"
+  "  --dir=<dir>  | -d <d>   Common directory for CNF and LSR files.\n"
+  "  --name=<n>   | -n <n>   Common file path for CNF and LSR files.\n"
+  "  --eager      | -e       Parse the entire proof before proof checking.\n"
   "\n";
-
+  
   fprintf(f, "%s", usage_str);
 }
 
@@ -209,10 +195,19 @@ static void print_long_help_msg(FILE *f) {
   "  -v        Verbose mode. Prints additional statistics and information\n"
   "            All comment lines are prefixed with \"c \".\n"
   "\n"
-  "  --dir=<dir>  | -d <dir>   Specifies the common directory to use for the\n"
+  "  --dir=<d>   | -d <dir>    Specify a common directory to use for the\n"
   "                            CNF and LSR files. <dir> is prefixed to the\n"
   "                            CNF and LSR file paths provided.\n"
-  "  \n"
+  "\n"
+  "  --name=<n>  | -n <name>   Specify a common file path root for the CNF\n"
+  "                            and LSR files. If this is used, then\n"
+  "                            `stdin` cannot be used as the source\n"
+  "                            of the proof file. When no arguments\n"
+  "                            are provided, then \".cnf\" and \".lsr\"\n"
+  "                            are used as the default file extensions.\n"
+  "                            Providing one argument replaces the\n"
+  "                            proof file's extension. Both replaces both.\n"
+  "\n"
   "  --eager      | -e         Eagerly parse the LSR file, meaning the entire\n"
   "                            LSR file is parsed before any proof checking\n"
   "                            is performed. This option may only be used\n"
@@ -292,6 +287,30 @@ static void prepare_hints(void) {
   }
 }
 
+static void add_occurrences_for_clause(srid_t clause_index) {
+  if (is_clause_deleted(clause_index)) return;
+
+  int *start = get_clause_start_unsafe(clause_index);
+  int *end = get_clause_start(clause_index + 1);
+  while (start < end) {
+    int lit = *start;
+    lits_occurrences[lit]++;
+    start++;
+  }
+}
+
+static void remove_occurrences_for_clause(srid_t clause_index) {
+  if (is_clause_deleted(clause_index)) return;
+
+  int *start = get_clause_start_unsafe(clause_index);
+  int *end = get_clause_start(clause_index + 1);
+  while (start < end) {
+    int lit = *start;
+    lits_occurrences[lit]--;
+    start++;
+  }
+}
+
 /**
  * @brief Prepares the data structure that stores deletions to receive the
  *        next deletion line.
@@ -307,6 +326,36 @@ static void prepare_deletions(void) {
   }
 }
 
+/**
+ * @brief Processes a clause ID for deletion.
+ * 
+ * During streaming, we delete clauses as we go. When eagerly parsing,
+ * we store the clause IDs for later.
+ * 
+ * @param clause_id The clause to be deleted, in 1-indexed (DIMACS) form.
+ */
+static inline void process_deletion(srid_t clause_id) {
+  FATAL_ERR_IF(clause_id < 0, "Deletion ID %lld was negative.", clause_id);
+  clause_id = FROM_DIMACS_CLAUSE(clause_id);
+  if (p_strategy == PS_EAGER) {
+    ra_insert_srid_elt(&deletions, clause_id);
+  } else {
+    remove_occurrences_for_clause(clause_id);
+    delete_clause(clause_id);
+  }
+}
+
+// Returns a pointer to the start of the current line's deletions, if any.
+// If there are no deletions, then this function equals `get_deletions_end()`.
+static inline srid_t *get_deletions_start(void) {
+  return (srid_t *) ra_get_range_start(&deletions, current_line_num);
+}
+
+// Returns a pointer to the end of the current line's deletions, if any.
+static inline srid_t *get_deletions_end(void) {
+  return (srid_t *) ra_get_range_start(&deletions, current_line_num + 1);
+}
+
 /** 
  * @brief Inserts a clause ID hint into the hints data structure.
  * 
@@ -318,10 +367,12 @@ static void prepare_deletions(void) {
  */
 static void insert_hint(srid_t clause_id) {
   // Check that the clause_id is in range
-  srid_t id = ABS(clause_id) - 1;
-  PRINT_ERR_AND_EXIT_IF(id > LINE_ID_FROM_LINE_NUM(current_line_num) 
-    || is_clause_deleted(id),
-    "Clause ID in the SR proof line is out of bounds or is deleted.");
+  srid_t id = ABS(clause_id);
+  id = FROM_DIMACS_CLAUSE(id);
+  srid_t current_line_id = LINE_ID_FROM_LINE_NUM(current_line_num);
+  FATAL_ERR_IF(id > current_line_id || is_clause_deleted(id),
+    "Clause %lld in the SR proof line is out of bounds or is deleted.",
+    TO_DIMACS_CLAUSE(id));
 
   ra_insert_srid_elt(&hints, clause_id);
 
@@ -338,8 +389,6 @@ static void insert_hint(srid_t clause_id) {
   }
 }
 
-// Parses the next LSR line. Returns either DELETION_LINE or ADDITION_LINE.
-// If deletion line, the deletions are handled already.
 /**
  * @brief Parses the next LSR line and stores/processes the data according
  *        to the current parsing strategy. Returns either `DELETION_LINE`
@@ -347,22 +396,21 @@ static void insert_hint(srid_t clause_id) {
  * 
  * If the parsing strategy is `PS_EAGER`, we store the candidate redundant
  * clauses in the CNF `lits_db` database, the hints in `hints`, any
- * substitution witness in `witnesses`, and * deletion lines in `deletions`.
+ * substitution witness in `witnesses`, and deletion lines in `deletions`.
  * 
  * If the parsing strategy is `PS_STREAMING`, we store the clause like normal,
  * but we reset `hints` and `witnesses` to clear the previous line's data.
  * This way, we reduce our memory overhead and benefit from caching.
  */
-static int parse_lsr_line(void) {
+static line_type_t parse_lsr_line(void) {
   srid_t line_id, clause_id;
-
-  int line_type = read_lsr_line_start(lsr_file, &line_id);
+  line_type_t line_type = read_lsr_line_start(lsr_file, &line_id);
   current_line_num = LINE_NUM_FROM_LINE_ID(line_id); // Convert out of DIMACS
-  current_line_num = MAX(-1, current_line_num);
   switch (line_type) {
     case DELETION_LINE:
       // Ensure that the line ID is (non-strictly) monotonically increasing
-      PRINT_ERR_AND_EXIT_IF(line_id < max_line_id, "Deletion line ID decreases.");
+      FATAL_ERR_IF(line_id < max_line_id,
+        "Deletion line ID (%lld) decreases.", line_id);
       max_line_id = line_id;
 
       // We "1-index" deletion lines to account for a starting deletion line
@@ -373,21 +421,16 @@ static int parse_lsr_line(void) {
         ra_commit_empty_ranges_until(&deletions, deletion_line_num);
       }
 
-      // Now loop on clause ID tokens until a zero is read
+      // The deletion line ends when we encounter a 0
       while ((clause_id = read_clause_id(lsr_file)) != 0) {
-        clause_id--;
-        PRINT_ERR_AND_EXIT_IF(clause_id < 0, "Deletion line has negative clause ID.");
-        if (p_strategy == PS_EAGER) {
-          ra_insert_srid_elt(&deletions, clause_id);
-        } else {
-          delete_clause(clause_id);
-        }
+        process_deletion(clause_id); 
       }
 
       break;
     case ADDITION_LINE:
       // Check that the line id is strictly monotonically increasing
-      PRINT_ERR_AND_EXIT_IF(line_id <= max_line_id, "Addition line id doesn't increase.");
+      FATAL_ERR_IF(line_id <= max_line_id,
+        "Addition line ID (%lld) doesn't increase.", line_id);
       max_line_id = line_id;
 
       // Create deleted (empty) clauses until the formula size catches up
@@ -397,10 +440,7 @@ static int parse_lsr_line(void) {
       }
 
       parse_sr_clause_and_witness(lsr_file, current_line_num);
-      commit_clause(); // Officially add the clause to the formula
-
-      // Since deletion lines come after addition lines, prepare deletions here
-      prepare_deletions();
+      prepare_deletions(); // Deletions come after addition lines of the same ID
 
       // Parse the UP hints, keeping the clause IDs as-is so we can tell
       // where the RAT hint groups start (i.e. with negative clause IDs)
@@ -411,7 +451,7 @@ static int parse_lsr_line(void) {
 
       ra_commit_range(&hints);
       break;
-    default: PRINT_ERR_AND_EXIT("Invalid line type.");
+    default: log_fatal_err("Invalid line type: %d", line_type);
   }
 
   return line_type;
@@ -427,7 +467,7 @@ static int parse_lsr_line(void) {
  * to 0 before starting proof checking.
  */
 static void parse_entire_lsr_file(void) {
-  PRINT_ERR_AND_EXIT_IF(p_strategy != PS_EAGER,
+  FATAL_ERR_IF(p_strategy != PS_EAGER,
     "To parse the entire LSR file eagerly, the p_strategy must be EAGER.");
 
   int detected_empty_clause = 0;
@@ -448,10 +488,10 @@ static void parse_entire_lsr_file(void) {
   ra_commit_range(&deletions);
   
   if (detected_empty_clause) {
-    log_msg(VL_NORMAL, "c Detected the empty clause.\n");
+    logc("Detected the empty clause on line %lld.", current_line_num + 1);
   }
 
-  log_msg(VL_NORMAL, "c Parsed %d proof lines.\n", current_line_num + 1);
+  logc("Parsed %lld proof lines.", current_line_num + 1);
 }
 
 /**
@@ -467,10 +507,19 @@ static void prepare_lsr_check_data(void) {
     line_num_RAT_hints_alloc_size = num_cnf_clauses;
     line_num_RAT_hints = xcalloc(line_num_RAT_hints_alloc_size, sizeof(uint));
     parse_entire_lsr_file();
-    current_line_num = 0;
   } else {
     ra_init(&hints, num_cnf_vars * 10, 2, sizeof(srid_t));
+    // No deletions, since we process them as we go
   }
+
+  // Count the number of times each literal appears in the original CNF
+  lits_occurrences = xcalloc((max_var + 1) * 2, sizeof(uint));
+  for (srid_t c = 0; c < formula_size; c++) {
+    add_occurrences_for_clause(c);
+  }
+
+  max_line_id = num_cnf_clauses;
+  current_line_num = 0;
 }
 
 /**
@@ -505,21 +554,19 @@ static int has_another_lsr_line(void) {
  * 
  * @return The line type (`ADDITION_LINE` or `DELETION_LINE`).
  */
-static int prepare_next_line(void) {
+static line_type_t prepare_next_line(void) {
   if (p_strategy == PS_EAGER) {
     // Process deletions until we have an addition line
     // Note that deletions are "1-indexed", so we process the deletions
     // for the line we just checked first, before incrementing the line number
-    srid_t clause_id = CLAUSE_ID_FROM_LINE_NUM(current_line_num);
+    srid_t clause_id;
     do { 
-      int deletions_size = ra_get_range_size(&deletions, current_line_num);
-      if (deletions_size > 0) {
-        srid_t *del_iter = 
-          (srid_t *) ra_get_range_start(&deletions, current_line_num);
-        srid_t *del_end = del_iter + deletions_size;
-        for (; del_iter < del_end; del_iter++) {
-          delete_clause(*del_iter);
-        }
+      srid_t *del_iter = get_deletions_start();
+      srid_t *del_end = get_deletions_end();
+      for (; del_iter < del_end; del_iter++) {
+        srid_t clause_to_delete = *del_iter;
+        remove_occurrences_for_clause(clause_to_delete);
+        delete_clause(clause_to_delete);
       }
 
       current_line_num++;
@@ -542,15 +589,17 @@ static int prepare_next_line(void) {
  * @returns `SATISFIED_OR_MUL`, `CONTRADICTION`, or the unit literal.
  */
 static int reduce(srid_t clause_index) {
-  PRINT_ERR_AND_EXIT_IF(is_clause_deleted(clause_index),
-    "Trying to unit propagate on a deleted clause.");
+  FATAL_ERR_IF(is_clause_deleted(clause_index),
+    "[line %lld] Trying to unit propagate on a deleted clause %lld.",
+    LINE_ID_FROM_LINE_NUM(current_line_num), TO_DIMACS_CLAUSE(clause_index));
 
   int unit_lit = CONTRADICTION;
   int *start = get_clause_start_unsafe(clause_index);
   int *end = get_clause_start(clause_index + 1);
   for (; start < end; start++) {
     int lit = *start;
-    switch (peval_lit_under_alpha(lit)) {
+    int peval_lit = peval_lit_under_alpha(lit);
+    switch (peval_lit) {
       case UNASSIGNED:
         if (unit_lit == CONTRADICTION) {
           unit_lit = lit;
@@ -560,7 +609,7 @@ static int reduce(srid_t clause_index) {
         break;
       case FF: break;
       case TT: return SATISFIED_OR_MUL;
-      default: PRINT_ERR_AND_EXIT("Corrupted alpha evaluation.");
+      default: log_fatal_err("Corrupted alpha evaluation: %d.", peval_lit);
     }
   }
 
@@ -594,8 +643,7 @@ static int unit_propagate(srid_t **hint_ptr, srid_t *hints_end, llong gen) {
   srid_t *hints_iter = *hint_ptr;
   while (hints_iter < hints_end && (up_clause = *hints_iter) > 0) {
     // Perform unit propagation against alpha on up_clause
-    // Subtract one from the identifier because it's 1-indexed in the proof line
-    up_res = reduce(up_clause - 1);
+    up_res = reduce(FROM_DIMACS_CLAUSE(up_clause));
     switch (up_res) {
       case CONTRADICTION: // The line checks out, and we can add the clause
         // Scan the hint_index forward until a negative hint is found
@@ -605,7 +653,8 @@ static int unit_propagate(srid_t **hint_ptr, srid_t *hints_end, llong gen) {
         *hint_ptr = hints_iter;
         return CONTRADICTION;
       case SATISFIED_OR_MUL: // Unit propagation shouldn't give us either
-        PRINT_ERR_AND_EXIT("Found satisfied clause in UP part of hint.");
+        log_fatal_err("[line %lld] Found satisfied clause %lld in UP hint.",
+          LINE_ID_FROM_LINE_NUM(current_line_num), TO_DIMACS_CLAUSE(up_clause));
       default: // We have unit on a literal - extend alpha
         set_lit_for_alpha(up_res, gen);
     }
@@ -626,13 +675,64 @@ static int unit_propagate(srid_t **hint_ptr, srid_t *hints_end, llong gen) {
  * already, but we need to update the first/last information for the literals.
  */
 static void mark_clause_as_checked(void) {
-  perform_clause_first_last_update(CLAUSE_ID_FROM_LINE_NUM(current_line_num));
+  srid_t clause = CLAUSE_ID_FROM_LINE_NUM(current_line_num);
+  perform_clause_first_last_update(clause);
+  add_occurrences_for_clause(clause);
+
+  // When streaming, the `current_line_num` is set during parsing
   if (p_strategy == PS_EAGER) {
     current_line_num++;
   }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+
+// Returns `1` if the exact number of RAT clauses checked, 0 otherwise.
+static int check_only_hints(srid_t *hints_iter, srid_t *hints_end) {
+  const uint goal_occs = lits_occurrences[NEGATE_LIT(pivot)];
+  uint occs = 0;
+  srid_t c, max_clause = -1; // Assume increasing hint groups
+  while (hints_iter < hints_end) {
+    // Check that the current hint is negative
+    c = *hints_iter;
+    FATAL_ERR_IF(c >= 0, "RAT hint is not negative.");
+    c = FROM_RAT_CLAUSE(c);
+    FATAL_ERR_IF(c<= max_clause, "Not increasing IDs");
+    max_clause = c;
+
+    FATAL_ERR_IF(is_clause_deleted(c), "Clause %lld was already deleted",
+      TO_DIMACS_CLAUSE(c));
+    switch (reduce_subst_mapped(c)) {
+      case NOT_REDUCED:
+      case SATISFIED_OR_MUL:
+        log_fatal_err("Purported RAT clause %lld is not actually a RAT clause",
+          TO_DIMACS_CLAUSE(c));
+      case REDUCED:;
+        occs++;
+        int neg_res = assume_negated_clause_under_subst(c, alpha_generation);
+        if (neg_res == SATISFIED_OR_MUL) {
+          // Skip over the remainder of the positive UP hints
+          do {
+            hints_iter++;
+          } while (*hints_iter > 0 && hints_iter < hints_end);
+        } else {
+          hints_iter++;
+          if (unit_propagate(&hints_iter, hints_end, alpha_generation)
+              != CONTRADICTION) {
+            log_fatal_err("RAT clause UP didn't derive contradiction.");
+          }
+        }
+
+        alpha_generation++;
+        break;
+      case CONTRADICTION:
+        log_fatal_err("RAT contradiction: should have had UP derivation.");
+      default: log_fatal_err("Corrupted clause reduction value.");
+    }
+  }
+
+  return (occs == goal_occs);
+}
 
 /**
  * @brief Checks the current LSR addition line for the SR property, using
@@ -673,13 +773,23 @@ static void check_line(void) {
 
   // Double-check that the proposed clause is not the empty clause
   // (The empty clause cannot have a witness, and must have a UP contradiction)
-  PRINT_ERR_AND_EXIT_IF(new_clause_size == 0,
+  FATAL_ERR_IF(new_clause_size == 0,
     "UP didn't derive contradiction for empty clause.");
   assume_subst(current_line_num);
 
-  // TODO: Prove that the candidate clause is implied by the witness
+  if (get_witness_start(current_line_num) >= get_witness_end(current_line_num)) {
+    // Can check only the RAT clauses
+    if (check_only_hints(hints_iter, hints_end)) {
+      // logc("RAT only check succeeded for line %lld",
+       // LINE_ID_FROM_LINE_NUM(current_line_num));
+      goto finish_line;
+    }
 
-  log_msg(VL_VERBOSE, "c [line %d] Checking clauses %d to %d\n", 
+    // If the check fails, we do it the old-fashioned way
+  }
+
+  // TODO: Prove that the candidate clause is implied by the witness
+  log_msg(VL_VERBOSE, "[line %lld] Checking clauses %lld to %lld", 
       LINE_ID_FROM_LINE_NUM(current_line_num),
       min_clause_to_check + 1, max_clause_to_check + 1);
 
@@ -695,20 +805,20 @@ static void check_line(void) {
 
     // Check how the clause behaves under the substitution
     // TODO: Cache the computed reduction under subst in an array?
-    switch (reduce_subst_mapped(i)) {
+    int subst_mapped = reduce_subst_mapped(i);
+    switch (subst_mapped) {
       case NOT_REDUCED:
       case SATISFIED_OR_MUL:
         continue;
       case REDUCED:
         /* 
          * Now find the reduced clause's RAT hint group.
-         * In most cases, the RAT hint groups should be sorted by increasing
-         * absolute value of the RAT clause's ID, so `hints_iter` should point
-         * to the right group. But if the RAT hint group doesn't start with
+         * In most cases, the RAT hint groups are sorted by increasing
+         * magnitude of the RAT clause's ID, so `hints_iter` should point
+         * to the correct group. But if the RAT hint group doesn't start with
          * the expected clause ID, we must scan through all RAT hints to find
          * a matching hint.
          */
-
         if (hints_iter < hints_end && -((*hints_iter) + 1) == i) {
           up_iter = hints_iter;
         } else {
@@ -720,8 +830,9 @@ static void check_line(void) {
             }
           }
 
-          PRINT_ERR_AND_EXIT_IF(up_iter == hints_end,
-            "RAT clause has no corresponding RAT hint group.");
+          FATAL_ERR_IF(up_iter == hints_end,
+            "[line %lld] RAT clause %lld has no corresponding RAT hint group.",
+            LINE_ID_FROM_LINE_NUM(current_line_num), TO_DIMACS_CLAUSE(i));
         }
 
         // We successfully found a matching RAT hint
@@ -742,8 +853,10 @@ static void check_line(void) {
         } else {
           up_iter++; // Move to the first UP hint
           // We expect a UP contradiction. If not, the proof is invalid
-          if (unit_propagate(&up_iter, hints_end, alpha_generation) != CONTRADICTION) {
-            PRINT_ERR_AND_EXIT("RAT clause UP didn't derive contradiction.");
+          if (unit_propagate(&up_iter, hints_end, alpha_generation)
+                != CONTRADICTION) {
+            log_fatal_err("[line %lld] UP on RAT clause %lld didn't derive contradiction.",
+              LINE_ID_FROM_LINE_NUM(current_line_num), TO_DIMACS_CLAUSE(i));
           }
         }
 
@@ -751,8 +864,9 @@ static void check_line(void) {
         alpha_generation++; // Clear the negated RAT clause and UP extensions
         break;
       case CONTRADICTION:
-        PRINT_ERR_AND_EXIT("RAT contradiction: should have had UP derivation.");
-      default: PRINT_ERR_AND_EXIT("Corrupted clause reduction.");
+        log_fatal_err("[line %lld] RAT contradiction: should have had UP derivation.",
+          LINE_ID_FROM_LINE_NUM(current_line_num));
+      default: log_fatal_err("Corrupted clause reduction: %d.", subst_mapped);
     }
   }
 
@@ -766,31 +880,26 @@ finish_line:
 }
 
 /**
- * @brief Checks the LSR proof.
+ * @brief Checks the LSR proof. Prints the result to `stdout`.
  * 
  * If the parsing strategy is `PS_STREAMING`, then parsing is interleaved with
  * proof checking until the proof is done or until the empty clause is derived.
  */
 static void check_proof(void) {
-  log_msg(VL_NORMAL, "c Checking proof...\n");
+  logc("Checking proof...");
 
   while (!derived_empty_clause && has_another_lsr_line()) {
-    int line_type = prepare_next_line();
+    line_type_t line_type = prepare_next_line();
     if (line_type == ADDITION_LINE) {
       check_line();
     }
   }
 
-  if (p_strategy == PS_STREAMING) {
+  if (p_strategy == PS_STREAMING && lsr_file != stdin) {
     fclose(lsr_file);
   }
 
-  if (derived_empty_clause) {
-    log_msg(VL_QUIET, "s VERIFIED UNSAT\n");
-  } else {
-    log_msg(VL_QUIET, "s VALID\n");
-    log_msg(VL_NORMAL, "c A valid proof, without an empty clause.\n.");
-  }
+  print_proof_checking_result();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -815,18 +924,20 @@ int main(int argc, char *argv[]) {
           print_long_help_msg(stdout);
           return 0;
         } else {
-          PRINT_ERR_AND_EXIT("Unimplemented long option.");
+          log_fatal_err("Unimplemented long option.");
         }
       default:
         cli_res = cli_handle_opt(&cli, ch, optopt, optarg);
         switch (cli_res) {
           case CLI_UNRECOGNIZED:
-            fprintf(stderr, "Error: Unimplemented option.\n");
-          case CLI_HELP_MESSAGE:
+            log_err("Unimplemented option.");
             print_short_help_msg(stderr);
             return 1;
+          case CLI_HELP_MESSAGE:
+            print_short_help_msg(stderr);
+            return 0;
           case CLI_SUCCESS: break;
-          default: PRINT_ERR_AND_EXIT("Corrupted CLI result.");
+          default: log_fatal_err("Corrupted CLI result.");
         }
     }
   }
@@ -837,11 +948,11 @@ int main(int argc, char *argv[]) {
   //   (modulo some behavior changes due to `-n` and `-d` flags)
   switch (argc - optind) {
     case 0:
-      PRINT_ERR_AND_EXIT_IF(!cli.name_provided, "No file prefix provided.");
+      FATAL_ERR_IF(!cli.name_provided, "No file prefix provided.");
       cli_concat_path_extensions(&cli, ".cnf", ".dsr", ".lsr");
       break;
     case 1:
-      PRINT_ERR_AND_EXIT_IF(cli.dir_provided,
+      FATAL_ERR_IF(cli.dir_provided,
         "Cannot provide a directory without an LSR file path.");
 
       if (cli.name_provided) {
@@ -861,38 +972,33 @@ int main(int argc, char *argv[]) {
       }
       break;
     default:
-      fprintf(stderr, "Error: Invalid number of non-option arguments.\n");
+      log_err("Invalid number of non-option arguments.");
       print_short_help_msg(stderr);
       return 1;
   }
 
   // Open the files first, to ensure we don't do work unless they exist
+
+  logc("CNF file path: %s", cli.cnf_file_path);
   FILE *cnf_file = xfopen(cli.cnf_file_path, "r");
+
   if (cli.lsr_file_path == NULL) {
-    PRINT_ERR_AND_EXIT_IF(p_strategy == PS_EAGER,
+    FATAL_ERR_IF(p_strategy == PS_EAGER,
       "Cannot use eager strategy with `stdin` as the LSR file.");
+    logc("No LSR file path provided, using stdin.");
     lsr_file = stdin;
   } else {
+    logc("LSR file path: %s", cli.lsr_file_path);
     lsr_file = xfopen(cli.lsr_file_path, "r");
   }
 
-  log_msg(VL_NORMAL, "c CNF file path: %s\n", cli.cnf_file_path);
-  if (lsr_file == stdin) {
-    log_msg(VL_NORMAL, "c No LSR file path provided, using stdin.\n");
-  } else {
-    log_msg(VL_NORMAL, "c LSR file path: %s\n", cli.lsr_file_path);
-  }
-
   if (p_strategy == PS_EAGER) {
-    log_msg(VL_NORMAL, "c Using an EAGER parsing strategy.\n");
+    logc("Using an EAGER parsing strategy.");
   } else {
-    log_msg(VL_NORMAL, "c Using a STREAMING parsing strategy.\n");
+    logc("Using a STREAMING parsing strategy.");
   }
 
   parse_cnf(cnf_file);
-  log_msg(VL_NORMAL, "c The CNF formula has %lld clauses and %d variables.\n",
-    ((llong) formula_size), max_var);
-
   prepare_lsr_check_data();
   check_proof();
 

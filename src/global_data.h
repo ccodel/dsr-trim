@@ -227,7 +227,6 @@ void print_proof_checking_result(void);
 void set_lit_for_alpha(int lit, llong gen);
 peval_t peval_lit_under_alpha(int lit);
 
-void set_mapping_for_subst(int lit, int lit_mapping, llong gen);
 int get_lit_from_subst(int lit);
 
 void insert_lit(int lit);
@@ -243,6 +242,8 @@ void delete_clause(srid_t clause_index);
 
 int *get_clause_start_unsafe(srid_t clause_index);
 int *get_clause_start(srid_t clause_index);
+int *get_clause_end_unsafe(srid_t clause_index);
+int *get_clause_end(srid_t clause_index);
 int  get_clause_size(srid_t clause_index);
 
 int *get_witness_start(srid_t line_num);

@@ -57,6 +57,7 @@ void log_err(const char *format, ...) {
 void log_fatal_err(const char *format, ...) {
   va_list ap;
   va_start(ap, format);
+  fprintf(stderr, "Fatal error: ");
   vfprintf(stderr, format, ap);
   va_end(ap);
   fprintf(stderr, "\n");

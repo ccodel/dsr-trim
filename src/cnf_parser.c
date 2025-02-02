@@ -115,17 +115,20 @@ void parse_cnf(FILE *f) {
     formula_size, max_var);
 }
 
-void print_cnf(void) {
-  for (srid_t c = 0; c < formula_size; c++) {
-    if (is_clause_deleted(c)) {
-      continue;
-    }
+void dbg_print_clause(srid_t clause_index) {
+  if (is_clause_deleted(clause_index)) return;
 
-    int *clause_iter = get_clause_start(c);
-    int *clause_end = get_clause_start(c + 1);
-    for (; clause_iter < clause_end; clause_iter++) {
-      log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(*clause_iter));
-    }
-    log_raw(VL_NORMAL, "0\n");
+  int *clause_iter = get_clause_start(clause_index);
+  int *clause_end = get_clause_end(clause_index);
+  log_raw(VL_NORMAL, "[%lld] ", TO_DIMACS_CLAUSE(clause_index));
+  for (; clause_iter < clause_end; clause_iter++) {
+    log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(*clause_iter));
+  }
+  log_raw(VL_NORMAL, "0\n"); 
+}
+
+void dbg_print_cnf(void) {
+  for (srid_t c = 0; c < formula_size; c++) {
+    dbg_print_clause(c);
   }
 }

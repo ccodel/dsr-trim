@@ -22,7 +22,7 @@ void cli_init(cli_opts_t *cli) {
 }
 
 static inline void err_if_option_already_set(int val, int optopt) {
-  FATAL_ERR_IF(val, "Error: Option \"-%c\" was already set.", (char) optopt);
+  FATAL_ERR_IF(val, "Option \"-%c\" was already set.", (char) optopt);
 }
 
 static void copy_and_update_bufs(cli_opts_t *cli, size_t len) {

@@ -106,12 +106,12 @@ int main(int argc, char *argv[]) {
   while ((opt = getopt(argc, argv, "dl")) != -1) {
     switch (opt) {
       case 'd':
-        printf("c Mode switched to DSR decompression.\n");
+        logc("Mode switched to DSR decompression.");
         read_lsr = 0;
         break;
       case 'l': read_lsr = 1; break;
       default:
-        fprintf(stderr, "Error: Unknown option: %c\n", opt);
+        log_err("Unknown option: %c", opt);
         print_usage(stderr);
         return 1;
     }

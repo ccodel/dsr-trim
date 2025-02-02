@@ -44,7 +44,7 @@ void log_msg(vlevel_t level, const char *format, ...);
 void logc(const char *format, ...);
 
 // Logs a message to `stderr`.
-// Begins the message with `"Error "` and end the message with a newline `'\n'`.
+// Begins the message with `"Error: "` and end the message with a newline `'\n'`.
 void log_err(const char *format, ...);
 
 // Logs a fatal error (along with a newline `'\n'`) and exits.

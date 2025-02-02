@@ -33,6 +33,7 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
   new_clause_size = 0;
   int res, token, lit, num_times_found_pivot = 0;
   subst_pair_incomplete = 0;
+  uint num_witness_atoms_parsed = 0;
 
   // Read the SR clause and witness until a 0 is read
   while ((token = read_lit(f)) != 0) {
@@ -54,11 +55,12 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
         insert_lit(lit);
         new_clause_size++;
         break;
-      default: // We're reading the substitution part of the witness (waterfall!)
+      default: // We're reading the substitution part of the witness
         subst_pair_incomplete = !subst_pair_incomplete;
-      case 2: // We're reading the witness (waterfalls from above)
+      case 2:  // We're reading the witness (waterfalls from above)
         FATAL_ERR_IF(VAR_FROM_LIT(lit) > max_var, "Var %d out of range.",
           VAR_FROM_LIT(lit));
+        num_witness_atoms_parsed++;
         ra_insert_int_elt(&witnesses, lit);
         break;
     }
@@ -67,7 +69,10 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
   FATAL_ERR_IF(subst_pair_incomplete, "Missing half of subst map.");
 
   // Because the witness might get minimized, we add the witness terminator
-  ra_insert_int_elt(&witnesses, WITNESS_TERM);
+  if (num_witness_atoms_parsed > 0) {
+    ra_insert_int_elt(&witnesses, WITNESS_TERM);
+  }
+
   ra_commit_range(&witnesses);
   commit_clause();
   // TODO: Remove duplicate literals in the clause or witness?

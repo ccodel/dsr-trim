@@ -187,7 +187,7 @@ inline peval_t peval_lit_under_alpha(int lit) {
   }
 }
 
-inline void set_mapping_for_subst(int lit, int lit_mapping, llong gen) {
+static inline void set_mapping_for_subst(int lit, int lit_mapping, llong gen) {
   int var = VAR_FROM_LIT(lit);
   subst_generations[var] = gen;
   if (IS_POS_LIT(lit)) {
@@ -416,6 +416,26 @@ inline int *get_clause_start(srid_t clause_index) {
     "get_clause_start(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
   return lits_db + CLAUSE_IDX(formula[clause_index]);
+}
+
+inline int *get_clause_end_unsafe(srid_t clause_index) {
+  if (clause_index == formula_size) {
+    return lits_db + lits_db_size;
+  } else {
+    return lits_db + formula[clause_index + 1];
+  }
+}
+
+inline int *get_clause_end(srid_t clause_index) {
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "get_clause_end(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
+
+  if (clause_index == formula_size) {
+    return lits_db + lits_db_size;
+  } else {
+    return lits_db + CLAUSE_IDX(formula[clause_index + 1]);
+  }
 }
 
 // TODO: What should this return for the new clause, if not yet added?

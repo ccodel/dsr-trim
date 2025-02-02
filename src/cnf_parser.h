@@ -14,7 +14,7 @@
 
 // Parses a single clause and stores it in `lits_db` and `formula`.
 // Sorts the literals, eliminates duplicates, and checks for tautology.
-// Note that it does not call `insert_clause()`.
+// Note that it does NOT call `commit_clause()`.
 // Returns 1 if it's a tautology, 0 otherwise.
 int parse_clause(FILE *f);
 
@@ -22,7 +22,10 @@ int parse_clause(FILE *f);
 // On success, closes the FILE.
 void parse_cnf(FILE *cnf_file);
 
+// Prints the clause to stdout, for debugging purposes.
+void dbg_print_clause(srid_t clause_index);
+
 // Prints the CNF to stdout, for debugging purposes.
-void print_cnf(void); 
+void dbg_print_cnf(void); 
 
 #endif /* _CNF_PARSER_H_ */
