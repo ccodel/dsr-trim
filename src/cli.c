@@ -72,7 +72,7 @@ cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
       "Cannot provide both a name and a directory prefix.");
     cli->dir_provided = 1;
 
-    size_t len = strlcpy(cli->cnf_file_path_buf, optarg, MAX_FILE_PATH_LEN);
+    int len = snprintf(cli->cnf_file_path_buf, MAX_FILE_PATH_LEN, "%s", optarg);
     FATAL_ERR_IF(len >= MAX_FILE_PATH_LEN,
       "Directory prefix too long.");
     FATAL_ERR_IF(len == 0, "Empty directory provided.");
@@ -91,8 +91,8 @@ cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
     FATAL_ERR_IF(cli->dir_provided,
       "Cannot provide both a name and a directory prefix.");
     cli->name_provided = 1;
-
-    len = strlcpy(cli->cnf_file_path_buf, optarg, MAX_FILE_PATH_LEN);
+    
+    len = snprintf(cli->cnf_file_path_buf, MAX_FILE_PATH_LEN, "%s", optarg);
     FATAL_ERR_IF(len >= MAX_FILE_PATH_LEN, "Name prefix too long.");
     cli->cnf_file_path = ((char *) cli->cnf_file_path_buf) + len;
     copy_and_update_bufs(cli, len);

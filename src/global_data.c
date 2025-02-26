@@ -113,10 +113,11 @@ void init_global_data(void) {
   formula = xmalloc(formula_alloc_size * sizeof(srid_t));
   formula[0] = 0;
 
+  // We multiply by 2 here because we index these by lit instead of by var
   lits_first_clause = xrealloc_memset(lits_first_clause,
-    0, alpha_subst_alloc_size * sizeof(srid_t), 0xff);
+    0, alpha_subst_alloc_size * 2 * sizeof(srid_t), 0xff);
   lits_last_clause = xrealloc_memset(lits_last_clause,
-    0, alpha_subst_alloc_size * sizeof(srid_t), 0xff);
+    0, alpha_subst_alloc_size * 2 * sizeof(srid_t), 0xff);
 
   alpha = xcalloc(alpha_subst_alloc_size, sizeof(llong));
   subst_generations = xcalloc(alpha_subst_alloc_size, sizeof(llong));
@@ -237,10 +238,11 @@ void insert_lit(int lit) {
     subst_mappings = xrealloc(subst_mappings,
       alpha_subst_alloc_size * sizeof(int));
 
+    // We multiply by 2 here because we index these by lit instead of by var
     lits_first_clause = xrealloc_memset(lits_first_clause,
-      old_size * sizeof(srid_t), alpha_subst_alloc_size * sizeof(srid_t), 0xff);
+      old_size * 2 * sizeof(srid_t), alpha_subst_alloc_size * 2 * sizeof(srid_t), 0xff);
     lits_last_clause = xrealloc_memset(lits_last_clause,
-      old_size * sizeof(srid_t), alpha_subst_alloc_size * sizeof(srid_t), 0xff);
+      old_size * 2 * sizeof(srid_t), alpha_subst_alloc_size * 2 * sizeof(srid_t), 0xff);
   }
 }
 
