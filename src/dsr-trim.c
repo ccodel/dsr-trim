@@ -102,6 +102,10 @@ Potential optimizations:
     ignored_j++;                                                               \
   } while (0)
 
+#define SKIP_REMAINING_UP_HINTS(iter, end) do {                                \
+    while ((iter) < (end) && *(iter) > 0) (iter)++;                            \
+  } while (0)
+
 typedef enum sr_checking_mode {
   FORWARDS_CHECKING_MODE,
   BACKWARDS_CHECKING_MODE,
@@ -1278,7 +1282,7 @@ static void minimize_RAT_hints(void) {
     if (RAT_lui > current_line) {
       // Scan through its hints and mark them as active
       srid_t hint;
-      while ((hint = *hints_iter) > 0 && hints_iter < hints_end) {
+      while (hints_iter < hints_end && (hint = *hints_iter) > 0) {
         hint = FROM_DIMACS_CLAUSE(hint);
         hints_iter++;
         num_marked += adjust_clause_lui(hint);
@@ -1288,9 +1292,7 @@ static void minimize_RAT_hints(void) {
       // Subtract one due to the ++ above
       INSERT_ARR_ELT_CONCAT(skipped_RAT_indexes, sizeof(uint),
         (uint) ((hints_iter - hints_start) - 1));
-      
-      // Skip this RAT clause's hints
-      while (*hints_iter > 0 && hints_iter < hints_end) hints_iter++;
+      SKIP_REMAINING_UP_HINTS(hints_iter, hints_end);
     } else {
       log_fatal_err("[line %lld] RAT clause %lld was deleted before UP hint.",
         current_line, TO_DIMACS_CLAUSE(RAT_clause));
@@ -1322,7 +1324,7 @@ static void minimize_RAT_hints(void) {
         // but which still we need to mark for deletion purposes
         iter++;
         srid_t hint;
-        while ((hint = *iter) > 0 && iter < hints_end) {
+        while (iter < hints_end && (hint = *iter) > 0) {
           hint = FROM_DIMACS_CLAUSE(hint); // Convert out of DIMACS
           iter++;
           num_marked += adjust_clause_lui(hint);
@@ -1364,7 +1366,7 @@ static void minimize_RAT_hints(void) {
     }
 
     hints_iter = skip_start + 1;
-    while (*hints_iter > 0 && hints_iter < hints_end) hints_iter++;
+    SKIP_REMAINING_UP_HINTS(hints_iter, hints_end);
   }
 
   // Write the remaining hints

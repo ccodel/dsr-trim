@@ -94,6 +94,10 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#define SKIP_REMAINING_UP_HINTS(iter, end) do {                                \
+    while ((iter) < (end) && *(iter) > 0) (iter)++;                            \
+  } while (0)
+
 // Max line identifier checked/parsed. Is 1-indexed and in DIMACS form.
 static srid_t max_line_id = 0;
 
@@ -647,9 +651,8 @@ static int unit_propagate(srid_t **hint_ptr, srid_t *hints_end, llong gen) {
     switch (up_res) {
       case CONTRADICTION: // The line checks out, and we can add the clause
         // Scan the hint_index forward until a negative hint is found
-        do {
-          hints_iter++;
-        } while (*hints_iter > 0 && hints_iter < hints_end);
+        hints_iter++;
+        SKIP_REMAINING_UP_HINTS(hints_iter, hints_end);
         *hint_ptr = hints_iter;
         return CONTRADICTION;
       case SATISFIED_OR_MUL: // Unit propagation shouldn't give us either
