@@ -631,6 +631,9 @@ static void print_clause(srid_t clause_id) {
   int *clause = get_clause_start_unsafe(clause_id);
   const int size = get_clause_size(clause_id);
 
+  // Don't print anything if it's the empty clause
+  if (size == 0) return;
+
   /*
     Since literals might have gotten reordered during watch pointer stuff,
     we need to recover the pivot from the witness (an invariant!) and then
@@ -651,7 +654,9 @@ static void print_clause(srid_t clause_id) {
   }
 
   // Sort the remaining literals in the clause in increasing order of magnitude
-  qsort(clause + 1, size - 1, sizeof(int), absintcmp);
+  if (size > 1) {
+    qsort(clause + 1, size - 1, sizeof(int), absintcmp);
+  }
 
   // Now actually print the clause
   for (int i = 0; i < size; i++) {
@@ -2649,7 +2654,6 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
 
   for (; dels < del_end; dels++) {
     srid_t del_id = *dels;
-    //dbg_print_clause(del_id);
     int *del_clause = get_clause_start(del_id);
     remove_wp_for_lit(del_clause[0], del_id);
     remove_wp_for_lit(del_clause[1], del_id);
