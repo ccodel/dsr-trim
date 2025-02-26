@@ -15,25 +15,14 @@
 #include "global_data.h"
 #include "logger.h"
 
-#ifdef LONGTYPE
 /** Determines if the sign bit is set to mark a deleted clause. */
-#define IS_DELETED_CLAUSE(x)      ((x) & MSB64)
+#define IS_DELETED_CLAUSE(x)      ((x) & SRID_MSB)
 
 /** Removes the sign bit from the clause index value to remove deletion info. */
-#define CLAUSE_IDX(x)             ((x) & (~MSB64))
+#define CLAUSE_IDX(x)             ((x) & (~SRID_MSB))
 
 /** Sets the sign bit for the clause index value to logically delete it. */
-#define DELETE_CLAUSE(x)          ((x) | MSB64)
-#else
-/** Determines if the sign bit is set to mark a deleted clause. */
-#define IS_DELETED_CLAUSE(x)      ((x) & MSB32)
-
-/** Removes the sign bit from the clause index value to remove deletion info. */
-#define CLAUSE_IDX(x)             ((x) & (~MSB32))
-
-/** Sets the sign bit for the clause index value to logically delete it. */
-#define DELETE_CLAUSE(x)          ((x) | MSB32)
-#endif
+#define DELETE_CLAUSE(x)          ((x) | SRID_MSB)
 
 // TODO: Instead of floating point, use numerator and denominator.
 #define DELETION_GC_NUMER           1
@@ -78,8 +67,6 @@ llong alpha_generation = 0;
 llong subst_generation = 0;
 
 range_array_t witnesses;
-
-int pivot = 0;
 
 srid_t min_clause_to_check = 0;
 srid_t max_clause_to_check = 0;
@@ -451,6 +438,27 @@ inline int get_clause_size(srid_t clause_index) {
   }
 }
 
+/**
+ * @brief Scrubs the existence of any clause after `clause_index`, instead
+ *        making the clause after be the empty clause.
+ * 
+ * An `EAGER` parsing strategy might parse more clauses than are needed to
+ * derive the empty clause, so to maintain data structure invariants
+ * regarding `formula_size` etc., this function discards any clauses above
+ * `clause_index`, and then caps the formula with the empty clause.
+ * 
+ * @param clause_index The highest clause index to keep in the formula.
+ */
+void discard_formula_after_clause(srid_t clause_index) {
+  FATAL_ERR_IF(clause_index >= formula_size,
+    "Cannot discard the formula after clause %lld, as it is out of bounds.",
+    TO_DIMACS_CLAUSE(clause_index));
+
+  lits_db_size = formula[clause_index + 1];
+  formula_size = clause_index + 2;
+  formula[clause_index + 2] = lits_db_size;
+}
+
 inline int *get_witness_start(srid_t line_num) {
   if (p_strategy == PS_EAGER) {
     return ((int *) ra_get_range_start(&witnesses, line_num));
@@ -483,10 +491,6 @@ static void set_min_and_max_clause_to_check(int lit) {
  * @brief Moves the substitution mappings into `subst`. Sets the values for
  *        `min/max_clause_to_check`.
  * 
- * If the witness is empty, it uses the pivot literal (the first literal
- * of the candidate clause). The caller should ensure that `pivot` is set
- * before calling this function.
- * 
  * @param line_id The 0-indexed line ID of the substitution witness.
  *  If the parsing strategy is `PS_EAGER`, this ID corresponds to the
  *  range array index in `witnesses`. Otherwise, the line ID is ignored.
@@ -494,19 +498,18 @@ static void set_min_and_max_clause_to_check(int lit) {
 void assume_subst(srid_t line_num) {
   min_clause_to_check = formula_size - 1;
   max_clause_to_check = 0;
-  int seen_pivot_divider = 0;
-  const int pivot_var = VAR_FROM_LIT(pivot);
 
-  // Set the pivot, just in case the witness is empty
+  int *witness_iter = get_witness_start(line_num);
+  int *witness_end = get_witness_end(line_num);
+
+  int seen_pivot_divider = 0;
+  int pivot = witness_iter[0];
+  int pivot_var = VAR_FROM_LIT(pivot);
+
+  // Process the pivot
   set_mapping_for_subst(pivot, SUBST_TT, subst_generation);
   set_min_and_max_clause_to_check(NEGATE_LIT(pivot));
-  //occ_counter_end = lits_occ[NEGATE_LIT(pivot)]; // TODO remap pivot needs to subtract
-  //printf("c    Adding %d to counter_end for literal %d\n",
-    //lits_occ[NEGATE_LIT(pivot)], TO_DIMACS_LIT(NEGATE_LIT(pivot)));
-  //occ_counter = 0;
-
-  int *witness_iter = get_witness_start(line_num) + 1;
-  int *witness_end = get_witness_end(line_num);
+  witness_iter++;
 
   // For all other literals l in the witness
   // 1. Check that var(l) hasn't been set yet (compare gen against subst_generation)
@@ -530,9 +533,6 @@ void assume_subst(srid_t line_num) {
       } else {
         set_mapping_for_subst(lit, SUBST_TT, subst_generation);
         set_min_and_max_clause_to_check(neg_lit);
-        //printf("c    Adding %d to counter_end for literal %d\n",
-          //lits_occ[neg_lit], TO_DIMACS_LIT(neg_lit));
-        //occ_counter_end += lits_occ[neg_lit];
       }
     } else {
       witness_iter++;
@@ -540,17 +540,12 @@ void assume_subst(srid_t line_num) {
       set_mapping_for_subst(lit, mapped_lit, subst_generation);
       set_min_and_max_clause_to_check(lit);
       set_min_and_max_clause_to_check(neg_lit);
-      //occ_counter_end += lits_occ[lit];
-      //occ_counter_end += lits_occ[neg_lit];
-      //printf("c    Adding %d to counter_end for literal %d\n",
-          //lits_occ[neg_lit], TO_DIMACS_LIT(neg_lit));
-      //printf("c    Adding %d to counter_end for literal %d\n",
-          //lits_occ[lit], TO_DIMACS_LIT(lit));
     }
   }
 }
 
-void assume_negated_clause(srid_t clause_index, llong gen) {
+// Returns the `pivot` literal of the clause (if nonempty), or `-1` if empty.
+int assume_negated_clause(srid_t clause_index, llong gen) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
     "assume_negated_clause(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
@@ -558,15 +553,15 @@ void assume_negated_clause(srid_t clause_index, llong gen) {
   int *clause_iter = get_clause_start(clause_index);
   int *end = get_clause_start(clause_index + 1);
 
-  // Only set the pivot if the clause is nonempty
-  if (clause_iter < end) {
-    pivot = *clause_iter;
-  }
+  // Only store the pivot if the clause is nonempty
+  int pivot = (clause_iter < end) ? clause_iter[0] : -1;
 
   for (; clause_iter < end; clause_iter++) {
     int lit = *clause_iter;
     set_lit_for_alpha(NEGATE_LIT(lit), gen);
   }
+
+  return pivot;
 }
 
 // Assumes the negation of the clause under the substitution.
@@ -667,9 +662,8 @@ void update_first_last_clause(int lit) {
       if (!is_clause_deleted(first)) {
         // Check the clause for the literal
         int *clause_ptr = get_clause_start(first);
-        int *end_ptr = get_clause_start(first + 1);
+        int *end_ptr = get_clause_end(first);
         for (; clause_ptr < end_ptr; clause_ptr++) {
-          // TODO: For lsr-check, clauses are sorted. Add a sorted flag here?
           if (*clause_ptr == lit) {
             lits_first_clause[lit] = first;
             found_new = 1;
@@ -701,9 +695,8 @@ void update_first_last_clause(int lit) {
       if (!is_clause_deleted(last)) {
         // Check the clause for the literal
         int *clause_ptr = get_clause_start(last);
-        int *end_ptr = get_clause_start(last + 1);
+        int *end_ptr = get_clause_end(last);
         for (; clause_ptr < end_ptr; clause_ptr++) {
-          // TODO: Clauses are sorted? here too.
           if (*clause_ptr == lit) {
             lits_last_clause[lit] = last;
             found_new = 1;
@@ -719,4 +712,20 @@ void update_first_last_clause(int lit) {
       lits_last_clause[lit] = first;
     }
   }
+}
+
+void dbg_print_assignment(void) {
+  log_raw(VL_NORMAL, "Assignment: ");
+  for (int i = 0; i <= max_var; i++) {
+    switch (peval_lit_under_alpha(i * 2)) {
+      case TT:
+        log_raw(VL_NORMAL, "%d (%lld)", TO_DIMACS_LIT(i * 2), alpha[i]);
+        break;
+      case FF:
+        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT((i * 2) + 1), alpha[i]);
+        break;
+      default: break;
+    }
+  }
+  log_raw(VL_NORMAL, "\n");
 }

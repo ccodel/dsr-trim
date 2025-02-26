@@ -39,9 +39,10 @@
  * the `line_id` is essentially `num_cnf_clauses`-indexed.
  */
 
-#define LINE_ID_FROM_LINE_NUM(line_num)   ((line_num) + num_cnf_clauses + 1)
-#define LINE_NUM_FROM_LINE_ID(line_id)    ((line_id) - (num_cnf_clauses + 1))
-#define CLAUSE_ID_FROM_LINE_NUM(line_num) ((line_num) + num_cnf_clauses)
+#define LINE_ID_FROM_LINE_NUM(line_num)    ((line_num) + num_cnf_clauses + 1)
+#define LINE_NUM_FROM_LINE_ID(line_id)     ((line_id) - (num_cnf_clauses + 1))
+#define CLAUSE_ID_FROM_LINE_NUM(line_num)  ((line_num) + num_cnf_clauses)
+#define LINE_NUM_FROM_CLAUSE_ID(clause_id) ((clause_id) - num_cnf_clauses)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -183,9 +184,6 @@ extern llong subst_generation;
  */
 extern range_array_t witnesses;
 
-// If a witness is provided, the first literal of the clause is the pivot.
-extern int pivot;
-
 /** @brief Minimum clause to check during RAT clause checking.
  * 
  *  If a witness doesn't reduce a clause, it can be ignored during checking,
@@ -238,7 +236,7 @@ void uncommit_clause_with_first_last_update(void);
 int  is_clause_deleted(srid_t clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
-void delete_clause(srid_t clause_index);    
+void delete_clause(srid_t clause_index);
 
 int *get_clause_start_unsafe(srid_t clause_index);
 int *get_clause_start(srid_t clause_index);
@@ -246,15 +244,19 @@ int *get_clause_end_unsafe(srid_t clause_index);
 int *get_clause_end(srid_t clause_index);
 int  get_clause_size(srid_t clause_index);
 
+void discard_formula_after_clause(srid_t clause_index);   
+
 int *get_witness_start(srid_t line_num);
 int *get_witness_end(srid_t line_num);
 int  get_witness_size(srid_t line_num);
 void assume_subst(srid_t line_num);
 
-void assume_negated_clause(srid_t clause_index, llong gen);
-int  assume_negated_clause_under_subst(srid_t clause_index, llong gen);
-int  reduce_subst_mapped(srid_t clause_index);
+int assume_negated_clause(srid_t clause_index, llong gen);
+int assume_negated_clause_under_subst(srid_t clause_index, llong gen);
+int reduce_subst_mapped(srid_t clause_index);
 
 void update_first_last_clause(int lit);
+
+void dbg_print_assignment(void);
 
 #endif /* _GLOBAL_DATA_H_ */

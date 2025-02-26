@@ -78,6 +78,11 @@ void ra_commit_range(range_array_t *ra) {
   ra->indexes[ra->indexes_size] = ra->data_size;
 }
 
+void ra_uncommit_range(range_array_t *ra) {
+  ra->data_size = ra->indexes[ra->indexes_size];
+  ra->indexes_size--;
+}
+
 /**
  * @brief Commits empty ranges until the `range_index` is about to be committed.
  * 
@@ -117,6 +122,14 @@ void ra_uncommit_data_by(range_array_t *ra, ullong amount) {
   ra->data_size -= amount;
 }
 
+void *ra_get_data_start(range_array_t *ra) {
+  return ra->data;
+}
+
+void *ra_get_data_end(range_array_t *ra) {
+  return (void *) (((char *) ra->data) + (ra->data_size * ra->elts_size));
+}
+
 void *ra_get_range_start(range_array_t *ra, ullong range_index) {
   if (range_index == 0) {
     return ra->data;
@@ -129,10 +142,14 @@ void *ra_get_range_start(range_array_t *ra, ullong range_index) {
     offset = ra->indexes[range_index];
   }
 
-  if (ra->elts_size == sizeof(int)) {
-    return ((int *) ra->data) + offset;
+  return (void *) (((char *) ra->data) + (offset * ra->elts_size));
+}
+
+void *ra_get_range_end(range_array_t *ra, ullong range_index) {
+  if (range_index == ra->indexes_size) {
+    return ra_get_data_end(ra);
   } else {
-    return ((llong *) ra->data) + offset;
+    return ra_get_range_start(ra, range_index + 1);
   }
 }
 

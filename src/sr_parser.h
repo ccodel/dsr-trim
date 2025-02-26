@@ -29,6 +29,8 @@
  *    In other words, if <line_id> is the reported ID of the line, then
  *    `line_no` is <line_id> - (num_cnf_clauses + 1).
  */
-void parse_sr_clause_and_witness(FILE *f, srid_t line_no);
+void parse_sr_clause_and_witness(FILE *f, srid_t line_num);
+
+void dbg_print_witness(srid_t line_num);
 
 #endif /* _SR_PARSER_H_ */

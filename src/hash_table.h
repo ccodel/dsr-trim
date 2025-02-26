@@ -33,6 +33,7 @@ typedef struct chaining_hash_table {
 } ht_t;
 
 void ht_init(ht_t *ht, uint load);
+void ht_init_with_size(ht_t *ht, uint load);
 void ht_insert(ht_t *ht, uint hash, srid_t data);
 
 htb_t *ht_get_bucket(ht_t *ht, uint hash);

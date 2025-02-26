@@ -32,7 +32,7 @@ int parse_clause(FILE *f) {
 
   // Now we sort the literals in the clause
   // Then, we efficiently remove duplicate literals and detect tautologies
-  qsort((void *) read_ptr, new_clause_size, sizeof(int), absintcmp);
+  qsort(read_ptr, new_clause_size, sizeof(int), absintcmp);
   int is_tautology = 0;
   int skipped_lits = 0;
   int lit, next_lit = read_ptr[0];

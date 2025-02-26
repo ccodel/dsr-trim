@@ -45,7 +45,6 @@
 #include "logger.h"
 #include "range_array.h"
 #include "hash_table.h"
-#include "xmalloc.h"
 #include "cli.h"
 #include "cnf_parser.h"
 #include "sr_parser.h"
@@ -74,13 +73,16 @@ Potential optimizations:
 ////////////////////////////////////////////////////////////////////////////////
 
 #define INIT_LIT_WP_ARRAY_SIZE          (4)
-#define INIT_CLAUSE_ID_HT_SIZE          (100000)
-#define INIT_CLAUSE_ID_BUCKET_SIZE      (8)
 
 // When setting literals "globally" under initial unit propagation, we use the
 // largest possible generation value.
-#define GLOBAL_GEN                (LLONG_MAX)
-#define ASSUMED_GEN               (LLONG_MAX - 1)
+#define GLOBAL_GEN   (LLONG_MAX)
+#define ASSUMED_GEN  (LLONG_MAX - 1)
+
+#define MARK_USER_DELETED_LUI(x)        ((x) | SRID_MSB)
+#define IS_USER_DELETED_LUI(x)          (((x) & SRID_MSB) && ((x) != -1))
+#define LUI_FROM_USER_DELETED_LUI(x)    ((x) & (~SRID_MSB))
+#define IS_UNUSED_LUI(x)                ((x) & SRID_MSB)
 
 #define UP_HINTS_IDX_FROM_LINE_NUM(line_num)  \
   ((((num_parsed_add_lines - 1) - (line_num)) * 2) + 1)
@@ -152,9 +154,6 @@ static int RAT_unit_clauses_index = 0;
 // Index pointing at the "unprocessed" global UP literals
 static int global_up_literals_index = 0;
 
-// Monotonically increased index into the formula
-static srid_t wp_processed_clauses = 0;
-
 static int candidate_assumed_literals_index = 0;
 static int candidate_unit_literals_index = 0;
 static int RAT_assumed_literals_index = 0;
@@ -194,8 +193,20 @@ static srid_t *clause_id_map = NULL;
 // hash is a commutative function of the literals. That way, permutations of
 // the clause will hash to the same thing.
 
-// The clause deletion hash table.
+// The clause ID hash table, used for checking deletions.
 static ht_t clause_id_ht;
+
+#define INIT_CLAUSE_MULT_SIZE  (4)
+
+// Counts the number of times a clause appears multiple times in the formula.
+typedef struct clause_multiplicity {
+  srid_t clause_id;
+  uint multiplicity;
+} clause_mult_t;
+
+static clause_mult_t *clause_mults;
+static uint clause_mults_alloc_size = 0;
+static uint clause_mults_size = 0;
 
 // Forward declare (TODO: Figure out organization laterj)
 static void add_wp_for_lit(int lit, srid_t clause);
@@ -212,18 +223,6 @@ static void remove_wp_for_lit(int lit, srid_t clause);
 // is marked.
 static srid_t *clause_last_used_id = NULL;
 static uint clause_last_used_id_alloc_size = 0;
-
-// Flag for whether we encountered a new marked clause during UP, during
-// backwards checking.
-//
-// We eagerly delete clauses that are no longer needed. We record their
-// IDs backwards in a stack, but to mark off when a new set of clauses are
-// marked, we record the first grouping with the negative of its ID.
-// static char encountered_marked_clause = 0;
-
-/*static srid_t *marked_clause_stack = NULL;
-static int marked_clause_stack_size = 0;
-static int marked_clause_stack_alloc_size = 0; */
 
 // Stores the index into each unit literal's watch pointer list
 // to reduce duplicate checks on SAT/unit clauses during backwards checking
@@ -242,10 +241,16 @@ static int *unit_literals_wp_up_indexes = NULL;
  * 
  */
 static range_array_t hints;
+
+// Stores user deletions. Is 0-indexed, but because a user might delete
+// clauses before the first addition line, it is "1-indexed" with
+// respect to line numbers.
 static range_array_t deletions;
 
-// Used to store derived deletions during backwards checking
-static range_array_t derived_deletions;
+// Used to store user deletions during backwards checking
+// (Not to be confused with `deletions`, where user deletions get
+// stored during forward checking.)
+static range_array_t bcu_deletions;
 
 static uint *line_num_RAT_hints = NULL;
 static uint line_num_RAT_hints_alloc_size = 0;
@@ -335,17 +340,7 @@ static int has_another_dsr_line(void) {
   }
 }
 
-/*
-static void prepare_hints(void) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    ra_commit_range(&hints);
-  } else {
-    ra_reset(&hints);
-  }
-}
-*/
-
-static inline srid_t *get_up_hints_start(srid_t line_num) {
+static inline srid_t *get_UP_hints_start(srid_t line_num) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     srid_t idx = UP_HINTS_IDX_FROM_LINE_NUM(line_num);
     return ra_get_range_start(&hints, idx);
@@ -354,7 +349,7 @@ static inline srid_t *get_up_hints_start(srid_t line_num) {
   }
 }
 
-static inline srid_t *get_up_hints_end(srid_t line_num) {
+static inline srid_t *get_UP_hints_end(srid_t line_num) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     srid_t idx = UP_HINTS_IDX_FROM_LINE_NUM(line_num);
     return ra_get_range_start(&hints, idx + 1);
@@ -397,38 +392,26 @@ static inline uint get_num_RAT_hints(srid_t line_num) {
   }
 }
 
-/*static void prepare_deletions(srid_t line_num) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    // TODO: Commit until?
-    ra_commit_range(&deletions);
-    ra_commit_range(&user_deletions);
-  } else {
-    ra_reset(&deletions);
-  }
-}*/
-
-static inline void store_deletion(srid_t clause_id) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    ra_insert_int_elt(&deletions, clause_id);
-  } else {
-    ra_insert_int_elt(&deletions, clause_id);
-  }
-}
-
 static inline void store_derived_deletion(srid_t clause_id) {
   FATAL_ERR_IF(ch_mode != BACKWARDS_CHECKING_MODE,
     "Can only derive deletions in backwards checking mode.");
 
-  // Don't store derived deletions for the empty clause line,
-  // as we won't actually delete these
   if (current_line == num_parsed_add_lines - 1) return;
+  ra_insert_srid_elt(&deletions, clause_id);
+}
 
-  ra_insert_srid_elt(&derived_deletions, clause_id);
+static inline void store_user_deletion(srid_t clause_id) {
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    ra_insert_srid_elt(&bcu_deletions, clause_id);
+  } else {
+    ra_insert_srid_elt(&deletions, clause_id);
+  }
 }
 
 static srid_t *get_deletions_start(srid_t line_num) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    return ra_get_range_start(&deletions, line_num);
+    srid_t idx = DEL_IDX_FROM_LINE_NUM(line_num);
+    return ra_get_range_start(&deletions, idx);
   } else {
     return ra_get_range_start(&deletions, 0);
   }
@@ -436,45 +419,59 @@ static srid_t *get_deletions_start(srid_t line_num) {
 
 static srid_t *get_deletions_end(srid_t line_num) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    return ra_get_range_start(&deletions, line_num + 1);
+    srid_t idx = DEL_IDX_FROM_LINE_NUM(line_num);
+    return ra_get_range_start(&deletions, idx + 1);
   } else {
     return ra_get_range_start(&deletions, 1);
   }
 }
 
-static srid_t *get_derived_deletions_start(srid_t line_num) {
-  FATAL_ERR_IF(ch_mode != BACKWARDS_CHECKING_MODE,
-    "User deletions are only stored during backwards checking.");
-  srid_t idx = DEL_IDX_FROM_LINE_NUM(line_num);
-  return ra_get_range_start(&derived_deletions, idx);
-}
-
-static srid_t *get_derived_deletions_end(srid_t line_num) {
-  FATAL_ERR_IF(ch_mode != BACKWARDS_CHECKING_MODE,
-    "User deletions are only stored during backwards checking.");
-  srid_t idx = DEL_IDX_FROM_LINE_NUM(line_num);
-  return ra_get_range_start(&derived_deletions, idx + 1);
-}
-
 static uint get_num_deletions(srid_t line_num) {
-  return (uint) (get_derived_deletions_end(line_num) 
-    - get_derived_deletions_start(line_num));
+  return (uint) (get_deletions_end(line_num) 
+    - get_deletions_start(line_num));
 }
 
-// Adds a hint and marked the last used id.
-static inline void add_up_hint(srid_t clause_id) {
-  //log_msg(VL_VERBOSE, "c   [line %d] adding hint for clause %d\n", current_line + 1,
-  //  TO_DIMACS_CLAUSE(clause_id));
-  ra_insert_srid_elt(&hints, TO_DIMACS_CLAUSE(clause_id));
-  
-  // Encapsulate better
+static srid_t *get_bcu_deletions_start(srid_t line_num) {
+  return ra_get_range_start(&bcu_deletions, line_num);
+}
+
+static srid_t *get_bcu_deletions_end(srid_t line_num) {
+  return ra_get_range_start(&bcu_deletions, line_num + 1);
+}
+
+static inline void prepare_user_deletions(void) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    // TODO: Error checking, can determine if we deleted it already?
-    srid_t lui = clause_last_used_id[clause_id];
-    clause_last_used_id[clause_id] = MAX(lui, current_line);
-    if (lui == -1) {
-      store_derived_deletion(clause_id);
-    }
+    ra_commit_range(&bcu_deletions);
+  } else {
+    ra_reset(&deletions);
+  }
+}
+
+// Assumes only called during backwards checking.
+// Returns `1` if the LUI is adjusted. Returns `0` otherwise.
+static inline uint adjust_clause_lui(srid_t clause_id) {
+  srid_t lui = clause_last_used_id[clause_id];
+
+  if (IS_USER_DELETED_LUI(lui)) {
+    FATAL_ERR_IF(current_line > LUI_FROM_USER_DELETED_LUI(lui),
+      "[line %lld] Clause %lld was used in UP after it was deleted on line %lld",
+      current_line, TO_DIMACS_CLAUSE(clause_id), LUI_FROM_USER_DELETED_LUI(lui));
+  }
+
+  if (IS_UNUSED_LUI(lui)) {
+    clause_last_used_id[clause_id] = current_line;
+    store_derived_deletion(clause_id);
+    return 1;
+  }
+
+  return 0;
+}
+
+// Adds a unit propagation hint to `hints` and marks the last used id.
+static inline void add_up_hint(srid_t clause_id) {
+  ra_insert_srid_elt(&hints, TO_DIMACS_CLAUSE(clause_id));
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    adjust_clause_lui(clause_id);
   }
 }
 
@@ -482,12 +479,6 @@ static void add_RAT_clause_hint(srid_t clause_id) {
   ra_insert_srid_elt(&hints, -TO_DIMACS_CLAUSE(clause_id));
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     line_num_RAT_hints[current_line]++;
-
-    srid_t lui = clause_last_used_id[clause_id];
-    clause_last_used_id[clause_id] = MAX(lui, current_line);
-    if (lui == -1) {
-      store_derived_deletion(clause_id);
-    }
   } else {
     num_RAT_hints++;
   }
@@ -495,6 +486,22 @@ static void add_RAT_clause_hint(srid_t clause_id) {
 
 static void add_RAT_up_hint(srid_t clause_id) {
   ra_insert_srid_elt(&hints, TO_DIMACS_CLAUSE(clause_id));
+}
+
+static void print_last_used_ids(void) {
+  for (int i = 0; i < formula_size; i++) {
+    if (i % 5 == 4) {
+      log_raw(VL_NORMAL, "[%d] ", TO_DIMACS_CLAUSE(i));
+    }
+    if (IS_USER_DELETED_LUI(clause_last_used_id[i])) {
+      log_raw(VL_NORMAL, "d%d ", LUI_FROM_USER_DELETED_LUI(clause_last_used_id[i]));
+    } else if (clause_last_used_id[i] == -1) {
+      log_raw(VL_NORMAL, "-1 ");
+    } else {
+      log_raw(VL_NORMAL, "%d ", CLAUSE_ID_FROM_LINE_NUM(clause_last_used_id[i]));
+    }
+  }
+  log_raw(VL_NORMAL, "\n");
 }
 
 /**
@@ -505,11 +512,9 @@ static void generate_clause_id_map(void) {
   clause_id_map = xmalloc(formula_size * sizeof(srid_t));
   srid_t map_counter = num_cnf_clauses;
   for (srid_t c = num_cnf_clauses; c < formula_size; c++) {
-    if (clause_last_used_id[c] >= 0) {
+    if (!IS_UNUSED_LUI(clause_last_used_id[c])) {
       clause_id_map[c] = map_counter;
       map_counter++;
-    } else {
-      clause_id_map[c] = -12345543;
     }
   }
 }
@@ -523,15 +528,77 @@ static inline void resize_last_used_ids(void) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static void print_last_used_ids(void) {
-  for (int i = 0; i < formula_size; i++) {
-    if (i % 5 == 4) {
-      log_raw(VL_NORMAL, "[%d] ", TO_DIMACS_CLAUSE(i));
+static void print_wps(void) {
+  for (int i = 0; i <= (max_var * 2) + 1; i++) {
+    srid_t *wp_list = wps[i];
+    uint wp_size = wp_sizes[i];
+    if (wp_size == 0) continue;
+    log_raw(VL_NORMAL, "[%d] ", TO_DIMACS_LIT(i));
+    for (int j = 0; j < wp_size; j++) {
+      log_raw(VL_NORMAL, "%d ", TO_DIMACS_CLAUSE(wp_list[j]));
     }
-    log_raw(VL_NORMAL, "%d ", clause_last_used_id[i]);
   }
   log_raw(VL_NORMAL, "\n");
 }
+
+static void print_nrhs(void) {
+  uint sum = 0;
+  uint size = MIN(num_parsed_add_lines, line_num_RAT_hints_alloc_size);
+  for (int i = 0; i < size; i++) {
+    sum += get_num_RAT_hints(i);
+  }
+
+  if (sum == 0) return;
+
+  log_raw(VL_NORMAL, "Num RAT hints: ");
+
+  for (int i = 0; i < size; i++) {
+    if (i % 5 == 4) {
+      log_raw(VL_NORMAL, "[%d] ", i + 1);
+    }
+    log_raw(VL_NORMAL, "%d ", get_num_RAT_hints(i));
+  }
+  log_raw(VL_NORMAL, "\n\n");
+}
+
+static void print_active_formula(void) {
+  logc("vvvvvvvvvvv Formula below");
+  srid_t c = CLAUSE_ID_FROM_LINE_NUM(current_line);
+  for (srid_t cp = 0; cp <= c; cp++) {
+    if (LUI_FROM_USER_DELETED_LUI(clause_last_used_id[cp]) >= current_line) {
+      dbg_print_clause(cp);
+    }
+  }
+  logc("^^^^^^^^^^ Formula above");
+}
+
+static void print_assignment(void) {
+  log_raw(VL_NORMAL, "Assignment: ");
+  for (int i = 0; i <= max_var; i++) {
+    switch (peval_lit_under_alpha(i * 2)) {
+      case TT:
+        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT(i * 2),
+        up_reasons[i]);
+        break;
+      case FF:
+        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT((i * 2) + 1),
+      up_reasons[i]);
+        break;
+      default: break;
+    }
+  }
+  log_raw(VL_NORMAL, "\n");
+}
+
+/*static void verify_nrhs(uint id) {
+  uint sum = 0;
+  for (int i = 0; i < num_parsed_add_lines; i++) {
+    if (get_num_RAT_hints(i) > 0) {
+      logc("[line %lld, formula_size %lld, %lld] Bad sum with id %d", current_line, formula_size, num_parsed_add_lines, id);
+      exit(1);
+    }
+  }
+} */
 
 /**
  * @brief Prints the initial set of clause deletions, before a single
@@ -547,7 +614,7 @@ static void print_initial_clause_deletions(void) {
 
   write_lsr_deletion_line_start(lsr_file, num_cnf_clauses);
   for (srid_t c = 0; c < num_cnf_clauses; c++) {
-    if (clause_last_used_id[c] == -1) {
+    if (IS_UNUSED_LUI(clause_last_used_id[c])) {
       write_clause_id(lsr_file, TO_DIMACS_CLAUSE(c)); 
     }
   }
@@ -560,6 +627,29 @@ static void print_clause(srid_t clause_id) {
   int *clause = get_clause_start_unsafe(clause_id);
   const int size = get_clause_size(clause_id);
 
+  /*
+    Since literals might have gotten reordered during watch pointer stuff,
+    we need to recover the pivot from the witness (an invariant!) and then
+    we sort the remaining literals 
+  */
+
+  // Make the pivot be the first literal by swapping it with the current first
+  int pivot = (get_witness_start(LINE_NUM_FROM_CLAUSE_ID(clause_id)))[0];
+  for (int i = 0; i < size; i++) {
+    int lit = clause[i];
+    if (lit == pivot) {
+      if (i != 0) {
+        clause[i] = clause[0];
+        clause[0] = pivot;
+      }
+      break;
+    }
+  }
+
+  // Sort the remaining literals in the clause in increasing order of magnitude
+  qsort(clause + 1, size - 1, sizeof(int), absintcmp);
+
+  // Now actually print the clause
   for (int i = 0; i < size; i++) {
     const int lit = clause[i];
     write_lit(lsr_file, TO_DIMACS_LIT(lit));
@@ -704,30 +794,9 @@ static int print_deletions(srid_t line_num) {
   return num_printed;
 }
 
-/**
- * @brief Prints deletions derived during backwards checking.
- * 
- * @param line_num 
- * @return The number of deletions printed
- */
-static int print_derived_deletions(srid_t line_num) {
-  int num_printed = 0;
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    srid_t *del_iter = get_derived_deletions_start(line_num);
-    srid_t *del_end = get_derived_deletions_end(line_num);
-    for (; del_iter < del_end; del_iter++) {
-      srid_t c = *del_iter;
-      print_mapped_hint(TO_DIMACS_CLAUSE(c));
-      num_printed++;
-    }
-  }
-
-  return num_printed;
-}
-
 static void print_hints(srid_t line_num) {
-  srid_t *hints_iter = get_up_hints_start(line_num);
-  srid_t *hints_end = get_up_hints_end(line_num);
+  srid_t *hints_iter = get_UP_hints_start(line_num);
+  srid_t *hints_end = get_UP_hints_end(line_num);
   for (; hints_iter < hints_end; hints_iter++) {
     srid_t hint = *hints_iter; // Hints are already in DIMACS format
     print_mapped_hint(hint);
@@ -775,20 +844,8 @@ static void print_lsr_deletion_line(void) {
 // permuted, the clause will return the same hash value.
 static uint hash_clause(srid_t clause_index) {
   uint sum = 0, prod = 1, xor = 0;
-  int *clause_iter, *clause_end;
-
-  /* 
-   * The `parse_clause()` function does NOT call `commit_clause()`. This means
-   * that during forwards checking, we might want to hash a clause that has
-   * been parsed but NOT added to the formula. So we must break the API and
-   * calculate the end pointer ourselves if the index is `formula_size`.
-   */ 
-  clause_iter = get_clause_start(clause_index);
-  if (clause_index == formula_size) {
-    clause_end = lits_db + lits_db_size;
-  } else {
-    clause_end = get_clause_start(clause_index + 1);
-  }
+  int *clause_iter = get_clause_start(clause_index);
+  int *clause_end = get_clause_end(clause_index);
 
   for (; clause_iter < clause_end; clause_iter++) {
     uint lit = (uint) (*clause_iter);
@@ -801,37 +858,26 @@ static uint hash_clause(srid_t clause_index) {
   return (1023 * sum + prod ^ (31 * xor));
 }
 
-static void add_clause_to_ht(srid_t clause_index) {
-  uint hash = hash_clause(clause_index);
-  ht_insert(&clause_id_ht, hash, clause_index);
-}
-
 /**
- * @brief Deletes the most recently parsed clause by consulting the hash table.
+ * @brief 
  * 
- * DSR deletion lines are clauses. Because `dsr-check` permutes the literals
- * in clauses to implement watch pointers, we store clause hashes in a hash
- * table with a commutative hash function. That way, when we need to delete
- * a clause, we consult the hash table for a matching permuted clause.
- * 
- * During forwards checking, the clause is deleted from the formul and
- * the hash table. During backwards checking, the `clause_last_used_id`
- * is updated instead.
- * 
- * The caller must ensure that the newly parsed clause has at least two
- * literals (we don't delete the empty clause or unit clauses).
+ * @param clause_index
+ * @param[out] hp
+ * @param[out] bp
+ * @param[out] bi
+ * @return The clause index of a matching clause that comes before this one,
+ *         or `-1` if no such clause is found.
  */
-static void delete_parsed_clause(void) {
-  int *clause = get_clause_start(formula_size);
-
-  uint hash = hash_clause(formula_size);
+static srid_t find_hashed_clause(srid_t ci, uint *hp, htb_t **bp, uint *bi) {
+  int *clause = get_clause_start_unsafe(ci);
+  uint hash = hash_clause(ci);
+  if (hp != NULL) *hp = hash;
   htb_t *bucket = ht_get_bucket(&clause_id_ht, hash);
   const uint bucket_size = bucket->size;
-  FATAL_ERR_IF(bucket_size == 0, "No matching clause found for deletion.");
+
+  if (bucket_size == 0) return -1;
 
   // Iterate through all clauses in this bucket and try to find a match
-  srid_t clause_match = -1;
-  int match_bucket_index = -1;
   int *matching_clause;
   hte_t *entries = bucket->entries;
   for (int i = 0; i < bucket_size; i++) {
@@ -844,6 +890,7 @@ static void delete_parsed_clause(void) {
       uint match_hash = hash_clause(possible_match);
       if (match_hash == hash) {
         // Most clauses are small, so O(n^2) search is good enough
+        // Note that the literals necessarily aren't sorted, because of wps
         matching_clause = get_clause_start(possible_match);
         int found_match = 1; // We set this to 0 if a literal isn't found
         for (int i = 0; i < match_size; i++) {
@@ -863,49 +910,143 @@ static void delete_parsed_clause(void) {
         }
 
         if (found_match) {
-          // Check that the clause isn't a global unit
-          // If it is, error, since we don't want to unroll and re-run UP
-          for (int j = 0; j < unit_clauses_size; j++) {
-            FATAL_ERR_IF(unit_clauses[j] == possible_match,
-              "Cannot delete clause %d, as it is a global unit.\n",
-                TO_DIMACS_CLAUSE(possible_match));
-          }
-
-          clause_match = possible_match;
-          match_bucket_index = i;
-          break;
+          if (bp != NULL) *bp = bucket;
+          if (bi != NULL) *bi = i;
+          return possible_match;
         }
       }
     }
   }
 
-  FATAL_ERR_IF(clause_match == -1, "No matching clause found for deletion.");
+  return -1;
+}
 
-  // Remove the parsed literals from the formula
-  // Note that `parse_clause()` doesn't commit the clause,
-  // so `formula_size` can remain unchanged.
-  lits_db_size -= new_clause_size;
+static inline void add_hashed_clause_to_ht(srid_t clause_index, uint hash) {
+  ht_insert(&clause_id_ht, hash, clause_index);
+}
 
-  // Remove the match from the hash table
-  // This works for both forwards and backwards checking, as we want
-  // to prevent multiple deletions of the same clause
-  ht_remove_at_index(bucket, match_bucket_index);
-  store_deletion(clause_match);
+static void add_clause_to_ht(srid_t clause_index) {
+  uint hash = hash_clause(clause_index);
+  add_hashed_clause_to_ht(clause_index, hash);
+}
+
+// Adds one to the mult counter, or if one isn't there for `clause_index`,
+// sets the mult to `1`. (Single occurrence clauses don't get added.)
+// Essentially, the `mult` counts the additional copies of the clause.
+static void add_clause_mult(srid_t clause_index) {
+  for (int i = 0; i < clause_mults_size; i++) {
+    if (clause_mults[i].clause_id == clause_index) {
+      clause_mults[i].multiplicity++;
+      return;
+    }
+  }
+
+  // Not found - insert a new mult in the back
+  RESIZE_ARR_CONCAT(clause_mults, sizeof(clause_mult_t));
+  clause_mults[clause_mults_size].clause_id = clause_index;
+  clause_mults[clause_mults_size].multiplicity = 1;
+  clause_mults_size++;
+}
+
+// Returns the number of remaining copies (after the decrease).
+// Returns 0 if the clause is not found (meaning it has multiplicity of 1).
+static uint decrease_clause_mult(srid_t clause_index) {
+  for (int i = 0; i < clause_mults_size; i++) {
+    if (clause_mults[i].clause_id == clause_index) {
+      uint mult = clause_mults[i].multiplicity;
+      if (mult == 1) {
+        // Swap from back
+        clause_mults[i] = clause_mults[clause_mults_size - 1];
+        clause_mults_size--;
+      } else {
+        clause_mults[i].multiplicity--;
+      }
+
+      return mult;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * @brief Deletes the most recently parsed clause by consulting the hash table.
+ * 
+ * DSR deletion lines are clauses. Because `dsr-check` permutes the literals
+ * in clauses to implement watch pointers, we store clause hashes in a hash
+ * table with a commutative hash function. That way, when we need to delete
+ * a clause, we consult the hash table for a matching permuted clause.
+ * 
+ * During forwards checking, the clause is deleted from the formula and
+ * the hash table. During backwards checking, the `clause_last_used_id`
+ * is updated instead.
+ * 
+ * The caller must ensure that the newly parsed clause has at least two
+ * literals (we don't delete the empty clause or unit clauses).
+ */
+static void delete_parsed_clause(void) {
+  htb_t *bucket;
+  uint bucket_index;
+  srid_t clause_match =
+    find_hashed_clause(formula_size, NULL, &bucket, &bucket_index);
+
+  if (clause_match == -1) {
+    dbg_print_clause(formula_size); // TODO remove
+    FATAL_ERR_IF(clause_match == -1, "No matching clause found for deletion.");
+  }
+
+  // Check that the matching clause isn't a global unit
+  // If it is, error, since we don't want to unroll and re-run UP
+  for (int i = 0; i < unit_clauses_size; i++) {
+    FATAL_ERR_IF(unit_clauses[i] == clause_match,
+      "Cannot delete clause %d, as it is a global unit.",
+      TO_DIMACS_CLAUSE(clause_match));
+  }
+
+  // If we still have copies of the clause, nothing to do with the hash table
+  if (decrease_clause_mult(clause_match) != 0) return;
+
+  ht_remove_at_index(bucket, bucket_index);
+  store_user_deletion(clause_match);
 
   // Actual deletion in the formula differs based on the checking mode
   // TODO (and the parsing strategy)
   switch (ch_mode) {
-    case FORWARDS_CHECKING_MODE:
-      remove_wp_for_lit(matching_clause[0], clause_match);
-      remove_wp_for_lit(matching_clause[1], clause_match);
+    case FORWARDS_CHECKING_MODE:;
+      logc("ALERT: Forwards checking mode deletion");
+      int *clause_match_ptr = get_clause_start_unsafe(clause_match);
+      remove_wp_for_lit(clause_match_ptr[0], clause_match);
+      remove_wp_for_lit(clause_match_ptr[1], clause_match);
       delete_clause(clause_match);
       break;
     case BACKWARDS_CHECKING_MODE:
       resize_last_used_ids();
-      clause_last_used_id[clause_match] = current_line;
+      srid_t lui = MARK_USER_DELETED_LUI(num_parsed_add_lines);
+      clause_last_used_id[clause_match] = lui;
       break;
-    default: log_fatal_err("Invalid checking mode: %d\n", ch_mode);
+    default: log_fatal_err("Invalid checking mode: %d", ch_mode);
   }
+}
+
+/**
+ * @brief 
+ * 
+ * @return -1 if the clause is new (not in the hash table), or the clause ID
+ *         of the matching clause if it is.
+ */
+static srid_t add_clause_to_ht_or_inc_mult(void) {
+  uint hash;
+  srid_t ci = formula_size - 1; // The new clause is at the end of the formula
+  srid_t clause_match = find_hashed_clause(ci, &hash, NULL, NULL);
+
+  // Check if a matching clause was found
+  if (clause_match == -1) {
+    add_hashed_clause_to_ht(ci, hash);
+  } else {
+    add_clause_mult(clause_match);
+  }
+
+  return clause_match;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -921,14 +1062,27 @@ static inline int parse_dsr_line(void) {
       int is_tautology = parse_clause(dsr_file);
       FATAL_ERR_IF(is_tautology || new_clause_size <= 1, 
         "[line %lld] Clause to delete was a tautology, empty, or unit.",
-          current_line + 1);
+          num_parsed_add_lines + 1);
       delete_parsed_clause();
+      
+      // Remove the parsed literals from the formula
+      // Note that `parse_clause()` doesn't commit the clause,
+      // so `formula_size` remains unchanged.
+      lits_db_size -= new_clause_size;
       break;
     case ADDITION_LINE:
       print_lsr_deletion_line(); // TODO refactor with deletions
-      ra_commit_range(&deletions);
       parse_sr_clause_and_witness(dsr_file, num_parsed_add_lines);
-      num_parsed_add_lines++;
+      srid_t possible_match = add_clause_to_ht_or_inc_mult();
+      if (possible_match != -1) {
+        formula_size -= 1;
+        lits_db_size -= new_clause_size;
+        line_type = DELETION_LINE;
+        ra_uncommit_range(&witnesses);
+      } else {
+        prepare_user_deletions();
+        num_parsed_add_lines++;
+      }
       break;
     default:
       log_fatal_err("Corrupted line type: %d", line_type);
@@ -1003,13 +1157,18 @@ static void prepare_dsr_trim_data(void) {
     add_clause_to_ht(i);
   }
 
+  // We track multiplicities of duplicate clauses
+  clause_mults_alloc_size = INIT_CLAUSE_MULT_SIZE;
+  clause_mults = xmalloc(clause_mults_alloc_size * sizeof(clause_mult_t));
+
   // If we are backwards checking, allocate additional structures
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     // TODO: use new malloc() shorthands
     // TODO: set to formula_size when resizing?
     clause_last_used_id_alloc_size = formula_size * 2;
-    clause_last_used_id = xmalloc(formula_size * 2 * sizeof(srid_t));
-    memset(clause_last_used_id, 0xff, formula_size * 2 * sizeof(srid_t));
+    clause_last_used_id =
+      xmalloc(clause_last_used_id_alloc_size * sizeof(srid_t));
+    memset(clause_last_used_id, 0xff, clause_last_used_id_alloc_size * sizeof(srid_t));
 
     line_num_RAT_hints_alloc_size = formula_size * 2;
     line_num_RAT_hints = xcalloc(line_num_RAT_hints_alloc_size, sizeof(uint));
@@ -1025,8 +1184,7 @@ static void prepare_dsr_trim_data(void) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     ra_init(&hints, num_cnf_clauses * 10, num_cnf_vars, sizeof(srid_t));
     ra_init(&deletions, num_cnf_vars * 10, num_cnf_vars, sizeof(srid_t));
-    ra_init(&derived_deletions, num_cnf_clauses * 10, num_cnf_vars, sizeof(srid_t));
-    line_num_RAT_hints_alloc_size = num_cnf_clauses;
+    ra_init(&bcu_deletions, num_cnf_clauses, num_cnf_vars, sizeof(srid_t));
   } else {
     ra_init(&hints, num_cnf_vars * 10, 3, sizeof(srid_t));
     ra_init(&deletions, num_cnf_vars, 2, sizeof(srid_t));
@@ -1040,7 +1198,7 @@ static void prepare_dsr_trim_data(void) {
 }
 
 static void resize_wps(void) {
-  if ((max_var + 1) * 2 > wps_alloc_size) {
+  if ((max_var + 1) * 2 >= wps_alloc_size) {
     uint old_size = wps_alloc_size;
     wps_alloc_size = RESIZE((max_var + 1) * 2);
     wps = xrecalloc(wps,
@@ -1092,9 +1250,9 @@ static inline void store_active_dependencies(llong gen) {
 static void minimize_RAT_hints(void) {
   // Declared `static` to persist across function calls
   // Declared here to prevent a global variable
+  static uint *skipped_RAT_indexes = NULL;
   static uint skipped_RAT_indexes_alloc_size = 0;
   static uint skipped_RAT_indexes_size = 0;
-  static uint *skipped_RAT_indexes = NULL;
 
   // Iterate over the RAT hint groups and mark last used IDs
   int nrh = get_num_RAT_hints(current_line);
@@ -1105,12 +1263,13 @@ static void minimize_RAT_hints(void) {
     skipped_RAT_indexes_alloc_size = max_var;
     skipped_RAT_indexes = xmalloc(max_var * sizeof(uint));
   }
-    
+
   // First pass: mark "active" clauses
   // Assume that `get_num_RAT_hints()` is correct,
   // i.e. that the iterator won't go beyond the RAT hints
   int num_marked = 0;
   srid_t *hints_start = get_RAT_hints_start(current_line);
+  srid_t *hints_end = get_RAT_hints_end(current_line);
   srid_t *hints_iter = hints_start;
   for (int i = 0; i < nrh; i++) {
     srid_t RAT_clause = FROM_RAT_CLAUSE(*hints_iter);
@@ -1119,40 +1278,27 @@ static void minimize_RAT_hints(void) {
     if (RAT_lui > current_line) {
       // Scan through its hints and mark them as active
       srid_t hint;
-      while ((hint = *hints_iter) > 0) {
+      while ((hint = *hints_iter) > 0 && hints_iter < hints_end) {
         hint = FROM_DIMACS_CLAUSE(hint);
         hints_iter++;
-
-        srid_t lui = clause_last_used_id[hint];
-        if (lui == -1) {
-          clause_last_used_id[hint] = current_line;
-          num_marked++;
-        } else if (lui < current_line) {
-          log_fatal_err("RAT clause %d had a deleted UP hint %d\n",
-            TO_DIMACS_CLAUSE(RAT_clause), TO_DIMACS_CLAUSE(hint));
-        }
+        num_marked += adjust_clause_lui(hint);
       }
-    } else if (RAT_lui == -1 || RAT_lui == current_line) {
+    } else if (IS_UNUSED_LUI(RAT_lui) || RAT_lui == current_line) {
       // Skip "current" hints for now
       // Subtract one due to the ++ above
       INSERT_ARR_ELT_CONCAT(skipped_RAT_indexes, sizeof(uint),
         (uint) ((hints_iter - hints_start) - 1));
       
       // Skip this RAT clause's hints
-      while (*hints_iter > 0) hints_iter++;
+      while (*hints_iter > 0 && hints_iter < hints_end) hints_iter++;
     } else {
-      log_fatal_err("RAT clause was deleted before UP hint.");
+      log_fatal_err("[line %lld] RAT clause %lld was deleted before UP hint.",
+        current_line, TO_DIMACS_CLAUSE(RAT_clause));
     }
   }
 
-  // If we mark no new hints under RAT clauses, then we are done
-  // TODO: proof (I think it's something like the only `current_line` clauses
-  // are marked through global UP, which disqualifies those clauses from becoming
-  // RAT (proof?), so we are already at fixpoint
-  if (num_marked == 0) {
-    log_msg(VL_NORMAL, "c   NO MARKED HINTS (think about this)\n");
-    return;
-  }
+  // If we mark no new hints under RAT clauses, then we can minimize right away
+  if (num_marked == 0) goto minimize_hint_groups;
 
   // Second pass: mark "skipped" hints
   // Keep iterating over the skipped indexes until we mark no more
@@ -1167,7 +1313,7 @@ static void minimize_RAT_hints(void) {
       srid_t RAT_clause = FROM_RAT_CLAUSE(*iter);
       srid_t RAT_lui = clause_last_used_id[RAT_clause];
 
-      if (RAT_lui == -1) {
+      if (IS_UNUSED_LUI(RAT_lui)) {
         // If the clause still hasn't become "active", skip it again
         INSERT_ARR_ELT_CONCAT(skipped_RAT_indexes, sizeof(uint), offset);
       } else if (RAT_lui == current_line) {
@@ -1176,18 +1322,10 @@ static void minimize_RAT_hints(void) {
         // but which still we need to mark for deletion purposes
         iter++;
         srid_t hint;
-        while ((hint = *iter) > 0) {
+        while ((hint = *iter) > 0 && iter < hints_end) {
           hint = FROM_DIMACS_CLAUSE(hint); // Convert out of DIMACS
           iter++;
-
-          srid_t lui = clause_last_used_id[hint];
-          if (lui == -1) {
-            clause_last_used_id[hint] = current_line;
-            num_marked++;
-          } else if (lui < current_line) {
-            log_fatal_err("RAT clause %lld had a deleted UP hint %lld\n",
-              TO_DIMACS_CLAUSE(RAT_clause), TO_DIMACS_CLAUSE(hint));
-          }
+          num_marked += adjust_clause_lui(hint);
         }
       } else {
         log_fatal_err("RAT clause has a strange marking.");
@@ -1200,6 +1338,9 @@ static void minimize_RAT_hints(void) {
     }
   }
 
+  // Label for third pass
+  minimize_hint_groups:
+
   if (skipped_RAT_indexes_size == 0) return;
 
   // Third pass: only write down the active hints
@@ -1207,9 +1348,9 @@ static void minimize_RAT_hints(void) {
   // We intelligently move ranges of hints over with `memmove()`.
   hints_iter = hints_start;
   srid_t *write_iter = hints_start;
-  srid_t *hints_end = get_RAT_hints_end(current_line);
+
   uint len;
-  for (int i = 0; i < skipped_RAT_indexes_size; i++) {
+  for (uint i = 0; i < skipped_RAT_indexes_size; i++) {
     srid_t *skip_start = hints_start + skipped_RAT_indexes[i];
 
     // Copy hints over, only if needed
@@ -1223,7 +1364,7 @@ static void minimize_RAT_hints(void) {
     }
 
     hints_iter = skip_start + 1;
-    while (*hints_iter > 0) hints_iter++;
+    while (*hints_iter > 0 && hints_iter < hints_end) hints_iter++;
   }
 
   // Write the remaining hints
@@ -1265,7 +1406,6 @@ static void print_stored_lsr_proof(void) {
   // Only prints a stored proof during backwards checking,
   // since we emit proof lines as we go during forwards checking
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    //print_last_used_ids();
     generate_clause_id_map();
     print_initial_clause_deletions();
 
@@ -1292,7 +1432,6 @@ static void print_stored_lsr_proof(void) {
           }
 
           print_deletions(line);
-          print_derived_deletions(line);
         }
       }
     }
@@ -1303,28 +1442,6 @@ static void print_stored_lsr_proof(void) {
     }
 
     print_lsr_line(num_parsed_add_lines - 1, printed_line_id);
-  }
-}
-
-// Flushes the stored deletion clause IDs, if there are any.
-/*
-static inline void print_lsr_deletion_line(void) {
-  if (deleted_clause_buf_size == 0) return;
-
-  write_lsr_line_start(lsr_file, current_line, 1);
-  for (int i = 0; i < deleted_clause_buf_size; i++) {
-    write_clause_id(lsr_file, deleted_clause_buf[i] + 1);
-  }
-
-  write_sr_line_end(lsr_file);
-  deleted_clause_buf_size = 0;
-} */
-
-static inline void prepare_for_next_line(void) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    // TODO what goes here?
-  } else {
-    // TODO what goes here?
   }
 }
 
@@ -1379,7 +1496,7 @@ static void mark_and_store_up_refutation(srid_t from_clause, llong gen) {
   ra_commit_range(&hints);
   store_active_dependencies(gen);
   add_up_hint(from_clause);
-  clause_last_used_id[from_clause] = MAX(clause_last_used_id[from_clause], current_line);
+  adjust_clause_lui(from_clause);
   ra_commit_range(&hints);
 }
 
@@ -1412,20 +1529,6 @@ Problems:
         unit under alpha, then you can just introduce the unit clause?])
           - Question: what happens if a redundant clause is satisfied by alpha?
             Double-check what I do in this scenario.
-
-  - Another problem is the matter of determining if a clause is needed at all.
-    Consider two clauses X and Y where the RAT line looks like:
-      
-      -X Y ... -Y X ... 0
-
-    And suppose that X and Y aren't used anywhere else (after this line).
-    Then we may delete both X and Y, even though they appear to be needed.
-    Essentially, RAT groups form a graph problem.
-
-  - Implementation: hold off on
-
-
-
 */
 
 static void store_RAT_dependencies(srid_t from_clause) {
@@ -1481,13 +1584,15 @@ static void store_RAT_dependencies(srid_t from_clause) {
  * is bad for locality, and the witness is not usually minimized (that much).
  */
 static void minimize_witness(void) {
-  int *witness_iter = get_witness_start(current_line) + 1; // (+1) skips pivot
+  int *witness_iter = get_witness_start(current_line);
   int *witness_end = get_witness_end(current_line);
   int *write_iter = NULL;
-  int seen_pivot_divider = 0;
+ 
+  if (witness_iter + 1 == witness_end) return;
 
-  // In order to call this function, the candidate must be nonempty
-  // Also, `pivot` is set correctly by the caller
+  int pivot = witness_iter[0];
+  int seen_pivot_divider = 0;
+  witness_iter++;
 
   for (; witness_iter < witness_end; witness_iter++) {
     int lit = *witness_iter;
@@ -1637,8 +1742,12 @@ static void set_unit_clause(int lit, srid_t clause, llong gen) {
   set_lit_for_alpha(lit, gen);
   up_reasons[VAR_FROM_LIT(lit)] = clause;
 
-  //log_msg(VL_NORMAL, "c Setting clause %d to unit on literal %d\n",
-  // TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
+  // logc("[line %lld] Setting clause %d to unit on literal %d",
+  //  current_line, TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
+
+  FATAL_ERR_IF(clause > CLAUSE_ID_FROM_LINE_NUM(current_line),
+    "Clause %lld is set to unit before its line %lld",
+    TO_DIMACS_CLAUSE(clause), current_line);
 
   resize_units();
 
@@ -1659,9 +1768,18 @@ static void add_wp_for_lit(int lit, srid_t clause) {
   // Handles the case where both are 0 (uninitialized)
   FATAL_ERR_IF(lit < 0 || lit >= wps_alloc_size, "Invalid literal %d", lit);
 
-  if (wp_sizes[lit] == wp_alloc_sizes[lit]) {
-    wp_alloc_sizes[lit] = MAX(INIT_LIT_WP_ARRAY_SIZE, RESIZE(wp_alloc_sizes[lit]));
+  uint alloc_size = wp_alloc_sizes[lit];
+  if (wp_sizes[lit] == alloc_size) {
+    wp_alloc_sizes[lit] = MAX(INIT_LIT_WP_ARRAY_SIZE, RESIZE(alloc_size));
     wps[lit] = xrealloc(wps[lit], wp_alloc_sizes[lit] * sizeof(srid_t));
+  }
+  
+  // TODO: Error checking, see if wp is already in the list
+  for (uint i = 0; i < wp_sizes[lit]; i++) {
+    if (wps[lit][i] == clause) {
+      log_fatal_err("Clause %lld already has a watch pointer for literal %d",
+        TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
+    }
   }
 
   // Finally, add the clause to the wp list
@@ -1671,10 +1789,10 @@ static void add_wp_for_lit(int lit, srid_t clause) {
 
 static void remove_wp_for_lit(int lit, srid_t clause) {
   srid_t *wp_list = wps[lit];
-  int wp_list_size = wp_sizes[lit];
+  uint wp_list_size = wp_sizes[lit];
 
   // Find the clause in the wp list and remove it
-  for (int i = 0; i < wp_list_size; i++) {
+  for (uint i = 0; i < wp_list_size; i++) {
     if (wp_list[i] == clause) {
       // Overwrite the removed clause with the last clause in the list
       wp_list[i] = wp_list[wp_list_size - 1];
@@ -1683,32 +1801,14 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
     }
   }
 
+  // Fatal error: watch pointer not in the list
+  // Print debug information
+  print_active_formula();
+  print_wps();
   log_fatal_err("Clause %lld not found in watch pointer list for literal %d",
     TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
 
   // TODO: If below some threshold of size/alloc_sizes, shrink the array
-}
-
-static void add_marked_clause(srid_t clause_id) {
-  log_fatal_err("Not implemented.");
-
-  // Assume that the clause is not yet marked
-  /*
-  clause_last_used_id[clause_id] = current_line;
-
-  // Add the clause to the marked clause stack, setting its
-  // id to negative if we haven't yet encountered a marked clause
-  // this round of UP/line validation (TODO). This allows us to
-  // differentiate between marked clauses when determining which
-  // to delete between lines.
-  // (TODO: We could check the id of each clause in the line and
-  //  stop when we hit one that's different. Time vs. space tradeoff.)
-  RESIZE_ARR(marked_clause_stack, marked_clause_stack_alloc_size,
-    marked_clause_stack_size, sizeof(srid_t));
-  // srid_t id_to_add = (encountered_marked_clause) ? clause_id : -clause_id;
-  // marked_clause_stack[marked_clause_stack_size] = id_to_add;
-  marked_clause_stack_size++; */
-  // encountered_marked_clause = 1;
 }
 
 // Returns the clause ID that becomes falsified, or -1 if not found.
@@ -1799,6 +1899,10 @@ static srid_t perform_up_for_backwards_checking(llong gen) {
   FATAL_ERR_IF(i < 0 || i > unit_literals_size, "Invalid i: %d", i);
 
   // Reset the `wp_up_indexes`
+  // TODO: Why don't we reset the whole thing?
+  // I guess the thought is that during backwards checking, we've already
+  // done UP on the global state, so there is nothing more to find here
+  // (Especially if we uncommit true units as we move backwards through form)
   memset(unit_literals_wp_up_indexes + i,
     0, (unit_literals_size - i) * sizeof(int));
 
@@ -1810,8 +1914,7 @@ restart_up_without_restarting_bookmark:
   for (; i < unit_literals_size; i++) {
     FATAL_ERR_IF(i < 0, "negative i: %d", i);
     int lit = NEGATE_LIT(unit_literals[i]);
-
-    FATAL_ERR_IF(lit < 0 || lit > wps_alloc_size, "wps invalid lit: %d", lit);
+    FATAL_ERR_IF(lit < 0 || lit >= wps_alloc_size, "wps invalid lit: %d", lit);
 
     // Iterate through its watch pointers and see if the clause becomes unit
     srid_t *wp_list = wps[lit];
@@ -1824,10 +1927,10 @@ restart_up_without_restarting_bookmark:
 
     for (; j < wp_size; j++) {
       const srid_t clause_id = wp_list[j];
-      int *clause = get_clause_start_unsafe(clause_id);
+      int *clause = get_clause_start(clause_id);
       const int clause_size = get_clause_size(clause_id);
-      
-      // Lemma: the clause is not a unit clause (yet), and its watch pointers are 
+
+      // The clause is not a unit clause (yet), and its watch pointers are 
       // the first two literals in the clause (we may reorder literals here).
 
       // Place the other watch pointer first
@@ -1861,7 +1964,14 @@ restart_up_without_restarting_bookmark:
           // it won't affect `wp_list`.
           add_wp_for_lit(new_wp, clause_id);
 
-          // Instead of calling remove_wp_for_lit, we can swap from the back
+          // Adding a watch pointer could potentially re-allocate the `wp_list`
+          // underneath us, so we refresh the pointer
+          if (wp_list != wps[lit]) {
+            logc("Reallocation occurred underneath us!");
+            wp_list = wps[lit];
+          }
+
+          // Instead of calling `remove_wp_for_lit()`, we can swap from the back
           wp_list[j] = wp_list[wp_size - 1];
           wp_size--;
           found_new_wp = 1;
@@ -1870,7 +1980,7 @@ restart_up_without_restarting_bookmark:
       }
 
       if (found_new_wp) {
-        j--;       // We need to decrement, since we replaced wp_list[j]
+        j--; // We need to decrement, since we replaced `wp_list[j]`
         continue;  
       }
 
@@ -1878,6 +1988,7 @@ restart_up_without_restarting_bookmark:
       if (first_peval == FF) {
         // Since all literals are false, we found a UP contradiction
         wp_sizes[lit] = wp_size; // Restore from the local variable
+        // No need to update `unit_literals_wp_up_indexes[i]`, since we're done
         return clause_id;
       } else {
         // The first literal is unassigned, so we have a unit clause/literal
@@ -1886,7 +1997,7 @@ restart_up_without_restarting_bookmark:
         // These are clauses whose last ids have been set
 
         // If the clause has been marked
-        if (clause_last_used_id[clause_id] != -1) {
+        if (!IS_UNUSED_LUI(clause_last_used_id[clause_id])) {
           set_unit_clause(first_wp, clause_id, gen); // Add as a unit literal
           SWAP_WP_LIST_ELEMS(wp_list, clause_id, j, ignored_j);
         } else {
@@ -1895,6 +2006,7 @@ restart_up_without_restarting_bookmark:
             // Add this as a unit clause, and mark it
             // Jump back to the front
             set_unit_clause(first_wp, clause_id, gen);
+
             accepting_unmarked_clauses = 0;
 
             SWAP_WP_LIST_ELEMS(wp_list, clause_id, j, ignored_j);
@@ -2023,6 +2135,10 @@ static srid_t perform_up_for_forwards_checking(llong gen) {
           // it won't affect `wp_list`.
           add_wp_for_lit(clause[1], clause_id);
 
+          // Adding a watch pointer could potentially re-allocate the `wp_list`
+          // underneath us, so we refresh the pointer
+          wp_list = wps[lit];
+
           // Instead of calling remove_wp_for_lit, we can swap from the back
           wp_list[j] = wp_list[wp_size - 1];
           wp_size--;
@@ -2070,60 +2186,93 @@ static inline srid_t perform_up(llong gen) {
 // Skips clauses already processed (i.e. when adding a new redundant clause,
 // only adds watch pointers/sets unit on that clause).
 // Should be called when the global `up_state == GLOBAL_UP`.
-static void add_wps_and_perform_up(srid_t until_clause, llong gen) {
+static void add_wps_and_perform_up(srid_t clause_index, llong gen) {
   FATAL_ERR_IF(up_state != GLOBAL_UP, "up_state not GLOBAL_UP.");
 
-  int *clause, *next_clause = get_clause_start(wp_processed_clauses);
-  int clause_size;
+  int *clause = get_clause_start(clause_index);
+  uint clause_size = get_clause_size(clause_index);
 
-  // Beyond the initial setup, this loop only runs once
-  // Make more efficient later?
-  for (; wp_processed_clauses < until_clause; wp_processed_clauses++) {
-    clause = next_clause;
-    next_clause = get_clause_start(wp_processed_clauses + 1);
-    clause_size = (int) (next_clause - clause);
+  FATAL_ERR_IF(clause_size == 0, "Cannot add wps and UP on the empty clause");
 
-    // If the clause is unit, set it to be true, do UP later
-    // Otherwise, add watch pointers
-    if (clause_size == 1) {
-      // The clause is unit - examine its only literal
-      int lit = *clause;
-      switch (peval_lit_under_alpha(lit)) {
-        case FF:
-          // If the literal is false, then we have a UP refutation
-          derived_empty_clause = 1;
-          mark_and_store_up_refutation(wp_processed_clauses, gen);
-          return;
-        case TT:;
-          /* If the literal is true, then the unit clause is "duplicated"
-           * by another clause made unit via UP. Since we prefer true unit
-           * clauses in future UP derivations, we replace the clause reason
-           * for `lit` with the current clause ID, and we replace the previous
-           * clause's ID in `unit_clauses`. */
+  // If the clause is unit, set it to be true, do UP later
+  // Otherwise, add watch pointers
+  if (clause_size == 1) {
+    // The clause is unit - examine its only literal
+    int lit = clause[0];
+    switch (peval_lit_under_alpha(lit)) {
+      case FF:
+        // If the literal is false, then we have a UP refutation
+        derived_empty_clause = 1;
+        mark_and_store_up_refutation(clause_index, gen);
+        return;
+      case TT:;
+        /* If the literal is true, then the unit clause is "duplicated"
+          * by another clause made unit via UP. Since we prefer true unit
+          * clauses in future UP derivations, we replace the clause reason
+          * for `lit` with the current clause ID, and we replace the previous
+          * clause's ID in `unit_clauses`. */
 
-          // TODO: What if the previous "unit" is a duplicate unit clause
-          int var = VAR_FROM_LIT(lit);
-          srid_t prev_up_unit_clause = up_reasons[var];
-          up_reasons[var] = wp_processed_clauses;
+        // TODO: What if the previous "unit" is a duplicate unit clause
+        int var = VAR_FROM_LIT(lit);
+        srid_t prev_up_unit_clause = up_reasons[var];
+        up_reasons[var] = clause_index;
 
-          // Replace this clause in the `unit_clauses` structure
-          // This way, UP derivations stop at this unit clause
-          for (int i = 0; i < unit_clauses_size; i++) {
-            if (unit_clauses[i] == prev_up_unit_clause) {
-              unit_clauses[i] = wp_processed_clauses;
-              break;
-            }
+        // Replace this clause in the `unit_clauses` structure
+        // This way, UP derivations stop at this unit clause
+        for (int i = 0; i < unit_clauses_size; i++) {
+          if (unit_clauses[i] == prev_up_unit_clause) {
+            unit_clauses[i] = clause_index;
+            break;
           }
-          break;
-        default:
-          set_unit_clause(lit, wp_processed_clauses, GLOBAL_GEN);
+        }
+        break;
+      default:
+        set_unit_clause(lit, clause_index, GLOBAL_GEN);
+    }
+  } else {
+    // The clause has at least two literals - add watch pointers
+
+    /* [Note made on 10-02-2025]
+      Typically, clauses are not added with "redundant" literals, meaning
+      that if a unit `l` has already been set, `-l` won't appear in the
+      clause. However, some procedures (such as `sr2drat`) do not
+      perform this check, and will occasionally add clauses with redundant
+      literals. Thus, we must scan the clause for two valid unassigned
+      literals. (Along the way, we might discover that the clause is
+      unit or false!)
+    */
+
+    int first_wp;
+    uint lit_counter = 0;
+    for (uint i = 0; i < clause_size && lit_counter < 2; i++) {
+      int lit = clause[i];
+      if (peval_lit_under_alpha(lit) != FF) {
+        // Maintain the invariant that the wps are the first two literals
+        if (i != lit_counter) {
+          clause[i] = clause[lit_counter];
+          clause[lit_counter] = lit;
+        }
+
+        add_wp_for_lit(lit, clause_index);
+        if (lit_counter == 0) first_wp = lit;
+        lit_counter++;
       }
-    } else {
-      // The clause has at least two literals - make them the watch pointers
-      add_wp_for_lit(clause[0], wp_processed_clauses);
-      add_wp_for_lit(clause[1], wp_processed_clauses);
+    }
+
+    switch (lit_counter) {
+      case 0:
+        derived_empty_clause = 1;
+        mark_and_store_up_refutation(clause_index, gen);
+        break;
+      case 1:
+        remove_wp_for_lit(first_wp, clause_index);
+        set_unit_clause(first_wp, clause_index, GLOBAL_GEN);
+        break;
+      case 2: break;
+      default: log_fatal_err("Bad unassigned counter: %d", lit_counter);
     }
   }
+
 
   // We don't have an immediate contradiction, so perform unit propagation
   srid_t falsified_clause = perform_up(GLOBAL_GEN);
@@ -2131,6 +2280,7 @@ static void add_wps_and_perform_up(srid_t until_clause, llong gen) {
     derived_empty_clause = 1;
     mark_and_store_up_refutation(falsified_clause, gen);
   }
+
 }
 
 // A clone of of assume_negated_clause() from global_data, but with added bookkeeping. 
@@ -2143,12 +2293,7 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
 
   int satisfied_lit = -1;
   int *clause_iter = get_clause_start_unsafe(clause_index);
-  int *end = get_clause_start(clause_index + 1);
-
-  // Only set the pivot if the clause is nonempty
-  if (clause_iter < end) {
-    pivot = *clause_iter;
-  }
+  int *end = get_clause_end(clause_index);
 
   srid_t falsified_clause = -1;
   for (; clause_iter < end; clause_iter++) {
@@ -2172,7 +2317,7 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
       case TT:
         // Skip the literal if we already found a satisfying literal
         if (satisfied_lit == -1) {
-          log_msg(VL_NORMAL, "c HELLO WORLD %d, %d\n",
+          log_msg(VL_NORMAL, "HELLO WORLD %d, %d",
             TO_DIMACS_LIT(lit), TO_DIMACS_CLAUSE(up_reasons[var]));
           satisfied_lit = lit;
           falsified_clause = up_reasons[var];
@@ -2336,6 +2481,10 @@ static void unassume_RAT_clause(srid_t clause_index) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+static void soft_delete_clause(srid_t clause_id) {
+
+}
+
 static void uncommit_clause_and_set_as_candidate(void) {
   // Examine the current clause and see if it is
   //   - Empty; ignore
@@ -2343,52 +2492,55 @@ static void uncommit_clause_and_set_as_candidate(void) {
   srid_t cc_id = CLAUSE_ID_FROM_LINE_NUM(current_line);
 
   int *clause_ptr = get_clause_start(cc_id);
-  int *clause_end = get_clause_start(cc_id + 1);
+  int *clause_end = get_clause_end(cc_id);
   new_clause_size = (int) (clause_end - clause_ptr);
-  //log_msg(VL_NORMAL, "c Uncommitting clause %d, which has size %d\n",
-  //  TO_DIMACS_CLAUSE(cc_id), new_clause_size);
 
-  if (new_clause_size > 0) {
-    // Unassign the units
-    int lit = clause_ptr[0];
-    int var = VAR_FROM_LIT(lit);
-    pivot = lit;
+  if (new_clause_size == 0) return;
 
-    //log_msg(VL_NORMAL, "c [%d] The new candidate clause has pivot %d and size %d\n",
-    //LINE_ID_FROM_LINE_NUM(current_line), TO_DIMACS_LIT(pivot), new_clause_size);
+  // Unassign the units
+  int lit = clause_ptr[0];
+  int var = VAR_FROM_LIT(lit);
 
-    // The variable is unit because of this clause, undo its UP changes
-    if (up_reasons[var] == cc_id) {
-      // log_msg(VL_NORMAL, "c Unassigning unit literal %d\n", TO_DIMACS_LIT(lit));
-      // Scan backwards for the matching unit literal
-      int unit_idx;
-      for (unit_idx = unit_literals_size - 1; unit_idx >= 0; unit_idx--) {
-        int unit_lit = unit_literals[unit_idx];
-        int unit_var = VAR_FROM_LIT(unit_lit);
-        srid_t unit_clausessss = unit_clauses[unit_idx];
-        //log_msg(VL_NORMAL, "c      Scanning, unassigning unit literal %d in clause %d\n",
-        //  TO_DIMACS_LIT(unit_lit), TO_DIMACS_CLAUSE(unit_clausessss));
-        alpha[unit_var] = 0;
-        up_reasons[unit_var] = -1;
-        if (unit_lit == lit) {
-          break;
-        }
+  // The variable is unit because of this clause, undo its UP changes
+  if (up_reasons[var] == cc_id) {
+    // log_msg(VL_NORMAL, "c Unassigning unit literal %d\n", TO_DIMACS_LIT(lit));
+    // Scan backwards for the matching unit literal
+    int unit_idx;
+    for (unit_idx = unit_literals_size - 1; unit_idx >= 0; unit_idx--) {
+      int unit_lit = unit_literals[unit_idx];
+      int unit_var = VAR_FROM_LIT(unit_lit);
+      alpha[unit_var] = 0;
+      up_reasons[unit_var] = -1;
+      if (unit_lit == lit) {
+        break;
       }
-
-      unit_idx = MAX(unit_idx, 0);
-      unit_clauses_size = unit_idx;
-      unit_literals_size = unit_idx;
-      global_up_literals_index = unit_idx;
     }
 
-    // Since we won't consider this clause again, remove its watch pointers
-    if (new_clause_size > 1) {
-      //log_msg(VL_NORMAL, "c Removing watch pointers for clause %d\n",
-      //  TO_DIMACS_CLAUSE(cc_id));
-      remove_wp_for_lit(lit, cc_id);
-      remove_wp_for_lit(clause_ptr[1], cc_id);
-    }
+    unit_idx = MAX(unit_idx, 0);
+    unit_clauses_size = unit_idx;
+    unit_literals_size = unit_idx;
+    global_up_literals_index = unit_idx;
   }
+
+  // Since we won't consider this clause again, remove its watch pointers
+  if (new_clause_size > 1) {
+    remove_wp_for_lit(lit, cc_id);
+    remove_wp_for_lit(clause_ptr[1], cc_id);
+  }
+
+  // Now check the (user) deletions and restore their watch pointers
+  /*srid_t line = LINE_NUM_FROM_CLAUSE_ID(cc_id);
+  srid_t *deletions = get_deletions_start(line);
+  srid_t *deletions_end = get_deletions_end(line);
+  for (; deletions < deletions_end; deletions++) {
+    srid_t del_id = *deletions;
+    logc("Restoring watch pointers for clause %lld",
+      TO_DIMACS_CLAUSE(del_id));
+    int *del_clause = get_clause_start(del_id);
+    // Invariant: users cannot delete units, so the size is at least 2
+    add_wp_for_lit(del_clause[0], del_id);
+    add_wp_for_lit(del_clause[1], del_id);
+  } */
 }
 
 static void commit_or_uncommit_clause(void) {
@@ -2402,10 +2554,10 @@ static void commit_or_uncommit_clause(void) {
 
 static int can_skip_clause(srid_t clause_index) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    // If the clause was explicitly deleted by the user, skip it
-    // TODO: How to differentiate clauses deleted right at the start with -1?
-    srid_t lui = clause_last_used_id[clause_index];
-    return 0 <= lui && lui < current_line;
+    // srid_t lui = clause_last_used_id[clause_index];
+    // return IS_UNUSED_LUI(clause_last_used_id[clause_index]);
+    srid_t lui = LUI_FROM_USER_DELETED_LUI(clause_last_used_id[clause_index]);
+    return 0 <= lui && lui <= current_line;
   } else {
     return is_clause_deleted(clause_index);
   }
@@ -2434,8 +2586,12 @@ static void check_dsr_line(void) {
   minimize_witness();
   assume_subst(current_line);
 
+  int *witness_iter = get_witness_start(current_line) + 1;
+  int *witness_end = get_witness_end(current_line);
+
+  // TODO: Off-by-one error since we may have already committed the clause?
   srid_t efs = get_effective_formula_size();
-  max_clause_to_check = MIN(max_clause_to_check, efs); // TODO: Fix this later
+  max_clause_to_check = MIN(max_clause_to_check, efs);
 
   // Now do RAT checking between min and max clauses to check (inclusive)
   log_msg(VL_VERBOSE, "  [%d] Checking clauses %lld to %lld", 
@@ -2457,11 +2613,11 @@ static void check_dsr_line(void) {
         if (assume_RAT_clause_under_subst(i) != SATISFIED_OR_MUL) {
           srid_t falsified_clause = perform_up(alpha_generation);
           FATAL_ERR_IF(falsified_clause == -1,
-            "No UP contradiction for a RAT clause.");
+              "[line %lld] No UP contradiction for RAT clause %lld.",
+              current_line + 1, TO_DIMACS_CLAUSE(i));
           mark_up_derivation(falsified_clause);
           store_RAT_dependencies(falsified_clause);
         }
-
         unassume_RAT_clause(i);
         alpha_generation++; // Clear this round of RAT units from alpha
         break;
@@ -2473,28 +2629,63 @@ static void check_dsr_line(void) {
 
   print_or_store_lsr_line(old_alpha_gen);
 
-  // Congrats - the line checked out! Undo the changes we made to the data structures
+  // Congrats: the line checked! Undo the changes we made to the data structures
 candidate_valid:
   unassume_candidate_clause(cc_index);
 
   if (ch_mode == FORWARDS_CHECKING_MODE) {
-    add_clause_to_ht(formula_size);
     add_wps_and_perform_up(get_effective_formula_size(), old_alpha_gen);
   }
 }
 
+static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
+  srid_t line = LINE_NUM_FROM_CLAUSE_ID(clause_id);
+  srid_t *dels = get_bcu_deletions_start(line);
+  srid_t *del_end = get_bcu_deletions_end(line);
+
+  if (dels == del_end) return;
+
+  for (; dels < del_end; dels++) {
+    srid_t del_id = *dels;
+    //dbg_print_clause(del_id);
+    int *del_clause = get_clause_start(del_id);
+    remove_wp_for_lit(del_clause[0], del_id);
+    remove_wp_for_lit(del_clause[1], del_id);
+  }
+}
+
+static void restore_wps_for_user_deleted_clauses(srid_t clause_id) {
+  srid_t line = LINE_NUM_FROM_CLAUSE_ID(clause_id);
+  srid_t *dels = get_bcu_deletions_start(line);
+  srid_t *del_end = get_bcu_deletions_end(line);
+
+  if (dels == del_end) return;
+
+  for (; dels < del_end; dels++) {
+    srid_t del_id = *dels;
+    int *del_clause = get_clause_start(del_id);
+    add_wp_for_lit(del_clause[0], del_id);
+    add_wp_for_lit(del_clause[1], del_id);
+  }
+}
+
+static inline void prepare_next_line_for_backwards_checking(void) {
+  srid_t cc_id = CLAUSE_ID_FROM_LINE_NUM(current_line);
+  do {
+    restore_wps_for_user_deleted_clauses(cc_id);
+    current_line--;
+    uncommit_clause_and_set_as_candidate();
+    ra_commit_range(&deletions);
+    cc_id = CLAUSE_ID_FROM_LINE_NUM(current_line);
+  } while (IS_UNUSED_LUI(clause_last_used_id[cc_id]));
+
+  srid_t cc_rat_hints_index = RAT_HINTS_IDX_FROM_LINE_NUM(current_line);
+  ra_commit_empty_ranges_until(&hints, cc_rat_hints_index);
+}
+
 static line_type_t prepare_next_line(void) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    srid_t cc_index;
-    do {
-      current_line--;
-      uncommit_clause_and_set_as_candidate();
-      ra_commit_range(&derived_deletions);
-      cc_index = CLAUSE_ID_FROM_LINE_NUM(current_line);
-    } while (clause_last_used_id[cc_index] == -1);
-
-    srid_t cc_rat_hints_index = RAT_HINTS_IDX_FROM_LINE_NUM(current_line);
-    ra_commit_empty_ranges_until(&hints, cc_rat_hints_index);
+    prepare_next_line_for_backwards_checking();
   } else {
     // For forwards checking, we clear the stored hints
     ra_reset(&hints);
@@ -2507,19 +2698,10 @@ static line_type_t prepare_next_line(void) {
   else                        return parse_dsr_line();
 }
 
+/*
 static void check_proof_backwards(void) {
   up_state = GLOBAL_UP;
   alpha_generation = 1;
-
-  /* Let's assume that the entire DSR proof has been parsed,
-     various data structures have been initialized, deletions
-     were ignored (and thus `deletions` is empty), and the
-     CNF formula has been added to such that `formula_size`
-     is (CNF + DSR)
-
-     In order to reach this point, the empty clause needs to be
-     detected (and perhaps `formula_size` doesn't include the empty clause)
-  */
 
   // This will perform UP and store the hints in `hints`
   // TODO off by one error here
@@ -2590,30 +2772,53 @@ print_result:
   print_stored_lsr_proof();
 }
 
+  */
+
 static void add_wps_and_up_initial_clauses(void) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    current_line = num_parsed_add_lines - 1;
+  srid_t c;
+  for (c = 0; c < num_cnf_clauses; c++) {
+    add_wps_and_perform_up(c, 0);
+  }
 
-    // TODO: Encapsulate better
-    // TODO: No need to RESIZE from formula_size when this is the largest it'll be
-    resize_sr_trim_data();
-    resize_last_used_ids();
-    uncommit_clause_and_set_as_candidate();
+  logc("Done UP on initial CNF clauses");
 
-    // Add implied unit clauses, clause by clause
-    // Stop when we finally derive the empty clause
-    srid_t c = num_cnf_clauses;
-    for (; c < formula_size && !derived_empty_clause; c++) {
-      add_wps_and_perform_up(c, 0);
-    }
+  if (ch_mode == FORWARDS_CHECKING_MODE) return;
 
-    FATAL_ERR_IF(!derived_empty_clause,
-      "Despite being a part of the proof, the empty clause was not redundant.");
+  // TODO: Encapsulate better
+  // TODO: No need to RESIZE from formula_size when this is the largest it'll be
+  current_line = num_parsed_add_lines - 1; // Subtract 1 to 0-index it
+  resize_sr_trim_data();
+  resize_last_used_ids();
+  uncommit_clause_and_set_as_candidate();
 
-    log_msg(VL_VERBOSE,
-      "c A UP refutation was successfully found for the empty clause.\n");
-  } else {
-    add_wps_and_perform_up(formula_size, 0);
+  current_line = 0;
+
+  // Add implied unit clauses, clause by clause
+  // Stop when we finally derive the empty clause
+  for (; c < formula_size - 1 && !derived_empty_clause; c++) {
+    logc("About to add wps for clause %lld", TO_DIMACS_CLAUSE(c));
+    remove_wps_from_user_deleted_clauses(c);
+    perform_clause_first_last_update(c);
+    current_line++;
+    add_wps_and_perform_up(c, 0);
+  }
+
+  FATAL_ERR_IF(!derived_empty_clause,
+    "Despite being a part of the proof, the empty clause was not redundant.");
+
+  log_msg(VL_VERBOSE,
+    "A UP refutation was successfully found for the empty clause.");
+
+  remove_wps_from_user_deleted_clauses(c); // TODO: Fix this
+  c--; // `c` stored one more than the ID of the clause that derived empty
+
+  logc("Empty was supposedly derived after adding clause %lld",
+    TO_DIMACS_CLAUSE(c));
+
+  // Discard the rest of the formula, if necessary
+  if (c < formula_size - 1) {
+    discard_formula_after_clause(c);
+    num_parsed_add_lines = current_line + 1;
   }
 }
 
@@ -2623,8 +2828,20 @@ static void check_proof(void) {
 
   add_wps_and_up_initial_clauses();
 
+  // TODO encapsulate better later
+  // TODO fix with resize_sr_trim_data()
+  // TODO the (+1) is a little too much?
+  // TODO Go off line num and not formula size?
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    if (formula_size > line_num_RAT_hints_alloc_size) {
+      line_num_RAT_hints = xrecalloc(line_num_RAT_hints,
+        line_num_RAT_hints_alloc_size * sizeof(uint),
+        (formula_size + 1) * sizeof(uint));
+      line_num_RAT_hints_alloc_size = formula_size + 1;
+    }
+  }
+
   while (has_another_dsr_line()) {
-    //log_msg(VL_NORMAL, "c Thinking about line %d\n", current_line + 1);
     line_type_t line_type = prepare_next_line();
     resize_sr_trim_data();
     if (line_type == ADDITION_LINE) {
@@ -2662,6 +2879,7 @@ int main(int argc, char **argv) {
         FATAL_ERR_IF(backward_set, "Cannot set both backward and forward checking.");
         FATAL_ERR_IF(forward_set, "Forward checking was set twice.");
         forward_set = 1;
+        p_strategy = PS_STREAMING; // TODO: Make eager possible
         ch_mode = FORWARDS_CHECKING_MODE;
         break;
       case BACKWARD_OPT:

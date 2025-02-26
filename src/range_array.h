@@ -26,7 +26,7 @@ typedef struct range_array {
   ullong data_alloc_size;
   ullong indexes_size;
   ullong indexes_alloc_size;
-  uint elts_size; // Fixed size for elements in the `data` array.
+  uint elts_size; // Fixed size for elements in the `data` array, in bytes.
 } range_array_t;
 
 void ra_init(range_array_t *ra, ullong init_num_elts, 
@@ -41,9 +41,12 @@ void ra_insert_int_elt(range_array_t *ra, int elt);
 void ra_insert_long_elt(range_array_t *ra, llong elt);
 void ra_insert_srid_elt(range_array_t *ra, srid_t elt);
 void ra_commit_range(range_array_t *ra);
+void ra_uncommit_range(range_array_t *ra);
 void ra_commit_empty_ranges_until(range_array_t *ra, ullong range_index);
 void ra_uncommit_data_by(range_array_t *ra, ullong amount);
 
+void *ra_get_data_start(range_array_t *ra);
+void *ra_get_data_end(range_array_t *ra);
 void *ra_get_range_start(range_array_t *ra, ullong range_index);
 ullong ra_get_range_size(range_array_t *ra, ullong range_index);
 

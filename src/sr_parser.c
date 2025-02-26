@@ -31,7 +31,7 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
   }
 
   new_clause_size = 0;
-  int res, token, lit, num_times_found_pivot = 0;
+  int res, token, lit, pivot, num_times_found_pivot = 0;
   subst_pair_incomplete = 0;
   uint num_witness_atoms_parsed = 0;
 
@@ -71,9 +71,35 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
   // Because the witness might get minimized, we add the witness terminator
   if (num_witness_atoms_parsed > 0) {
     ra_insert_int_elt(&witnesses, WITNESS_TERM);
+  } else if (num_times_found_pivot > 0) {
+    /*
+      Along that `num_witness_atoms_parsed == 0`, we know that the clause
+      cannot be empty, but it will either be a UP clause or a DRAT clause,
+      since we didn't parse any additional witness atoms.
+      We need to store the pivot to that during backwrads checking we don't
+      need to track the pivot. (Clean up this note later)
+    */
+    ra_insert_int_elt(&witnesses, pivot);
   }
 
   ra_commit_range(&witnesses);
   commit_clause();
   // TODO: Remove duplicate literals in the clause or witness?
+}
+
+void dbg_print_witness(srid_t line_num) {
+  int *witness_iter = get_witness_start(line_num);
+  int *witness_end = get_witness_end(line_num);
+
+  log_raw(VL_NORMAL, "[line %lld] Witness: ", LINE_ID_FROM_LINE_NUM(line_num));
+  for (; witness_iter < witness_end; witness_iter++) {
+    int lit = *witness_iter;
+    if (lit == WITNESS_TERM) {
+      break;
+    } else {
+      log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(lit));
+    }
+  }
+
+  log_raw(VL_NORMAL, "0\n");
 }

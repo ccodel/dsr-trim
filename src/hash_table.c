@@ -10,10 +10,18 @@
 #include "xmalloc.h"
 #include "logger.h"
 
+// Initializes the hash table with the provided `load` size.
+// `load` is set to be at least as large as `INIT_HT_BUCKETS_SIZE`.
 void ht_init(ht_t *ht, uint load) {
   uint alloc_size = MAX(load, INIT_HT_BUCKETS_SIZE);
   ht->buckets = xcalloc(alloc_size, sizeof(htb_t));
   ht->buckets_alloc_size = alloc_size;
+}
+
+// Initializes the hash table with exactly the provided `load` size.
+void ht_init_with_size(ht_t *ht, uint load) {
+  ht->buckets = xcalloc(load, sizeof(htb_t));
+  ht->buckets_alloc_size = load;
 }
 
 void ht_insert(ht_t *ht, uint hash, srid_t data) {
