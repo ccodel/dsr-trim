@@ -2418,10 +2418,11 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
         assume_unit_literal(NEGATE_LIT(lit));
         break;
       case TT:
-        // Skip the literal if we already found a satisfying literal
+        // `lit` has been derived as true in the global partial assignment
+        // Thus, if we assume the negation of `lit`, we would ultimately
+        // end up with a UP refutation for whatever caused `lit` to be true
+        // TODO: Find the shortest literal to use here later
         if (satisfied_lit == -1) {
-          log_msg(VL_NORMAL, "HELLO WORLD %d, %d",
-            TO_DIMACS_LIT(lit), TO_DIMACS_CLAUSE(up_reasons[var]));
           satisfied_lit = lit;
           falsified_clause = up_reasons[var];
         }
@@ -2520,14 +2521,12 @@ static int assume_RAT_clause_under_subst(srid_t clause_index) {
   int *end = get_clause_start(clause_index + 1);
   for (; clause_ptr < end; clause_ptr++) {
     int lit = *clause_ptr;
-    int mapped_lit = get_lit_from_subst(lit);
+    int mapped_lit = map_lit_under_subst(lit);
     switch (mapped_lit) {
       case SUBST_TT:
         clear_RAT_marked_vars();
         return SATISFIED_OR_MUL;
       case SUBST_FF: break; // Ignore the literal
-      case SUBST_UNASSIGNED:
-        mapped_lit = lit; // waterfall!
       default:;
         // If the mapped literal is unassigned under `alpha`, set it
         int mapped_var = VAR_FROM_LIT(mapped_lit);
@@ -2628,19 +2627,10 @@ static void uncommit_clause_and_set_as_candidate(void) {
   }
 }
 
-/*static void commit_or_uncommit_clause(void) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    uncommit_clause_and_set_as_candidate();
-  } else {
-    perform_clause_first_last_update(CLAUSE_ID_FROM_LINE_NUM(current_line));
-    current_line ++;
-  }
-} */
-
 static int can_skip_clause(srid_t clause_index) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     srid_t lui = LUI_FROM_USER_DEL_LUI(clauses_lui[clause_index]);
-    return 0 <= lui && lui <= current_line;
+    return lui <= current_line;
   } else {
     return is_clause_deleted(clause_index);
   }
@@ -2685,7 +2675,7 @@ static void check_dsr_line(void) {
     if (can_skip_clause(i)) continue;
 
     // Evaluate the clause under the substitution
-    switch (reduce_subst_mapped(i)) {
+    switch (reduce_clause_under_subst(i)) {
       case NOT_REDUCED:
       case SATISFIED_OR_MUL:
         continue;
@@ -2705,14 +2695,18 @@ static void check_dsr_line(void) {
         alpha_generation++; // Clear this round of RAT units from alpha
         break;
       case CONTRADICTION:
-        log_fatal_err("RAT contradiction: should have had UP derivation.");
-      default: log_fatal_err("Corrupted reduction value.");
+        log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
+          current_line + 1, TO_DIMACS_CLAUSE(i));
+      default:
+        log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
+          current_line + 1, TO_DIMACS_CLAUSE(i),
+          reduce_clause_under_subst(i)); 
     }    
   }
 
   print_or_store_lsr_line(old_alpha_gen);
 
-  // Congrats: the line checked! Undo the changes we made to the data structures
+  // Congrats: the line checked! Undo the changes made to the data structures
 candidate_valid:
   unassume_candidate_clause(cc_index);
 
@@ -2780,46 +2774,6 @@ static line_type_t prepare_next_line(void) {
   if (p_strategy == PS_EAGER) return ADDITION_LINE;
   else                        return parse_dsr_line();
 }
-
-/*
-static void check_and_annotate_proof(void) {
-  // Perform initial unit propagation on the parsed CNF formula
-  up_state = GLOBAL_UP;
-  alpha_generation = 1;
-
-  // TODO: When backwards checking, we assume that the empty clause has been
-  // detected. `add_wps_and_perform_up()` is going to determine the UP
-  // derivation
-  add_wps_and_perform_up(formula_size, 0);
-  if (derived_empty_clause) goto print_result;
-
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    // Basically, run through the entire proof and "add" each clause,
-    // performing unit propagation, then as we move backwards,
-    // un-assume or un-UP things from alpha.
-  }
-
-  // TODO: Allow for proofs that don't derive the empty clause
-  // TODO: Handle deletion lines
-  while (!derived_empty_clause && has_another_dsr_line()) {
-    if (parse_dsr_line() == ADDITION_LINE) {
-      // printf("c Parsed line %d, new clause has size %d and witness with size %d\n", 
-      //   current_line + 1, new_clause_size, witness_size);
-      resize_sr_trim_data(); 
-      check_dsr_line();
-    }
-  }
-
-print_result:
-  if (p_strategy == PS_STREAMING && dsr_file != stdin) {
-    fclose(dsr_file);
-  }
-
-  print_proof_checking_result();
-  print_stored_lsr_proof();
-}
-
-  */
 
 static void add_wps_and_up_initial_clauses(void) {
   srid_t c;

@@ -701,9 +701,7 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
     FATAL_ERR_IF(c<= max_clause, "Not increasing IDs");
     max_clause = c;
 
-    FATAL_ERR_IF(is_clause_deleted(c), "Clause %lld was already deleted",
-      TO_DIMACS_CLAUSE(c));
-    switch (reduce_subst_mapped(c)) {
+    switch (reduce_clause_under_RAT_witness(c, pivot)) {
       case NOT_REDUCED:
       case SATISFIED_OR_MUL:
         log_fatal_err("[line %lld] Purported RAT clause %lld is not RAT",
@@ -727,8 +725,12 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
         alpha_generation++;
         break;
       case CONTRADICTION:
-        log_fatal_err("RAT contradiction: should have had UP derivation.");
-      default: log_fatal_err("Corrupted clause reduction value.");
+        log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
+          current_line + 1, TO_DIMACS_CLAUSE(c));
+      default: 
+        log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
+          current_line + 1, TO_DIMACS_CLAUSE(c),
+          reduce_clause_under_RAT_witness(c, pivot)); 
     }
   }
 
@@ -778,11 +780,9 @@ static void check_line(void) {
     "UP didn't derive contradiction for empty clause.");
   assume_subst(current_line);
 
+  // If the witness is a single literal, then we can check only the RAT clauses
   if (get_witness_start(current_line) + 1 >= get_witness_end(current_line)) {
-    // Can check only the RAT clauses
     if (check_only_hints(hints_iter, hints_end, pivot)) {
-      // logc("RAT only check succeeded for line %lld",
-       // LINE_ID_FROM_LINE_NUM(current_line));
       goto finish_line;
     }
 
@@ -791,6 +791,7 @@ static void check_line(void) {
   }
 
   // TODO: Prove that the candidate clause is implied by the witness
+
   log_msg(VL_VERBOSE, "[line %lld] Checking clauses %lld to %lld", 
       LINE_ID_FROM_LINE_NUM(current_line),
       min_clause_to_check + 1, max_clause_to_check + 1);
@@ -807,8 +808,7 @@ static void check_line(void) {
 
     // Check how the clause behaves under the substitution
     // TODO: Cache the computed reduction under subst in an array?
-    int subst_mapped = reduce_subst_mapped(i);
-    switch (subst_mapped) {
+    switch (reduce_clause_under_subst(i)) {
       case NOT_REDUCED:
       case SATISFIED_OR_MUL:
         continue;
@@ -866,9 +866,12 @@ static void check_line(void) {
         alpha_generation++; // Clear the negated RAT clause and UP extensions
         break;
       case CONTRADICTION:
-        log_fatal_err("[line %lld] RAT contradiction: should have had UP derivation.",
-          LINE_ID_FROM_LINE_NUM(current_line));
-      default: log_fatal_err("Corrupted clause reduction: %d.", subst_mapped);
+        log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
+          current_line + 1, TO_DIMACS_CLAUSE(i));
+      default:
+        log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
+          current_line + 1, TO_DIMACS_CLAUSE(i),
+          reduce_clause_under_subst(i)); 
     }
   }
 

@@ -64,7 +64,6 @@ typedef enum peval {
 // For the subst_mappings, we use negative values for true and false.
 #define SUBST_TT                 (-1)
 #define SUBST_FF                 (-2)
-#define SUBST_UNASSIGNED         (-3)
 
 /**
  * @brief Signals the end of a witness. Always included at the end when parsing.
@@ -226,7 +225,7 @@ void print_proof_checking_result(void);
 void set_lit_for_alpha(int lit, llong gen);
 peval_t peval_lit_under_alpha(int lit);
 
-int get_lit_from_subst(int lit);
+int map_lit_under_subst(int lit);
 
 void insert_lit(int lit);
 
@@ -254,7 +253,8 @@ void assume_subst(srid_t line_num);
 
 int assume_negated_clause(srid_t clause_index, llong gen);
 int assume_negated_clause_under_subst(srid_t clause_index, llong gen);
-int reduce_subst_mapped(srid_t clause_index);
+int reduce_clause_under_subst(srid_t clause_index);
+int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot);
 
 void update_first_last_clause(int lit);
 

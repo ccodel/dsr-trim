@@ -175,28 +175,23 @@ inline peval_t peval_lit_under_alpha(int lit) {
   }
 }
 
-static inline void set_mapping_for_subst(int lit, int lit_mapping, llong gen) {
+static void set_mapping_for_subst(int lit, int lit_mapping) {
   int var = VAR_FROM_LIT(lit);
-  subst_generations[var] = gen;
-  if (IS_POS_LIT(lit)) {
-    subst_mappings[var] = lit_mapping;
-  } else {
-    subst_mappings[var] = NEGATE_LIT(lit_mapping);
-  }
+  subst_generations[var] = subst_generation;
+  // Negates the mapping if the original `lit` is negated
+  subst_mappings[var] = lit_mapping ^ IS_NEG_LIT(lit);
 }
 
 // Returns the lit value of subst(lit). Can return SUBST_TT/_FF.
 // Compares against subst_generation.
-inline int get_lit_from_subst(int lit) {
+int map_lit_under_subst(int lit) {
   int var = VAR_FROM_LIT(lit);
   llong gen = subst_generations[var];
   if (gen >= subst_generation) {
-    // Equivalently,
-    // (IS_POS_LIT(lit)) ? sm[V(lit)] : NEGATE_LIT(sm[V(lit)]);
-    return (subst_mappings[var]) ^ (IS_NEG_LIT(lit));
+    // This negates the mapping if `lit` is negated
+    return subst_mappings[var] ^ IS_NEG_LIT(lit);
   } else {
-    // TODO: Or could we return lit here instead?
-    return SUBST_UNASSIGNED;
+    return lit;
   }
 }
 
@@ -309,14 +304,8 @@ void commit_clause_with_first_last_update(void) {
 void uncommit_clause_with_first_last_update(void) {
   // Reverse direction of `commit_clause_w_f_l_update()`.
   formula_size--;
-  int *clause = get_clause_start_unsafe(formula_size);
-  uint clause_size = get_clause_size(formula_size);
-
-  for (uint i = 0; i < clause_size; i++) {
-    // TODO: efficiency for finding the clause before this one that
-    // mentions the literal
-    // Use a char array to mark (1), then scan backwards?
-  }
+  // int *clause = get_clause_start_unsafe(formula_size);
+  // uint clause_size = get_clause_size(formula_size);
 }
 
 inline int is_clause_deleted(srid_t clause_index) {
@@ -510,7 +499,7 @@ void assume_subst(srid_t line_num) {
   int pivot_var = VAR_FROM_LIT(pivot);
 
   // Process the pivot
-  set_mapping_for_subst(pivot, SUBST_TT, subst_generation);
+  set_mapping_for_subst(pivot, SUBST_TT);
   set_min_and_max_clause_to_check(NEGATE_LIT(pivot));
   witness_iter++;
 
@@ -534,13 +523,13 @@ void assume_subst(srid_t line_num) {
       if (lit == pivot) {
         seen_pivot_divider = 1; // Skip the pivot divider
       } else {
-        set_mapping_for_subst(lit, SUBST_TT, subst_generation);
+        set_mapping_for_subst(lit, SUBST_TT);
         set_min_and_max_clause_to_check(neg_lit);
       }
     } else {
       witness_iter++;
       int mapped_lit = *witness_iter;
-      set_mapping_for_subst(lit, mapped_lit, subst_generation);
+      set_mapping_for_subst(lit, mapped_lit);
       set_min_and_max_clause_to_check(lit);
       set_min_and_max_clause_to_check(neg_lit);
     }
@@ -582,13 +571,11 @@ int assume_negated_clause_under_subst(srid_t clause_index, llong gen) {
   int *end = get_clause_start(clause_index + 1);
   for (; clause_ptr < end; clause_ptr++) {
     int lit = *clause_ptr;
-    int mapped_lit = get_lit_from_subst(lit);
+    int mapped_lit = map_lit_under_subst(lit);
     // Evaluate the lit under the substitution, assuming it won't be satisfied
     switch (mapped_lit) {
       case SUBST_TT: return SATISFIED_OR_MUL;
       case SUBST_FF: break; // Ignore the literal
-      case SUBST_UNASSIGNED: // TODO: See note in get_lit_from_subst
-        mapped_lit = lit;
       default:;
         // Now evaluate the mapped literal under alpha. If it's unassigned, set it
         int mapped_eval = peval_lit_under_alpha(mapped_lit);
@@ -606,50 +593,71 @@ int assume_negated_clause_under_subst(srid_t clause_index, llong gen) {
 
 // Evaluate the clause under the substitution.
 // A return value of `SATISFIED_OR_MUL` means the clause is satisfied only.
-int reduce_subst_mapped(srid_t clause_index) {
+int reduce_clause_under_subst(srid_t clause_index) {
   FATAL_ERR_IF(is_clause_deleted(clause_index),
     "Trying to reduce a deleted clause (%lld).",
     TO_DIMACS_CLAUSE(clause_index));
 
-  int id_mapped_lits = 0, falsified_lits = 0;
-  int *start = get_clause_start(clause_index);
-  int *end = get_clause_start(clause_index + 1);
-  int size = end - start;
-  int res = REDUCED;
+  uint id_mapped_lits = 0;
+  uint falsified_lits = 0;
+  int *iter = get_clause_start(clause_index);
+  int *end = get_clause_end(clause_index);
+  int clause_size = end - iter;
 
   // Evaluate the literals under the substitution first
   // If the witness is a substitution, tautologies can be produced. But we don't
   // report those here, because when the clause is assumed into alpha, one of
   // the two literals will either be true, or assumed fresh and set the other to true.
-  for (; start < end; start++) {
-    int lit = *start;
-    int mapped_lit = get_lit_from_subst(lit);
+  for (; iter< end; iter++) {
+    int lit = *iter;
+    int mapped_lit = map_lit_under_subst(lit);
     switch (mapped_lit) {
       case SUBST_TT:
-        // return SATISFIED_OR_MUL;
-        res = SATISFIED_OR_MUL;
-        break;
+        return SATISFIED_OR_MUL;
       case SUBST_FF:
         falsified_lits++;
-        //occ_counter++;
         break;
-      case SUBST_UNASSIGNED: mapped_lit = lit;
       default:
         if (mapped_lit == lit) {
           id_mapped_lits++;
-        } else {
-          //occ_counter++;
         }
     }
   }
 
-  if (falsified_lits == size) {
+  if (falsified_lits == clause_size) {
     return CONTRADICTION;
-  } else if (id_mapped_lits == size) {
+  } else if (id_mapped_lits == clause_size) {
     return NOT_REDUCED;
   } else {
-    return res;
+    return REDUCED;
   }
+}
+
+int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot) {
+  FATAL_ERR_IF(is_clause_deleted(clause_index),
+  "Trying to reduce a deleted clause (%lld).",
+  TO_DIMACS_CLAUSE(clause_index));
+
+  uint negated_lits = 0;
+  int *iter = get_clause_start(clause_index);
+  int *end = get_clause_end(clause_index);
+  int clause_size = end - iter;
+  int negated_pivot = NEGATE_LIT(pivot);
+
+  for (; iter< end; iter++) {
+    int lit = *iter;
+    if (lit == pivot) {
+      return SATISFIED_OR_MUL;
+    } else if (lit == negated_pivot) {
+      if (clause_size == 1) {
+        return CONTRADICTION;
+      } else {
+        return REDUCED; 
+      }
+    }
+  }
+
+  return NOT_REDUCED;
 }
 
 void update_first_last_clause(int lit) {

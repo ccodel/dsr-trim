@@ -1,6 +1,5 @@
 CC     = gcc
 # CFLAGS = -DLONGTYPE -O3
-# CFLAGS = -O2
 CFLAGS = -O3
 RM     = rm -f
 SRCDIR = src

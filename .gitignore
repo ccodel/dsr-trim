@@ -16,9 +16,11 @@ php/lsr/*
 *.drat
 *.lrat
 *.pr
+*.dpr
 *.lpr
 *.ppr
 *.sr
+*.dsr
 *.lsr
 
 # Mac and dev
