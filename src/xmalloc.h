@@ -15,6 +15,7 @@
 
 void *xcalloc(size_t count, size_t size);
 void *xmalloc(size_t size);
+void *xmalloc_memset(size_t size, int c);
 void *xrealloc(void *ptr, size_t size);
 void *xrealloc_memset(void *ptr, size_t old_size, size_t size, int c);
 void *xrecalloc(void *ptr, size_t old_size, size_t size);

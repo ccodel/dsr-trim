@@ -57,6 +57,12 @@ void *xmalloc(size_t size) {
   return ptr;
 }
 
+void *xmalloc_memset(size_t size, int c) {
+  void *ptr = xmalloc(size);
+  memset(ptr, c, size);
+  return ptr;
+}
+
 
 /** @brief Exit() wrapper around realloc().
  *

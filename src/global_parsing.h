@@ -24,15 +24,19 @@
 #define BINARY_ADDITION_LINE_START    (1)
 #define BINARY_DELETION_LINE_START    (2)
 
+// Uses `fscanf()` to read a single `long` token from `f`.
+// Does not consume any trailing newlines.
 #define READ_LONG_TOKEN(res, f, ptr)            do {                           \
-    res = fscanf(f, "%lld ", ptr);                                             \
+    res = fscanf(f, "%lld[^\n]", ptr);                                         \
     FATAL_ERR_IF(res == 0, "Token was expected to be a number.");              \
     FATAL_ERR_IF(res == EOF, "EOF unexpectedly reached.");                     \
     FATAL_ERR_IF(res < 0, "Other error encountered while parsing.");           \
   } while (0)
 
+// Uses `fscanf()` to read a single `int` token from `f`.
+// Does not consume any trailing newlines.
 #define READ_INT_TOKEN(res, f, ptr)             do {                           \
-    res = fscanf(f, "%d ", ptr);                                               \
+    res = fscanf(f, "%d[^\n]", ptr);                                           \
     FATAL_ERR_IF(res == 0, "Token was expected to be a number.");              \
     FATAL_ERR_IF(res == EOF, "EOF unexpectedly reached.");                     \
     FATAL_ERR_IF(res < 0, "Other error encountered while parsing.");           \
@@ -79,10 +83,15 @@ int read_lit_binary(FILE *f);
 // Expects a literal to read. If EOF is reached, it prints an error and exits.
 int read_lit(FILE *f);
 
+// Parses a literal for a CNF formula from the file pointer `f`.
+// If a newline is encountered in the file stream, then it skips
+// subsequent comment lines, if there are any.
+int read_formula_lit(FILE *f);
+
 // Writes a literal in DIMACS format to the file in binary format.
 void write_lit_binary(FILE *f, int lit);
 
-// Takes a lit in 0-indexed format and writes it to the file according to `write_binary`.
+// Writes a DIMACS-formatted literal to the file according to `write_binary`.
 void write_lit(FILE *f, int lit);
 
 // Parses a clause ID in binary format. Called by `parse_clause_id`.

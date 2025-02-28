@@ -18,6 +18,7 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Converts a negative DIMACS clause ID to a 0-indexed clause ID.
 #define FROM_RAT_CLAUSE(x)      (-(x) - 1)
 #define FROM_DIMACS_CLAUSE(x)   ((x) - 1)
 #define TO_DIMACS_CLAUSE(x)     ((x) + 1)
@@ -242,7 +243,7 @@ int *get_clause_start_unsafe(srid_t clause_index);
 int *get_clause_start(srid_t clause_index);
 int *get_clause_end_unsafe(srid_t clause_index);
 int *get_clause_end(srid_t clause_index);
-int  get_clause_size(srid_t clause_index);
+uint get_clause_size(srid_t clause_index);
 
 void discard_formula_after_clause(srid_t clause_index);   
 

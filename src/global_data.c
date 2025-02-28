@@ -248,9 +248,9 @@ void insert_lit(int lit) {
 
 void perform_clause_first_last_update(srid_t clause_index) {
   int *clause = get_clause_start_unsafe(clause_index);
-  int clause_size = get_clause_size(clause_index);
+  uint clause_size = get_clause_size(clause_index);
 
-  for (int i = 0; i < clause_size; i++) {
+  for (uint i = 0; i < clause_size; i++) {
     int lit = *clause;
     clause++;
     update_first_last(lit, clause_index);
@@ -310,9 +310,9 @@ void uncommit_clause_with_first_last_update(void) {
   // Reverse direction of `commit_clause_w_f_l_update()`.
   formula_size--;
   int *clause = get_clause_start_unsafe(formula_size);
-  int clause_size = get_clause_size(formula_size);
+  uint clause_size = get_clause_size(formula_size);
 
-  for (int i = 0; i < clause_size; i++) {
+  for (uint i = 0; i < clause_size; i++) {
     // TODO: efficiency for finding the clause before this one that
     // mentions the literal
     // Use a char array to mark (1), then scan backwards?
@@ -400,14 +400,14 @@ inline int *get_clause_start_unsafe(srid_t clause_index) {
   return lits_db + formula[clause_index];
 }
 
-inline int *get_clause_start(srid_t clause_index) {
+int *get_clause_start(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
     "get_clause_start(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
   return lits_db + CLAUSE_IDX(formula[clause_index]);
 }
 
-inline int *get_clause_end_unsafe(srid_t clause_index) {
+int *get_clause_end_unsafe(srid_t clause_index) {
   if (clause_index == formula_size) {
     return lits_db + lits_db_size;
   } else {
@@ -415,7 +415,7 @@ inline int *get_clause_end_unsafe(srid_t clause_index) {
   }
 }
 
-inline int *get_clause_end(srid_t clause_index) {
+int *get_clause_end(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
     "get_clause_end(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
@@ -428,15 +428,16 @@ inline int *get_clause_end(srid_t clause_index) {
 }
 
 // TODO: What should this return for the new clause, if not yet added?
-inline int get_clause_size(srid_t clause_index) {
+uint get_clause_size(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
     "get_clause_size(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
 
   if (clause_index == formula_size) {
-    return lits_db_size - CLAUSE_IDX(formula[clause_index]);
+    return (uint) (lits_db_size - CLAUSE_IDX(formula[clause_index]));
   } else {
-    return CLAUSE_IDX(formula[clause_index + 1]) - CLAUSE_IDX(formula[clause_index]);
+    return (uint) (CLAUSE_IDX(formula[clause_index + 1])
+      - CLAUSE_IDX(formula[clause_index]));
   }
 }
 

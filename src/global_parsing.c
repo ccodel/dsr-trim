@@ -14,6 +14,25 @@
 int read_binary = 0;
 int write_binary = 0;
 
+// Scans the input stream until a matching character is found. Ignores whitespace.
+// Consumes that matching character.
+// Returns 1 if the character was found, and 0 if a non-matching, non-whitespace character was found.
+// Errors and exits if EOF encountered.
+static inline int scan_until_char(FILE *f, int match) {
+  int c;
+  while ((c = getc_unlocked(f)) != EOF) {
+    if (c == match) {
+      return 1;
+    } else if (!isspace(c)) {
+      ungetc(c, f);
+      return 0;
+    }
+  }
+
+  log_fatal_err("EOF while scanning for character.");
+  return EOF;
+}
+
 int read_lit_binary(FILE *f) {
   int x = 0;
   int new_lsb, shift = 0;
@@ -41,6 +60,24 @@ int read_lit(FILE *f) {
     READ_LIT(res, f, &lit);
     return lit;
   }
+}
+
+int read_formula_lit(FILE *f) {
+  // Ignore all upcoming comment lines
+  while (scan_until_char(f, '\n')) {
+    int c = getc_unlocked(f);
+    if (c == DIMACS_COMMENT_LINE) {
+      // Read to the end of the line, discarding the comment
+      while (getc_unlocked(f) != '\n') {}
+    } else {
+      ungetc(c, f);
+      break;
+    }
+  }
+  
+  int res, lit;
+  READ_LIT(res, f, &lit);
+  return lit;
 }
 
 void write_lit_binary(FILE *f, int lit) {
@@ -146,23 +183,6 @@ void write_clause_id(FILE *f, srid_t clause_id) {
   write_lit(f, clause_id);
 }
 #endif
-
-// Scans the input stream until a matching character is found. Ignores whitespace.
-// Returns 1 if the character was found, and 0 if a non-matching, non-whitespace character was found.
-// Errors and exits if EOF encountered.
-static inline int scan_until_char(FILE *f, int match) {
-  int c;
-  while ((c = getc_unlocked(f)) != EOF) {
-    if (c == match) {
-      return 1;
-    } else if (!isspace(c)) {
-      ungetc(c, f);
-      return 0;
-    }
-  }
-
-  log_fatal_err("EOF while scanning for character.");
-}
 
 line_type_t read_dsr_line_start(FILE *f) {
   if (read_binary) {

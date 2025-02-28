@@ -22,6 +22,9 @@ define cc-bin-command
 $(CC) $(CFLAGS) $^ -o $@
 endef
 
+# .PHONY means these rules get executed even if files of these names exist
+.PHONY: all clean
+
 all: $(EXECS)
 
 dsr-trim: $(TRIM).c $(OFILES)
@@ -38,11 +41,9 @@ decompress: $(DECOMPRESS).c $(OFILES)
 
 xmalloc.o: xmalloc.c
 	$(cc-command)
-# $(CC) $(CFLAGS) -c xmalloc.c
 
 xio.o: xio.c
 	$(cc-command)
-# $(CC) $(CFLAGS) -c xio.c
 
 logger.o: logger.c
 	$(cc-command)

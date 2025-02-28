@@ -18,7 +18,7 @@
 int parse_clause(FILE *f) {
   new_clause_size = 0;
   int parsed_lit = 0;
-  while ((parsed_lit = read_lit(f)) != 0) {
+  while ((parsed_lit = read_formula_lit(f)) != 0) {
     int lit = FROM_DIMACS_LIT(parsed_lit);
     insert_lit(lit);
     new_clause_size++;

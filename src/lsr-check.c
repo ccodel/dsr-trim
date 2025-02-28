@@ -157,7 +157,7 @@ static struct option const longopts[] = {
   { NULL, 0, NULL, 0 }  // The array of structs must be NULL/0-terminated
 };
 
-// Prints the shorter help message to the provided `FILE` stream.
+// Prints a shorter help message to the provided `FILE` stream.
 static void print_short_help_msg(FILE *f) {
   char *usage_str = "Usage: ./lsr-check [OPTIONS] <cnf> [lsr]\n"
   "\n"
@@ -180,7 +180,7 @@ static void print_short_help_msg(FILE *f) {
   fprintf(f, "%s", usage_str);
 }
 
-// Prints the longer help message to the provided `FILE` stream.
+// Prints a longer help message to the provided `FILE` stream.
 static void print_long_help_msg(FILE *f) {
   char *usage_str = "Usage: ./lsr-check [OPTIONS] <cnf> [lsr]\n"
   "\n"
@@ -620,8 +620,6 @@ static int reduce(srid_t clause_index) {
   return unit_lit;
 }
 
-// Perform unit propagation starting from a hint index. Stops if end or negative hint.
-// Returns CONTRADICTION if false derived, or 0 otherwise. Updates hint index
 /**
  * @brief Performs unit propagation by using the hints pointed to by `hint_ptr`.
  *        Expects a clause to evaluate to false before `hints_end` is reached.
