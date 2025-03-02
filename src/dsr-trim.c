@@ -309,8 +309,12 @@ static uint num_RAT_hints = 0;
 #define BACKWARD_OPT  ('b')
 #define OPT_STR       ("bd:efhn:qsv")
 
-// A flag that is set when the CLI arguments request the longer help message.
+// A flag set by `getopt_long()` when the user requests a longer help message.
 static int long_help_msg_flag = 0;
+
+// A flag set by `getopt_long()` when the user wants to emit a valid formula.
+static int emit_valid_formula = 0;
+static FILE *emit_valid_formula_file = NULL;
 
 // The set of "long options" for CLI argument parsing. Used by `getopt_long()`.
 static struct option const longopts[] = {
@@ -321,6 +325,7 @@ static struct option const longopts[] = {
   { "streaming", no_argument, NULL, STREAMING_OPT },
   { "forward", no_argument, NULL, FORWARD_OPT },
   { "backward", no_argument, NULL, BACKWARD_OPT },
+  { "emit-valid-formula-to", required_argument, &emit_valid_formula, 1 },
   { NULL, 0, NULL, 0 }  // The array of structs must be NULL/0-terminated
 };
 
@@ -908,6 +913,42 @@ static void print_lsr_line(srid_t line_num, srid_t printed_line_id) {
   write_lit(lsr_file, 0); // Separator between (clause + witness) and rest
   print_hints(line_num);
   write_sr_line_end(lsr_file);
+}
+
+static void print_valid_formula_if_requested(void) {
+  if (!derived_empty_clause && emit_valid_formula_file != NULL) {
+    int write_binary_before = write_binary;
+    write_binary = 0; // Save the value of writing to binary
+
+    fputc(DIMACS_PROBLEM_LINE, emit_valid_formula_file);
+    fprintf(emit_valid_formula_file,
+      CNF_HEADER_STR, max_var + 1, formula_size);
+
+    for (srid_t c = 0; c < formula_size; c++) {
+      if (is_clause_deleted(c)) continue;
+      
+      int *iter = get_clause_start_unsafe(c);
+      int *end = get_clause_end(c);
+
+      // Re-sort the original CNF clauses
+      // Printing the LSR proof sorts all other clauses wrt pivots
+      if (c < num_cnf_clauses) {
+        qsort(iter, end - iter, sizeof(int), absintcmp);
+      } else if (c == num_cnf_clauses) {
+        fprintf(emit_valid_formula_file,
+            "c >>> Redundant clauses start below this point <<<\n");
+      }
+
+      for (; iter < end; iter++) {
+        int lit = *iter;
+        write_lit(emit_valid_formula_file, TO_DIMACS_LIT(lit));
+      }
+      write_sr_line_end(emit_valid_formula_file);
+    }
+
+    write_binary = write_binary_before; // Restore the old value
+    fclose(emit_valid_formula_file);
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2853,6 +2894,7 @@ static void check_proof(void) {
 
   print_proof_checking_result();
   print_stored_lsr_proof();
+  print_valid_formula_if_requested();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2867,6 +2909,11 @@ int main(int argc, char **argv) {
   cli_opts_t cli;
   int forward_set = 0, backward_set = 0;
   cli_init(&cli);
+  
+  // For emitting VALID formulas to a file, upon request
+  int emit_valid_formula_opt_set = 0;
+  char emit_valid_formula_file_path[MAX_FILE_PATH_LEN];
+  emit_valid_formula_file_path[MAX_FILE_PATH_LEN - 1] = '\0';
 
   // Parse CLI arguments
   int ch;
@@ -2890,9 +2937,15 @@ int main(int argc, char **argv) {
         if (long_help_msg_flag) {
           print_long_help_msg(stdout);
           return 0;
+        } else if (emit_valid_formula) {
+          FATAL_ERR_IF(emit_valid_formula_opt_set,
+            "Cannot set the emit-valid-formula option twice.");
+          emit_valid_formula_opt_set = 1;
+          strncpy(emit_valid_formula_file_path, optarg, MAX_FILE_PATH_LEN - 1);
         } else {
           log_fatal_err("Unimplemented long option.");
         }
+        break;
       default:
         cli_res = cli_handle_opt(&cli, ch, optopt, optarg);
         switch (cli_res) {
@@ -2971,6 +3024,12 @@ int main(int argc, char **argv) {
   } else {
     logc("LSR file path: %s", cli.lsr_file_path);
     lsr_file = xfopen(cli.lsr_file_path, "w");
+  }
+
+  if (emit_valid_formula_opt_set) {
+    logc("Emitting a VALID formula to: %s",
+      emit_valid_formula_file_path);
+    emit_valid_formula_file = xfopen(emit_valid_formula_file_path, "w");
   }
 
   if (p_strategy == PS_EAGER) {
