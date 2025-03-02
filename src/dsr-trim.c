@@ -917,12 +917,20 @@ static void print_lsr_line(srid_t line_num, srid_t printed_line_id) {
 
 static void print_valid_formula_if_requested(void) {
   if (!derived_empty_clause && emit_valid_formula_file != NULL) {
+    // Count how many non-deleted clauses there are, for the problem header
+    srid_t num_present_clauses = 0;
+    for (srid_t c = 0; c < formula_size; c++) {
+      if (!is_clause_deleted(c)) num_present_clauses++;
+    }
+ 
+    // Save the value of writing to binary
     int write_binary_before = write_binary;
-    write_binary = 0; // Save the value of writing to binary
+    write_binary = 0;
 
+    // Write the `cnf p <num_vars> <num_clauses>` problem header
     fputc(DIMACS_PROBLEM_LINE, emit_valid_formula_file);
     fprintf(emit_valid_formula_file,
-      CNF_HEADER_STR, max_var + 1, formula_size);
+      CNF_HEADER_STR, max_var + 1, num_present_clauses);
 
     for (srid_t c = 0; c < formula_size; c++) {
       if (is_clause_deleted(c)) continue;
