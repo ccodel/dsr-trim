@@ -68,10 +68,9 @@ int parse_clause(FILE *f) {
 }
 
 void parse_cnf(FILE *f) {
-  int res, found_problem_line = 0;
+  int c, res, found_problem_line = 0;
   while (!found_problem_line) {
-    int c = getc_unlocked(f);
-    switch (c) {
+    switch ((c = getc_unlocked(f))) {
       case DIMACS_COMMENT_LINE:
         // Read to the end of the line, discarding the comment
         while (getc_unlocked(f) != '\n') {}
@@ -90,6 +89,12 @@ void parse_cnf(FILE *f) {
     "The problem header variable number (%d) was not positive.", num_cnf_vars);
   FATAL_ERR_IF(num_cnf_clauses <= 0,
     "The problem header clause number (%d) was not positive.", num_cnf_clauses);
+
+  // Formula parsing requires that newlines are left unconsumed until
+  // the next call to `parse_formula_lit()`. This allows the parser 
+  // to know where valid comment lines occur (after a newline).
+  // We add the newline here to maintain this invariant.
+  ungetc('\n', f);
 
   init_global_data();
 

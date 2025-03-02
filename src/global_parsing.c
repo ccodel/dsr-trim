@@ -69,6 +69,7 @@ int read_formula_lit(FILE *f) {
     if (c == DIMACS_COMMENT_LINE) {
       // Read to the end of the line, discarding the comment
       while (getc_unlocked(f) != '\n') {}
+      ungetc('\n', f); // Invariant: leave newlines unconsumed
     } else {
       ungetc(c, f);
       break;
