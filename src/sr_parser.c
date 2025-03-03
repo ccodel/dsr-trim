@@ -58,15 +58,17 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
       default: // We're reading the substitution part of the witness
         subst_pair_incomplete = !subst_pair_incomplete;
       case 2:  // We're reading the witness (waterfalls from above)
-        FATAL_ERR_IF(VAR_FROM_LIT(lit) > max_var, "Var %d out of range.",
-          VAR_FROM_LIT(lit));
+        FATAL_ERR_IF(VAR_FROM_LIT(lit) > max_var,
+          "[line %lld] Var %d out of range.",
+          line_num + 1, VAR_FROM_LIT(lit));
         num_witness_atoms_parsed++;
         ra_insert_int_elt(&witnesses, lit);
         break;
     }
   }
 
-  FATAL_ERR_IF(subst_pair_incomplete, "Missing half of subst map.");
+  FATAL_ERR_IF(subst_pair_incomplete,
+    "[line %lld] Missing half of subst map.", line_num + 1);
 
   // Because the witness might get minimized, we add the witness terminator
   if (num_witness_atoms_parsed > 0) {
@@ -91,13 +93,14 @@ void dbg_print_witness(srid_t line_num) {
   int *witness_iter = get_witness_start(line_num);
   int *witness_end = get_witness_end(line_num);
 
-  log_raw(VL_NORMAL, "[line %lld] Witness: ", LINE_ID_FROM_LINE_NUM(line_num));
+  log_raw(VL_NORMAL, "[line %lld] Witness: ", line_num + 1);
   for (; witness_iter < witness_end; witness_iter++) {
     int lit = *witness_iter;
-    if (lit == WITNESS_TERM) {
-      break;
-    } else {
-      log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(lit));
+    switch (lit) {
+      case WITNESS_TERM: witness_iter = witness_end;          break;
+      case SUBST_FF: log_raw(VL_NORMAL, "FF ");               break;
+      case SUBST_TT: log_raw(VL_NORMAL, "TT ");               break;
+      default: log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(lit)); break;
     }
   }
 

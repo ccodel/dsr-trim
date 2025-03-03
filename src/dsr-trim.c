@@ -734,6 +734,8 @@ static void print_witness(srid_t line_num) {
   int witness_size = (int) (witness_end - witness_start);
 
   // Don't print a witness if there isn't one (0) or if it's trivial (1)
+  // TODO: This doesn't catch cases where the pivot might get mapped to TT/FF
+  // in the substitution portion, so the "computed size" is different than size
   if (witness_size <= 1) return;
 
   /* 
@@ -746,8 +748,8 @@ static void print_witness(srid_t line_num) {
   int seen_pivot_divider = 0;
   int num_skipped_mapped_lits = 0;
 
-  int tmp_pivot = *iter;
-  write_lit(lsr_file, TO_DIMACS_LIT(tmp_pivot));
+  int pivot = *iter;
+  write_lit(lsr_file, TO_DIMACS_LIT(pivot));
   iter++;
 
   // Pass for true-false mappings
@@ -760,12 +762,12 @@ static void print_witness(srid_t line_num) {
 
     if (!seen_pivot_divider) {
       // When we see the pivot again, the subst mappings start after it
-      if (lit == tmp_pivot) {
+      if (lit == pivot) {
         seen_pivot_divider = 1;
         mappings_start = iter + 1;
+      } else {
+        write_lit(lsr_file, TO_DIMACS_LIT(lit));
       }
-
-      write_lit(lsr_file, TO_DIMACS_LIT(lit));
     } else {
       iter++;
       int mapped_lit = *iter;
@@ -781,7 +783,11 @@ static void print_witness(srid_t line_num) {
     }
   }
 
+  // Don't print any substitution portion if there aren't any mapped lits
   if (num_skipped_mapped_lits == 0) return;
+
+  // Write the pivot separator before the mapped literals section
+  write_lit(lsr_file, TO_DIMACS_LIT(pivot));
 
   // Second pass, starting at the mappings
   for (iter = mappings_start; iter < witness_end; iter++) {
@@ -1722,14 +1728,14 @@ static void store_RAT_dependencies(srid_t from_clause) {
 ////////////////////////////////////////////////////////////////////////////////
 
 /**
- * @brief Minimizes the witness and checks its consistency. Call after assuming 
- *  the negation of the candidate clause and doing UP.
+ * @brief Minimizes the witness and checks its consistency. Must be called
+ *  after assuming the negation of the candidate clause and doing UP.
  * 
  * Any witness literal l set to true that is also set to true in alpha after
  * assuming the negation of the candidate clause and doing UP can be omitted.
  * This is because any clause satisfied by l will then generate contradiction
  * with alpha (alpha satisfies it), and any clause containing -l will, when
- * its negation is assumed for RAT checking, has no additional effect on alpha,
+ * its negation is assumed for RAT checking, have no effect on alpha,
  * now that it contains -l after the smaller witness.
  * 
  * In addition, any literal l -> m in the substitution portion, with m set to
@@ -1766,7 +1772,7 @@ static void minimize_witness(void) {
   int *witness_end = get_witness_end(current_line);
   int *write_iter = NULL;
  
-  if (witness_iter + 1 == witness_end) return;
+  if (witness_iter + 1 >= witness_end) return;
 
   int pivot = witness_iter[0];
   int seen_pivot_divider = 0;
@@ -1794,14 +1800,10 @@ static void minimize_witness(void) {
       int mapped_lit = witness_iter[1];
       switch (peval_lit_under_alpha(mapped_lit)) {
         case FF:
-          // printf("c   (%d -> %d), but latter was found to be globally false\n",
-          //   TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
           witness_iter[1] = SUBST_FF;
           lit_subst = FF;
           break;
         case TT:
-          // printf("c   (%d -> %d), but latter was found to be globally true\n",
-          //   TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
           witness_iter[1] = SUBST_TT;
           lit_subst = TT;
           break;
@@ -1814,7 +1816,7 @@ static void minimize_witness(void) {
     if (lit_alpha != UNASSIGNED) {
       if (lit_alpha == lit_subst) {
         log_msg(VL_VERBOSE,
-          "c Found an unnecessary literal %d at index %d in the witness\n",
+          "Found an unnecessary literal %d at index %d in the witness",
           TO_DIMACS_LIT(lit),
           (int) (witness_iter - get_witness_start(current_line)));
         keep_lit = 0;
@@ -1842,6 +1844,7 @@ static void minimize_witness(void) {
       }
     }
 
+    // If we've seen the pivot divider, inc past the mapped literal as well
     if (seen_pivot_divider) {
       witness_iter++;
     }

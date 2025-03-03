@@ -57,16 +57,16 @@ cli.o: cli.c
 	$(cc-command)
 
 cnf_parser.o: cnf_parser.c
-	$(CC) $(CFLAGS) -c cnf_parser.c
+	$(cc-command)
 
 sr_parser.o: sr_parser.c
-	$(CC) $(CFLAGS) -c sr_parser.c
+	$(cc-command)
 
 global_data.o: global_data.c
-	$(CC) $(CFLAGS) -c global_data.c
+	$(cc-command)
 
 global_parsing.o: global_parsing.c
-	$(CC) $(CFLAGS) -c global_parsing.c
+	$(cc-command)
 
 clean:
 	$(RM) *.o
