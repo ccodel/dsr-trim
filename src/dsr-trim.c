@@ -253,8 +253,7 @@ static clause_mult_t *clause_mults;
 static uint clause_mults_alloc_size = 0;
 static uint clause_mults_size = 0;
 
-// Forward declare (TODO: Figure out organization laterj)
-static void add_wp_for_lit(int lit, srid_t clause);
+// Forward declare, since deletion needs it
 static void remove_wp_for_lit(int lit, srid_t clause);
 
 /*
@@ -300,6 +299,10 @@ static range_array_t bcu_deletions;
 static uint *line_num_RAT_hints = NULL;
 static uint line_num_RAT_hints_alloc_size = 0;
 static uint num_RAT_hints = 0;
+
+// Indexed by the 0-indexed `current_line`. Used only during backwards checking
+static min_max_clause_t *lines_min_max_clauses_to_check = NULL;
+static uint lines_min_max_clauses_to_check_alloc_size = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1180,6 +1183,33 @@ static srid_t add_clause_to_ht_or_inc_mult(void) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+static void store_clause_check_range_for_backwards_checking(void) {
+  if (ch_mode != BACKWARDS_CHECKING_MODE) return;
+  
+  compute_min_max_clause_to_check(num_parsed_add_lines);
+  perform_clause_first_last_update(
+    CLAUSE_ID_FROM_LINE_NUM(num_parsed_add_lines));
+
+  RESIZE_ARR(lines_min_max_clauses_to_check,
+    lines_min_max_clauses_to_check_alloc_size,
+    formula_size, sizeof(min_max_clause_t));
+
+  min_max_clause_t *mm = &lines_min_max_clauses_to_check[num_parsed_add_lines];
+  mm->min_clause = min_clause_to_check;
+  mm->max_clause = max_clause_to_check;
+  logc("[line %lld] Storing min %lld and max %lld",
+    num_parsed_add_lines + 1, min_clause_to_check + 1, max_clause_to_check + 1);
+}
+
+static void set_min_max_clause_to_check(void) {
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    min_clause_to_check =
+      lines_min_max_clauses_to_check[current_line].min_clause;
+    max_clause_to_check =
+      lines_min_max_clauses_to_check[current_line].max_clause;
+  }
+}
+
 /**
  * @brief Prints or commits user deletions.
  * 
@@ -1240,6 +1270,7 @@ static int parse_dsr_line(void) {
         // We don't want to proof check anything, so don't return `ADD_LINE`
         line_type = DELETION_LINE;
       } else {
+        store_clause_check_range_for_backwards_checking();
         print_or_commit_user_deletions();
         num_parsed_add_lines++;
       }
@@ -1328,6 +1359,10 @@ static void prepare_dsr_trim_data(void) {
     line_num_RAT_hints = xcalloc(line_num_RAT_hints_alloc_size, sizeof(uint));
 
     unit_literals_wp_up_indexes = xcalloc(units_alloc_size, sizeof(int));
+
+    lines_min_max_clauses_to_check =
+      xmalloc(formula_size * sizeof(min_max_clause_t));
+    lines_min_max_clauses_to_check_alloc_size = formula_size;
   }
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
@@ -2711,12 +2746,12 @@ static void check_dsr_line(void) {
   minimize_witness();
   assume_subst(current_line);
 
-  int *witness_iter = get_witness_start(current_line) + 1;
-  int *witness_end = get_witness_end(current_line);
+  // TODO: Fast path if DRAT witness?
+  // int *witness_iter = get_witness_start(current_line) + 1;
+  // int *witness_end = get_witness_end(current_line);
 
   // TODO: Off-by-one error since we may have already committed the clause?
-  srid_t efs = get_effective_formula_size();
-  max_clause_to_check = MIN(max_clause_to_check, efs);
+  set_min_max_clause_to_check();
 
   // Now do RAT checking between min and max clauses to check (inclusive)
   log_msg(VL_VERBOSE, "  [%d] Checking clauses %lld to %lld", 
@@ -2847,9 +2882,8 @@ static void add_wps_and_up_initial_clauses(void) {
   // Add implied unit clauses, clause by clause
   // Stop when we finally derive the empty clause
   for (; c < formula_size - 1 && !derived_empty_clause; c++) {
-    remove_wps_from_user_deleted_clauses(c);
-    perform_clause_first_last_update(c);
     current_line++;
+    remove_wps_from_user_deleted_clauses(c);
     add_wps_and_perform_up(c, 0);
   }
 

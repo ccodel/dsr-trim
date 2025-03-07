@@ -1,4 +1,4 @@
-# dsr-check
+# dsr-trim
 
 Substitution redundancy SAT proof trimming, labeling, and checking.
 
@@ -16,6 +16,18 @@ to compile both, or the name of the executable following `make` to compile just 
 make clean
 ```
 
-## A note on file naming convention.
+## References and related work
 
-To maintain historical consistency with [`drat-trim`](https://github.com/marijnheule/drat-trim) and [`dpr-trim`](https://github.com/marijnheule/dpr-trim), we use hyphens for the top-level executables `dsr-trim` and `lsr-check`. However, supporting files use the author's preference for underscores in file names (e.g. `cnf_parser.c`).
+`dsr-trim` and the DSR/LSR proof formats were introduced in [the paper](https://repositum.tuwien.at/bitstream/20.500.12708/200791/1/Codel-2024-Verified%20Substitution%20Redundancy%20Checking-vor.pdf):
+
+"Verified Substitution Redundancy Checking." Cayden Codel, Jeremy Avigad, Marijn Heule. In FMCAD 2024.
+
+`dsr-trim` is far from the first SAT clausal proof checker.
+The first widely-adopted proof checker is arguably [`drat-trim`](https://github.com/marijnheule/drat-trim),
+which checks DRAT proofs.
+
+
+## A note on file naming convention
+
+To maintain historical consistency with [`drat-trim`](https://github.com/marijnheule/drat-trim) and [`dpr-trim`](https://github.com/marijnheule/dpr-trim), we use hyphens for the top-level executables `dsr-trim` and `lsr-check`.
+However, all other files use the author's preference for underscores in file names (e.g. `cnf_parser.c`).

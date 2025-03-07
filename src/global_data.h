@@ -111,6 +111,15 @@ typedef enum parsing_strategy {
 // The global parsing strategy. By default, `PS_EAGER` is used.
 extern parsing_strategy_t p_strategy;
 
+/**
+ * @brief Each literal tracks the first and last clause it appears in.
+ * 
+ */
+typedef struct min_max_clause_to_check {
+  srid_t min_clause;
+  srid_t max_clause;
+} min_max_clause_t;
+
 /* 
  * Note that the partial assignments and substitutions need to use longs for the
  * timpstamp values, since the number of lines in a proof can exceed 2^32. But
@@ -146,12 +155,6 @@ extern srid_t num_cnf_clauses;
 // The original number of variables in the parsed CNF formula.
 // Its value is set via a call to `parse_cnf()`.
 extern uint num_cnf_vars;
-
-// The first clause index each literal appears in. Initialized to -1.
-extern srid_t *lits_first_clause;
-
-// The last clause index each literal appears in. Initialized to -1.
-extern srid_t *lits_last_clause;   
 
 /**
  * @brief The partial assignment used for unit propagation and RAT hints.
@@ -249,6 +252,8 @@ void discard_formula_after_clause(srid_t clause_index);
 int *get_witness_start(srid_t line_num);
 int *get_witness_end(srid_t line_num);
 int  get_witness_size(srid_t line_num);
+
+void compute_min_max_clause_to_check(srid_t line_num);
 void assume_subst(srid_t line_num);
 
 int assume_negated_clause(srid_t clause_index, llong gen);

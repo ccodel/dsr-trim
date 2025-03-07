@@ -56,8 +56,7 @@ srid_t formula_alloc_size = 0;
 srid_t num_cnf_clauses;
 uint num_cnf_vars;
 
-srid_t *lits_first_clause = NULL;
-srid_t *lits_last_clause = NULL;
+static min_max_clause_t *lits_first_last_clauses = NULL;
 
 llong *alpha = NULL;
 llong *subst_generations = NULL;
@@ -114,10 +113,8 @@ void init_global_data(void) {
   formula[0] = 0;
 
   // We multiply by 2 here because we index these by lit instead of by var
-  lits_first_clause = xrealloc_memset(lits_first_clause,
-    0, alpha_subst_alloc_size * 2 * sizeof(srid_t), 0xff);
-  lits_last_clause = xrealloc_memset(lits_last_clause,
-    0, alpha_subst_alloc_size * 2 * sizeof(srid_t), 0xff);
+  lits_first_last_clauses = xmalloc_memset(
+    alpha_subst_alloc_size * 2 * sizeof(min_max_clause_t), 0xff);
 
   alpha = xcalloc(alpha_subst_alloc_size, sizeof(llong));
   subst_generations = xcalloc(alpha_subst_alloc_size, sizeof(llong));
@@ -197,9 +194,10 @@ int map_lit_under_subst(int lit) {
 
 // Updates the first and last appearances of this literal
 static inline void update_first_last(int lit, srid_t clause_index) {
-  lits_last_clause[lit] = clause_index;
-  if (lits_first_clause[lit] == -1) {
-    lits_first_clause[lit] = clause_index;
+  min_max_clause_t *min_max = &lits_first_last_clauses[lit];
+  min_max->max_clause = clause_index;
+  if (min_max->min_clause == -1) {
+    min_max->min_clause = clause_index;
   }
 }
 
@@ -234,10 +232,9 @@ void insert_lit(int lit) {
       alpha_subst_alloc_size * sizeof(int));
 
     // We multiply by 2 here because we index these by lit instead of by var
-    lits_first_clause = xrealloc_memset(lits_first_clause,
-      old_size * 2 * sizeof(srid_t), alpha_subst_alloc_size * 2 * sizeof(srid_t), 0xff);
-    lits_last_clause = xrealloc_memset(lits_last_clause,
-      old_size * 2 * sizeof(srid_t), alpha_subst_alloc_size * 2 * sizeof(srid_t), 0xff);
+    lits_first_last_clauses = xrealloc_memset(lits_first_last_clauses,
+      old_size * 2 * sizeof(min_max_clause_t),
+      alpha_subst_alloc_size * 2 * sizeof(min_max_clause_t), 0xff);
   }
 }
 
@@ -473,9 +470,44 @@ inline int get_witness_size(srid_t line_num) {
 
 static void set_min_and_max_clause_to_check(int lit) {
   update_first_last_clause(lit);
-  if (lits_first_clause[lit] != -1) {
-    min_clause_to_check = MIN(min_clause_to_check, lits_first_clause[lit]); 
-    max_clause_to_check = MAX(max_clause_to_check, lits_last_clause[lit]);
+  min_max_clause_t *min_max = &lits_first_last_clauses[lit];
+  if (min_max->min_clause != -1) {
+    min_clause_to_check = MIN(min_clause_to_check, min_max->min_clause); 
+    max_clause_to_check = MAX(max_clause_to_check, min_max->max_clause);
+  }
+}
+
+void compute_min_max_clause_to_check(srid_t line_num) {
+  min_clause_to_check = formula_size - 1;
+  max_clause_to_check = 0;
+
+  int *witness_iter = get_witness_start(line_num);
+  int *witness_end = get_witness_end(line_num);
+
+  int seen_pivot_divider = 0;
+  int pivot = witness_iter[0];
+  int pivot_var = VAR_FROM_LIT(pivot);
+
+  set_min_and_max_clause_to_check(NEGATE_LIT(pivot));
+  witness_iter++;
+
+  for (; witness_iter < witness_end; witness_iter++) {
+    int lit = *witness_iter;
+    if (lit == WITNESS_TERM) break;
+    int neg_lit = NEGATE_LIT(lit);
+    int var = VAR_FROM_LIT(lit);
+
+    if (!seen_pivot_divider) {
+      if (lit == pivot) {
+        seen_pivot_divider = 1;
+      } else {
+        set_min_and_max_clause_to_check(neg_lit);
+      }
+    } else {
+      witness_iter++;
+      set_min_and_max_clause_to_check(lit);
+      set_min_and_max_clause_to_check(neg_lit);
+    }
   }
 }
 
@@ -661,8 +693,9 @@ int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot) {
 }
 
 void update_first_last_clause(int lit) {
-  srid_t first = lits_first_clause[lit];
-  srid_t last = lits_last_clause[lit];
+  min_max_clause_t *min_max = &lits_first_last_clauses[lit];
+  srid_t first = min_max->min_clause;
+  srid_t last = min_max->max_clause;
   int found_new = 0;
 
   if (first == -1) return;  // If the literal isn't in any clause, nothing to do
@@ -676,7 +709,7 @@ void update_first_last_clause(int lit) {
         int *end_ptr = get_clause_end(first);
         for (; clause_ptr < end_ptr; clause_ptr++) {
           if (*clause_ptr == lit) {
-            lits_first_clause[lit] = first;
+            min_max->min_clause = first;
             found_new = 1;
             break;
           }
@@ -689,8 +722,8 @@ void update_first_last_clause(int lit) {
     // If after going through all clauses, we don't find a non-deleted clause containing lit,
     // then all its clauses have been deleted. Reset to -1.
     if (!found_new) {
-      lits_first_clause[lit] = -1;
-      lits_last_clause[lit] = -1;
+      min_max->min_clause = -1;
+      min_max->max_clause = -1;
       return;
     }
   }
@@ -709,7 +742,7 @@ void update_first_last_clause(int lit) {
         int *end_ptr = get_clause_end(last);
         for (; clause_ptr < end_ptr; clause_ptr++) {
           if (*clause_ptr == lit) {
-            lits_last_clause[lit] = last;
+            min_max->max_clause = last;
             found_new = 1;
             break;
           }
@@ -720,7 +753,7 @@ void update_first_last_clause(int lit) {
     }
 
     if (!found_new) {
-      lits_last_clause[lit] = first;
+      min_max->max_clause = first;
     }
   }
 }
