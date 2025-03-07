@@ -300,9 +300,9 @@ static uint *line_num_RAT_hints = NULL;
 static uint line_num_RAT_hints_alloc_size = 0;
 static uint num_RAT_hints = 0;
 
-// Indexed by the 0-indexed `current_line`. Used only during backwards checking
+// Indexed by the 0-indexed `current_line`.
+// Used only during backwards checking, and allocated by `add_initial_wps()`.
 static min_max_clause_t *lines_min_max_clauses_to_check = NULL;
-static uint lines_min_max_clauses_to_check_alloc_size = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1183,33 +1183,6 @@ static srid_t add_clause_to_ht_or_inc_mult(void) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static void store_clause_check_range_for_backwards_checking(void) {
-  if (ch_mode != BACKWARDS_CHECKING_MODE) return;
-  
-  compute_min_max_clause_to_check(num_parsed_add_lines);
-  perform_clause_first_last_update(
-    CLAUSE_ID_FROM_LINE_NUM(num_parsed_add_lines));
-
-  RESIZE_ARR(lines_min_max_clauses_to_check,
-    lines_min_max_clauses_to_check_alloc_size,
-    formula_size, sizeof(min_max_clause_t));
-
-  min_max_clause_t *mm = &lines_min_max_clauses_to_check[num_parsed_add_lines];
-  mm->min_clause = min_clause_to_check;
-  mm->max_clause = max_clause_to_check;
-  logc("[line %lld] Storing min %lld and max %lld",
-    num_parsed_add_lines + 1, min_clause_to_check + 1, max_clause_to_check + 1);
-}
-
-static void set_min_max_clause_to_check(void) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    min_clause_to_check =
-      lines_min_max_clauses_to_check[current_line].min_clause;
-    max_clause_to_check =
-      lines_min_max_clauses_to_check[current_line].max_clause;
-  }
-}
-
 /**
  * @brief Prints or commits user deletions.
  * 
@@ -1270,7 +1243,6 @@ static int parse_dsr_line(void) {
         // We don't want to proof check anything, so don't return `ADD_LINE`
         line_type = DELETION_LINE;
       } else {
-        store_clause_check_range_for_backwards_checking();
         print_or_commit_user_deletions();
         num_parsed_add_lines++;
       }
@@ -1359,10 +1331,6 @@ static void prepare_dsr_trim_data(void) {
     line_num_RAT_hints = xcalloc(line_num_RAT_hints_alloc_size, sizeof(uint));
 
     unit_literals_wp_up_indexes = xcalloc(units_alloc_size, sizeof(int));
-
-    lines_min_max_clauses_to_check =
-      xmalloc(formula_size * sizeof(min_max_clause_t));
-    lines_min_max_clauses_to_check_alloc_size = formula_size;
   }
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
@@ -2723,9 +2691,50 @@ static int can_skip_clause(srid_t clause_index) {
   }
 }
 
+/** 
+ * @brief Allocates the minimum/maximum clause ranges to check.
+ *        Only called during backwards checking.
+ * 
+ * During forwards checking, we only check a range of clauses reduced by
+ * the witness. To accomplish this, each literal tracks the first and last
+ * clause it appears in. The min/max range to check is thus the smallest
+ * `min` and largest `max` value among literals that would cause their
+ * clause to be reduced.
+ * 
+ * We store this same information during backwards checking when we
+ * store the initial watch pointers and perform UP to derive the empty clause.
+ * 
+ * This function allocates the necessary space. Indexed by line number.
+ */
+static void alloc_min_max_clauses_to_check(void) {
+  lines_min_max_clauses_to_check = xmalloc(
+    num_parsed_add_lines * sizeof(min_max_clause_t));
+}
+
+static void store_clause_check_range(srid_t line_num) {
+  compute_min_max_clause_to_check(line_num);
+  perform_clause_first_last_update(CLAUSE_ID_FROM_LINE_NUM(line_num)); 
+
+  min_max_clause_t *mm = &lines_min_max_clauses_to_check[line_num];
+  mm->min_clause = min_clause_to_check;
+  mm->max_clause = max_clause_to_check;
+  log_msg(VL_VERBOSE, "[line %lld] Storing clause range %lld to %lld",
+    line_num + 1, TO_DIMACS_CLAUSE(min_clause_to_check),
+    TO_DIMACS_CLAUSE(max_clause_to_check));
+}
+
+static void set_min_max_clause_to_check(void) {
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    min_clause_to_check =
+      lines_min_max_clauses_to_check[current_line].min_clause;
+    max_clause_to_check =
+      lines_min_max_clauses_to_check[current_line].max_clause;
+  }
+}
+
 static void check_dsr_line(void) {
   // We save the generation at the start of line checking so we can determine
-  // which clauses are marked in the dependency_markings array.
+  // which clauses are marked in the `dependency_markings` array.
   llong old_alpha_gen = alpha_generation;
   alpha_generation++;
   subst_generation++;
@@ -2745,17 +2754,12 @@ static void check_dsr_line(void) {
   max_RAT_line = MAX(max_RAT_line, current_line);
   minimize_witness();
   assume_subst(current_line);
-
-  // TODO: Fast path if DRAT witness?
-  // int *witness_iter = get_witness_start(current_line) + 1;
-  // int *witness_end = get_witness_end(current_line);
-
-  // TODO: Off-by-one error since we may have already committed the clause?
   set_min_max_clause_to_check();
 
   // Now do RAT checking between min and max clauses to check (inclusive)
   log_msg(VL_VERBOSE, "  [%d] Checking clauses %lld to %lld", 
-    current_line + 1, min_clause_to_check + 1, max_clause_to_check + 1);
+    current_line + 1, TO_DIMACS_CLAUSE(min_clause_to_check),
+    TO_DIMACS_CLAUSE(max_clause_to_check));
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
   int clause_size;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
@@ -2875,6 +2879,7 @@ static void add_wps_and_up_initial_clauses(void) {
   current_line = num_parsed_add_lines - 1; // Subtract 1 to 0-index it
   resize_sr_trim_data();
   resize_last_used_ids();
+  alloc_min_max_clauses_to_check();
   uncommit_clause_and_set_as_candidate();
 
   current_line = 0;
@@ -2882,6 +2887,7 @@ static void add_wps_and_up_initial_clauses(void) {
   // Add implied unit clauses, clause by clause
   // Stop when we finally derive the empty clause
   for (; c < formula_size - 1 && !derived_empty_clause; c++) {
+    store_clause_check_range(current_line);
     current_line++;
     remove_wps_from_user_deleted_clauses(c);
     add_wps_and_perform_up(c, 0);

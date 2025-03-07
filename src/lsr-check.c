@@ -876,7 +876,7 @@ static void check_line(void) {
   }
 
 finish_line:
-  alpha_generation = cc_gen; // Clear all unit propagations we did
+  alpha_generation = cc_gen; // Clear all unit propagations for this line
   if (new_clause_size == 0) {
     derived_empty_clause = 1;
   } else {

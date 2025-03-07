@@ -379,7 +379,7 @@ void delete_clause(srid_t clause_index) {
   // TODO: Could break if delete clause just added(?)
   lits_db_deleted_size += next_clause_ptr - clause_ptr;
   formula[clause_index] = DELETE_CLAUSE(clause_ptr);
-  gc_lits_db(); // If we deleted too much from `lits_db`, garbage collect
+  gc_lits_db(); // If we deleted enough from `lits_db`, garbage collect
 }
 
 inline int *get_clause_start_unsafe(srid_t clause_index) {
@@ -478,7 +478,7 @@ static void set_min_and_max_clause_to_check(int lit) {
 }
 
 void compute_min_max_clause_to_check(srid_t line_num) {
-  min_clause_to_check = formula_size - 1;
+  min_clause_to_check = CLAUSE_ID_FROM_LINE_NUM(line_num) - 1;
   max_clause_to_check = 0;
 
   int *witness_iter = get_witness_start(line_num);
