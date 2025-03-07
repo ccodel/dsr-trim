@@ -364,6 +364,33 @@ static inline void gc_lits_db(void) {
   }
 }
 
+void soft_delete_clause(srid_t clause_index) {
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "delete_clause(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
+
+  srid_t clause_ptr = formula[clause_index];
+
+  FATAL_ERR_IF(IS_DELETED_CLAUSE(clause_ptr),
+    "Clause %lld was already deleted.", TO_DIMACS_CLAUSE(clause_index)); 
+
+  formula[clause_index] = DELETE_CLAUSE(clause_ptr);
+}
+
+void soft_undelete_clause(srid_t clause_index) {
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "delete_clause(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
+
+  srid_t clause_ptr = formula[clause_index];
+
+  FATAL_ERR_IF(!IS_DELETED_CLAUSE(clause_ptr),
+    "Clause %lld was not deleted (soft_undelete()).",
+    TO_DIMACS_CLAUSE(clause_index)); 
+
+  formula[clause_index] = CLAUSE_IDX(clause_ptr); 
+}
+
 void delete_clause(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
     "delete_clause(): Clause index %lld was out of bounds (%lld).",
@@ -692,69 +719,64 @@ int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot) {
   return NOT_REDUCED;
 }
 
-void update_first_last_clause(int lit) {
-  min_max_clause_t *min_max = &lits_first_last_clauses[lit];
-  srid_t first = min_max->min_clause;
-  srid_t last = min_max->max_clause;
-  int found_new = 0;
-
-  if (first == -1) return;  // If the literal isn't in any clause, nothing to do
-
-  if (is_clause_deleted(first)) {
-    // Scan forward until we find a non-deleted clause containing lit
-    for (++first; first <= last; first++) {
-      if (!is_clause_deleted(first)) {
-        // Check the clause for the literal
-        int *clause_ptr = get_clause_start(first);
-        int *end_ptr = get_clause_end(first);
-        for (; clause_ptr < end_ptr; clause_ptr++) {
-          if (*clause_ptr == lit) {
-            min_max->min_clause = first;
-            found_new = 1;
-            break;
-          }
+static srid_t move_min_forward(int lit, srid_t first, srid_t last) {
+  // Scan forward until we find a non-deleted clause containing lit
+  for (++first; first < last; first++) {
+    if (!is_clause_deleted(first)) {
+      // Check the clause for the literal
+      int *clause_ptr = get_clause_start(first);
+      int *end_ptr = get_clause_end(first);
+      for (; clause_ptr < end_ptr; clause_ptr++) {
+        if (*clause_ptr == lit) {
+          return first;
         }
-      
-        if (found_new) break;
       }
     }
+  }
 
-    // If after going through all clauses, we don't find a non-deleted clause containing lit,
+  return (is_clause_deleted(last)) ? -1 : last;
+}
+
+static srid_t move_max_backward(int lit, srid_t first, srid_t last) {
+  // Scan backward until we find a non-deleted clause containing lit
+  for (--last; last > first; last--) {
+    if (!is_clause_deleted(last)) {
+      // Check the clause for the literal
+      int *clause_ptr = get_clause_start(last);
+      int *end_ptr = get_clause_end(last);
+      for (; clause_ptr < end_ptr; clause_ptr++) {
+        if (*clause_ptr == lit) {
+          return last;
+        }
+      }
+    }
+  }
+
+  return first;
+}
+
+void update_first_last_clause(int lit) {
+  min_max_clause_t *mm = &lits_first_last_clauses[lit];
+  
+  // If the literal isn't in any clause, nothing to do
+  if (mm->min_clause == -1) return;
+
+  if (is_clause_deleted(mm->min_clause)) {
+    mm->min_clause = move_min_forward(lit, mm->min_clause, mm->max_clause);
+
+    // If we don't find a non-deleted clause containing `lit`,
     // then all its clauses have been deleted. Reset to -1.
-    if (!found_new) {
-      min_max->min_clause = -1;
-      min_max->max_clause = -1;
+    if (mm->min_clause == -1) {
+      mm->max_clause = -1;
       return;
     }
   }
 
-  // Lemma: first now points at a non-deleted clause containing lit
-  if (first == last) return; // Ensure we can scan backwards
+  // If `min` equals `max` now, nothing to do
+  if (mm->min_clause == mm->max_clause) return;
 
-  // Now scan backwards to find the last clause containing lit
-  if (is_clause_deleted(last)) {
-    found_new = 0;
-    // Scan backward until we find a non-deleted clause containing lit
-    for (--last; last > first; last--) {
-      if (!is_clause_deleted(last)) {
-        // Check the clause for the literal
-        int *clause_ptr = get_clause_start(last);
-        int *end_ptr = get_clause_end(last);
-        for (; clause_ptr < end_ptr; clause_ptr++) {
-          if (*clause_ptr == lit) {
-            min_max->max_clause = last;
-            found_new = 1;
-            break;
-          }
-        }
-
-        if (found_new) break;
-      }
-    }
-
-    if (!found_new) {
-      min_max->max_clause = first;
-    }
+  if (is_clause_deleted(mm->max_clause)) {
+    mm->max_clause = move_max_backward(lit, mm->min_clause, mm->max_clause);
   }
 }
 

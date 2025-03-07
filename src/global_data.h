@@ -240,6 +240,8 @@ int  is_clause_deleted(srid_t clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
 void delete_clause(srid_t clause_index);
+void soft_delete_clause(srid_t clause_index);
+void soft_undelete_clause(srid_t clause_index);
 
 int *get_clause_start_unsafe(srid_t clause_index);
 int *get_clause_start(srid_t clause_index);

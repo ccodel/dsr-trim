@@ -2820,6 +2820,7 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
     int *del_clause = get_clause_start(del_id);
     remove_wp_for_lit(del_clause[0], del_id);
     remove_wp_for_lit(del_clause[1], del_id);
+    soft_delete_clause(del_id);
   }
 }
 
@@ -2832,6 +2833,7 @@ static void restore_wps_for_user_deleted_clauses(srid_t clause_id) {
 
   for (; dels < del_end; dels++) {
     srid_t del_id = *dels;
+    soft_undelete_clause(del_id);
     int *del_clause = get_clause_start(del_id);
     add_wp_for_lit(del_clause[0], del_id);
     add_wp_for_lit(del_clause[1], del_id);
