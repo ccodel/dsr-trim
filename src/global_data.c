@@ -67,8 +67,7 @@ llong subst_generation = 0;
 
 range_array_t witnesses;
 
-srid_t min_clause_to_check = 0;
-srid_t max_clause_to_check = 0;
+//min_max_clause_t ch_range;
 
 uint new_clause_size = 0;
 uint max_var = 0;
@@ -95,8 +94,6 @@ int absllongcmp(const void *a, const void *b) {
   llong ib = *(llong*)b;
   return (llabs(ia) - llabs(ib)); 
 }
-
-// TODO: determine how to mark functions as inline wrt header files. Profile later?
 
 void init_global_data(void) {
   // TODO: Refine multipliers later
@@ -239,12 +236,11 @@ void insert_lit(int lit) {
 }
 
 void perform_clause_first_last_update(srid_t clause_index) {
-  int *clause = get_clause_start_unsafe(clause_index);
-  uint clause_size = get_clause_size(clause_index);
+  int *clause_iter = get_clause_start_unsafe(clause_index);
+  int *end = get_clause_end(clause_index);
 
-  for (uint i = 0; i < clause_size; i++) {
-    int lit = *clause;
-    clause++;
+  for (; clause_iter < end; clause_iter++) {
+    int lit = *clause_iter;
     update_first_last(lit, clause_index);
   }
 }
@@ -261,7 +257,7 @@ void perform_clause_first_last_update(srid_t clause_index) {
  * pointers if the array is too small.
  */
 void commit_clause(void) {
-  // We increment formula_size first to ensure that one past the last entry is allocated
+  // We increment `formula_size` to ensure enough is allocated
   // We use this to store the clause_index for the incoming clause
   formula_size++;  // Cap off the current clause and prepare the next one
   RESIZE_ARR(formula, formula_alloc_size, formula_size, sizeof(srid_t));
@@ -280,29 +276,6 @@ void commit_clause(void) {
 void commit_clause_with_first_last_update(void) {
   perform_clause_first_last_update(formula_size);
   commit_clause();
-}
-
-/** @brief Uncommits the final clause from the formula.
- * 
- * The literals in `lits_db` are not deleted. Rather, the `formula_size`
- * is decreased by 1, and for each literal in the uncommitted clause,
- * their `lits_last_clause` value are decreased to the clause before this
- * one that contains the literal. If no other clause contains the literal,
- * then the value is set to -1.
- * 
- * The caller must ensure that no clauses are committed and no literals
- * are added after this function * returns, and that there are currently
- * no uncommitted literals.
- * 
- * TODO: question: what should we do about clauses that haven't been marked
- * yet in dsr-trim when doing backwards checking, since we might not want
- * to check those clauses that ultimately won't be used in the final proof?
- */
-void uncommit_clause_with_first_last_update(void) {
-  // Reverse direction of `commit_clause_w_f_l_update()`.
-  formula_size--;
-  // int *clause = get_clause_start_unsafe(formula_size);
-  // uint clause_size = get_clause_size(formula_size);
 }
 
 inline int is_clause_deleted(srid_t clause_index) {
@@ -364,6 +337,67 @@ static inline void gc_lits_db(void) {
   }
 }
 
+static void move_min_forward(int lit) {
+  min_max_clause_t *mm = &lits_first_last_clauses[lit];
+  srid_t first = mm->min_clause;
+  srid_t last = mm->max_clause;
+
+  if (first == last) return;
+
+  // Scan forward until we find a non-deleted clause containing `lit`
+  for (++first; first < last; first++) {
+    if (!is_clause_deleted(first)) {
+      // Check the clause for the literal
+      int *clause_iter = get_clause_start(first);
+      int *end = get_clause_end(first);
+      for (; clause_iter < end; clause_iter++) {
+        if (*clause_iter == lit) {
+          mm->min_clause = first;
+          return;
+        }
+      }
+    }
+  }
+
+  if (is_clause_deleted(last)) {
+    mm->min_clause = -1;
+    mm->max_clause = -1;
+  } else {
+    mm->min_clause = last;
+  }
+}
+
+static void move_max_backward(int lit) {
+  min_max_clause_t *mm = &lits_first_last_clauses[lit];
+  srid_t first = mm->min_clause;
+  srid_t last = mm->max_clause;
+
+  if (first == last) return;
+
+  // Scan backward until we find a non-deleted clause containing `lit`
+  for (--last; last > first; last--) {
+    if (!is_clause_deleted(last)) {
+      // Check the clause for the literal
+      int *clause_ptr = get_clause_start(last);
+      int *end_ptr = get_clause_end(last);
+      for (; clause_ptr < end_ptr; clause_ptr++) {
+        if (*clause_ptr == lit) {
+          mm->max_clause = last;
+          return;
+        }
+      }
+    }
+  }
+
+  mm->max_clause = first;
+}
+
+static void update_first_last_on_deletion(int lit, srid_t clause_index) {
+  min_max_clause_t *mm = &lits_first_last_clauses[lit];
+  if (mm->min_clause == clause_index) move_min_forward(lit);
+  if (mm->max_clause == clause_index) move_max_backward(lit);
+}
+
 void soft_delete_clause(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
     "delete_clause(): Clause index %lld was out of bounds (%lld).",
@@ -372,7 +406,15 @@ void soft_delete_clause(srid_t clause_index) {
   srid_t clause_ptr = formula[clause_index];
 
   FATAL_ERR_IF(IS_DELETED_CLAUSE(clause_ptr),
-    "Clause %lld was already deleted.", TO_DIMACS_CLAUSE(clause_index)); 
+    "Clause %lld was already deleted.", TO_DIMACS_CLAUSE(clause_index));
+
+  // For each literal in the clause, update its first/last ranges
+  int *clause_iter = get_clause_start_unsafe(clause_index);
+  int *end = get_clause_end(clause_index);
+  for (; clause_iter < end; clause_iter++) {
+    int lit = *clause_iter;
+    update_first_last_on_deletion(lit, clause_index);
+  }
 
   formula[clause_index] = DELETE_CLAUSE(clause_ptr);
 }
@@ -401,10 +443,15 @@ void delete_clause(srid_t clause_index) {
   FATAL_ERR_IF(IS_DELETED_CLAUSE(clause_ptr),
     "Clause %lld was already deleted.", TO_DIMACS_CLAUSE(clause_index));
 
-  srid_t next_clause_ptr = CLAUSE_IDX(formula[clause_index + 1]);
+  // For each literal in the clause, update its first/last ranges
+  int *clause_iter = get_clause_start_unsafe(clause_index);
+  int *end = get_clause_end(clause_index);
+  lits_db_deleted_size += (int) (end - clause_iter);
+  for (; clause_iter < end; clause_iter++) {
+    int lit = *clause_iter;
+    update_first_last_on_deletion(lit, clause_index);
+  }
 
-  // TODO: Could break if delete clause just added(?)
-  lits_db_deleted_size += next_clause_ptr - clause_ptr;
   formula[clause_index] = DELETE_CLAUSE(clause_ptr);
   gc_lits_db(); // If we deleted enough from `lits_db`, garbage collect
 }
@@ -495,18 +542,19 @@ inline int get_witness_size(srid_t line_num) {
   return (int) (get_witness_end(line_num) - get_witness_start(line_num));
 }
 
-static void set_min_and_max_clause_to_check(int lit) {
-  update_first_last_clause(lit);
+static inline void set_min_and_max_clause_to_check(
+      int lit, min_max_clause_t *range) {
   min_max_clause_t *min_max = &lits_first_last_clauses[lit];
   if (min_max->min_clause != -1) {
-    min_clause_to_check = MIN(min_clause_to_check, min_max->min_clause); 
-    max_clause_to_check = MAX(max_clause_to_check, min_max->max_clause);
+    range->min_clause = MIN(range->min_clause, min_max->min_clause); 
+    range->max_clause = MAX(range->max_clause, min_max->max_clause);
   }
 }
 
-void compute_min_max_clause_to_check(srid_t line_num) {
-  min_clause_to_check = CLAUSE_ID_FROM_LINE_NUM(line_num) - 1;
-  max_clause_to_check = 0;
+void compute_min_max_clause_to_check(srid_t line_num, min_max_clause_t *range) {
+  if (range == NULL) return;
+  range->min_clause = CLAUSE_ID_FROM_LINE_NUM(line_num) - 1;
+  range->max_clause = 0;
 
   int *witness_iter = get_witness_start(line_num);
   int *witness_end = get_witness_end(line_num);
@@ -515,7 +563,7 @@ void compute_min_max_clause_to_check(srid_t line_num) {
   int pivot = witness_iter[0];
   int pivot_var = VAR_FROM_LIT(pivot);
 
-  set_min_and_max_clause_to_check(NEGATE_LIT(pivot));
+  set_min_and_max_clause_to_check(NEGATE_LIT(pivot), range);
   witness_iter++;
 
   for (; witness_iter < witness_end; witness_iter++) {
@@ -528,12 +576,12 @@ void compute_min_max_clause_to_check(srid_t line_num) {
       if (lit == pivot) {
         seen_pivot_divider = 1;
       } else {
-        set_min_and_max_clause_to_check(neg_lit);
+        set_min_and_max_clause_to_check(neg_lit, range);
       }
     } else {
       witness_iter++;
-      set_min_and_max_clause_to_check(lit);
-      set_min_and_max_clause_to_check(neg_lit);
+      set_min_and_max_clause_to_check(lit, range);
+      set_min_and_max_clause_to_check(neg_lit, range);
     }
   }
 }
@@ -547,9 +595,6 @@ void compute_min_max_clause_to_check(srid_t line_num) {
  *  range array index in `witnesses`. Otherwise, the line ID is ignored.
  */
 void assume_subst(srid_t line_num) {
-  min_clause_to_check = formula_size - 1;
-  max_clause_to_check = 0;
-
   int *witness_iter = get_witness_start(line_num);
   int *witness_end = get_witness_end(line_num);
 
@@ -559,11 +604,10 @@ void assume_subst(srid_t line_num) {
 
   // Process the pivot
   set_mapping_for_subst(pivot, SUBST_TT);
-  set_min_and_max_clause_to_check(NEGATE_LIT(pivot));
   witness_iter++;
 
   // For all other literals l in the witness
-  // 1. Check that var(l) hasn't been set yet (compare gen against subst_generation)
+  // 1. Check that var(l) hasn't been set yet
   // 2. Set its mapping
   for (; witness_iter < witness_end; witness_iter++) {
     int lit = *witness_iter;
@@ -583,14 +627,11 @@ void assume_subst(srid_t line_num) {
         seen_pivot_divider = 1; // Skip the pivot divider
       } else {
         set_mapping_for_subst(lit, SUBST_TT);
-        set_min_and_max_clause_to_check(neg_lit);
       }
     } else {
       witness_iter++;
       int mapped_lit = *witness_iter;
       set_mapping_for_subst(lit, mapped_lit);
-      set_min_and_max_clause_to_check(lit);
-      set_min_and_max_clause_to_check(neg_lit);
     }
   }
 }
@@ -717,67 +758,6 @@ int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot) {
   }
 
   return NOT_REDUCED;
-}
-
-static srid_t move_min_forward(int lit, srid_t first, srid_t last) {
-  // Scan forward until we find a non-deleted clause containing lit
-  for (++first; first < last; first++) {
-    if (!is_clause_deleted(first)) {
-      // Check the clause for the literal
-      int *clause_ptr = get_clause_start(first);
-      int *end_ptr = get_clause_end(first);
-      for (; clause_ptr < end_ptr; clause_ptr++) {
-        if (*clause_ptr == lit) {
-          return first;
-        }
-      }
-    }
-  }
-
-  return (is_clause_deleted(last)) ? -1 : last;
-}
-
-static srid_t move_max_backward(int lit, srid_t first, srid_t last) {
-  // Scan backward until we find a non-deleted clause containing lit
-  for (--last; last > first; last--) {
-    if (!is_clause_deleted(last)) {
-      // Check the clause for the literal
-      int *clause_ptr = get_clause_start(last);
-      int *end_ptr = get_clause_end(last);
-      for (; clause_ptr < end_ptr; clause_ptr++) {
-        if (*clause_ptr == lit) {
-          return last;
-        }
-      }
-    }
-  }
-
-  return first;
-}
-
-void update_first_last_clause(int lit) {
-  min_max_clause_t *mm = &lits_first_last_clauses[lit];
-  
-  // If the literal isn't in any clause, nothing to do
-  if (mm->min_clause == -1) return;
-
-  if (is_clause_deleted(mm->min_clause)) {
-    mm->min_clause = move_min_forward(lit, mm->min_clause, mm->max_clause);
-
-    // If we don't find a non-deleted clause containing `lit`,
-    // then all its clauses have been deleted. Reset to -1.
-    if (mm->min_clause == -1) {
-      mm->max_clause = -1;
-      return;
-    }
-  }
-
-  // If `min` equals `max` now, nothing to do
-  if (mm->min_clause == mm->max_clause) return;
-
-  if (is_clause_deleted(mm->max_clause)) {
-    mm->max_clause = move_max_backward(lit, mm->min_clause, mm->max_clause);
-  }
 }
 
 void dbg_print_assignment(void) {

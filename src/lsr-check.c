@@ -792,16 +792,19 @@ static void check_line(void) {
 
   // TODO: Prove that the candidate clause is implied by the witness
 
+  min_max_clause_t range;
+  compute_min_max_clause_to_check(current_line, &range);
+
   log_msg(VL_VERBOSE, "[line %lld] Checking clauses %lld to %lld", 
       LINE_ID_FROM_LINE_NUM(current_line),
-      min_clause_to_check + 1, max_clause_to_check + 1);
+      TO_DIMACS_CLAUSE(range.min_clause), TO_DIMACS_CLAUSE(range.max_clause));
 
   // Now for each clause, check that it is either
   //   - Satisfied or not reduced by the witness
   //   - A RAT clause, whose hints derive contradiction
   srid_t *rat_hints_start = hints_iter;
   srid_t *up_iter;
-  for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
+  for (srid_t i = range.min_clause; i <= range.max_clause; i++) {
     if (is_clause_deleted(i)) {
       continue; // Skip deleted clauses, nothing to prove
     }

@@ -187,21 +187,21 @@ extern llong subst_generation;
  */
 extern range_array_t witnesses;
 
-/** @brief Minimum clause to check during RAT clause checking.
+/** @brief The range of clauses to check during RAT clause checking.
+ *         Inclusive on both ends.
  * 
- *  If a witness doesn't reduce a clause, it can be ignored during checking,
- *  since assuming its negation would provably lead to contradiction. Thus,
+ *  If a clause is not reduced by a witness, then it can be ignored,
+ *  since assuming its negation would immediately lead to contradiction. Thus,
  *  when the SR witness is parsed, the literals set/mapped in the witness
  *  determine the min/max range of clause IDs to check. Anything outside this
  *  range is not reduced by the witness, and so can be ignored.
  * 
  *  Note that the min and max clauses are adjusted based on the literals
  *  "touched" by the witness, not their outputs under the substitution. 
- *  So for example, if (2 -> 3), then the min/max values for literal 2 are 
- *  included in the calculation, but not for literal 3.
+ *  So for example, if (2 -> 3), then the min/max values for literal 2 
+ *  (and its negation) are included in the calculation, but not for literal 3.
  */
-extern srid_t min_clause_to_check;
-extern srid_t max_clause_to_check;
+//extern min_max_clause_t ch_range;
 
 // Cached size of the new SR clause. Equal to get_clause_size(formula_size).
 extern uint new_clause_size; 
@@ -215,14 +215,14 @@ extern int derived_empty_clause;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-int intcmp (const void *a, const void *b);
-int absintcmp (const void *a, const void *b);
+int intcmp(const void *a, const void *b);
+int absintcmp(const void *a, const void *b);
+int llongcmp(const void *a, const void *b);
+int absllongcmp(const void *a, const void *b);
 
 // Allocates and initializes global data structures, given the size of a CNF formula.
 void init_global_data(void);
 
-// Prints either `VERIFIED UNSAT` or `VALID`, depending on whether
-// the empty clause was derived (`derived_empty_clause`).
 void print_proof_checking_result(void);
 
 void set_lit_for_alpha(int lit, llong gen);
@@ -235,7 +235,6 @@ void insert_lit(int lit);
 void perform_clause_first_last_update(srid_t clause_index);
 void commit_clause(void);
 void commit_clause_with_first_last_update(void);
-void uncommit_clause_with_first_last_update(void);
 int  is_clause_deleted(srid_t clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
@@ -255,15 +254,13 @@ int *get_witness_start(srid_t line_num);
 int *get_witness_end(srid_t line_num);
 int  get_witness_size(srid_t line_num);
 
-void compute_min_max_clause_to_check(srid_t line_num);
+void compute_min_max_clause_to_check(srid_t line_num, min_max_clause_t *range);
 void assume_subst(srid_t line_num);
 
 int assume_negated_clause(srid_t clause_index, llong gen);
 int assume_negated_clause_under_subst(srid_t clause_index, llong gen);
 int reduce_clause_under_subst(srid_t clause_index);
 int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot);
-
-void update_first_last_clause(int lit);
 
 void dbg_print_assignment(void);
 
