@@ -1270,8 +1270,9 @@ static void parse_entire_dsr_file(void) {
   fclose(dsr_file);
   logc("Parsed %lld addition lines.", num_parsed_add_lines);
 
-  FATAL_ERR_IF(!detected_empty_clause && ch_mode == BACKWARDS_CHECKING_MODE,
-    "Cannot backwards check without the empty clause.");
+  if (!detected_empty_clause && ch_mode == BACKWARDS_CHECKING_MODE) {
+    logc("No empty clause detected. Attempting to derive it now.");
+  }
 
   if (detected_empty_clause) {
     logc("Detected the empty clause on proof line %lld.",
@@ -1827,12 +1828,6 @@ static void minimize_witness(void) {
           // Adjust write_iter in order to start writing over this lit (pair)
           write_iter = witness_iter;
         }
-      } else if (lit_alpha == -lit_subst) {
-        int var = VAR_FROM_LIT(lit);
-        llong gen = alpha[var];
-        FATAL_ERR_IF(ABS(gen) == GLOBAL_GEN, 
-          "[line %lld] Witness lit %d is set to negation of UP value.",
-          current_line + 1, TO_DIMACS_LIT(lit));
       }
     }
 
@@ -2896,7 +2891,7 @@ static void add_wps_and_up_initial_clauses(void) {
   }
 
   FATAL_ERR_IF(!derived_empty_clause,
-    "Despite being a part of the proof, the empty clause was not redundant.");
+    "The empty clause could not be derived (even if it was in the proof?).");
 
   log_msg(VL_VERBOSE,
     "A UP refutation was successfully found for the empty clause.");
