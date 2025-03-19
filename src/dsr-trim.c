@@ -1772,33 +1772,32 @@ static void store_RAT_dependencies(srid_t from_clause) {
 static void minimize_witness(void) {
   int *witness_iter = get_witness_start(current_line);
   int *witness_end = get_witness_end(current_line);
-  int *write_iter = NULL;
  
   if (witness_iter + 1 >= witness_end) return;
 
   int pivot = witness_iter[0];
-  int seen_pivot_divider = 0;
-  witness_iter++;
+  int written_pivot_divider = 0;
+  witness_iter++; // Skip the pivot
+  int *write_iter = witness_iter;
 
-  for (; witness_iter < witness_end; witness_iter++) {
+  while (witness_iter < witness_end) {
     int lit = *witness_iter;
     if (lit == WITNESS_TERM) break;
 
     // If the literal is good to keep, then we write it to `write_iter`    
     int keep_lit = 1;
 
-    if (!seen_pivot_divider && lit == pivot) {
-      seen_pivot_divider = 1;
-      witness_iter--; // Gets incremented before looping
+    if (!written_pivot_divider && lit == pivot) {
+      // This lit is the separator - skip to just writing it down
       goto write_lit_at_write_iter;
     }
 
     // Store what the literal is mapped to under alpha and the subst witness
     peval_t lit_alpha = peval_lit_under_alpha(lit);
-    peval_t lit_subst = (!seen_pivot_divider) ? TT : UNASSIGNED;
+    peval_t lit_subst = (!written_pivot_divider) ? TT : UNASSIGNED;
 
     // If we are in the substitution portion, check the truth value of `m`
-    if (seen_pivot_divider) {
+    if (written_pivot_divider) {
       int mapped_lit = witness_iter[1];
       switch (peval_lit_under_alpha(mapped_lit)) {
         case FF:
@@ -1818,36 +1817,44 @@ static void minimize_witness(void) {
     if (lit_alpha != UNASSIGNED) {
       if (lit_alpha == lit_subst) {
         log_msg(VL_VERBOSE,
-          "Found an unnecessary literal %d at index %d in the witness",
+          "[line %lld] Witness literal %d at index %d was redundant, removing",
+          current_line + 1,
           TO_DIMACS_LIT(lit),
           (int) (witness_iter - get_witness_start(current_line)));
         keep_lit = 0;
-        if (write_iter == NULL) {
-          // Adjust write_iter in order to start writing over this lit (pair)
-          write_iter = witness_iter;
-        }
       }
     }
 
     // Overwrite bad literals as we find good literals
-  write_lit_at_write_iter:
-    if (keep_lit && write_iter != NULL) {
-      *write_iter = lit;
-      write_iter++;
-      if (seen_pivot_divider) {
-        *write_iter = witness_iter[1];
-        write_iter++;
-      }
-    }
+    write_lit_at_write_iter:;
 
-    // If we've seen the pivot divider, inc past the mapped literal as well
-    if (seen_pivot_divider) {
-      witness_iter++;
+    // Move the pointers forward the appropriate number of lits
+    int iter_inc = (written_pivot_divider) ? 2 : 1;
+
+    if (keep_lit) {
+      if (write_iter != witness_iter) {
+        *write_iter = lit;
+
+        // Write down the mapped literal if we've seen the pivot separator
+        if (written_pivot_divider) {
+          write_iter[1] = witness_iter[1];
+        }
+      }
+    
+      write_iter += iter_inc;
+    }
+      
+    witness_iter += iter_inc;
+
+    // Update if we just wrote the separator
+    // We need to do this after incrementing the pointers
+    if (!written_pivot_divider && lit == pivot) {
+      written_pivot_divider = 1;
     }
   }
 
   // Write a new witness terminating element if we shrank the witness
-  if (write_iter != NULL) {
+  if (write_iter != witness_iter) {
     *write_iter = WITNESS_TERM;
   }
 }

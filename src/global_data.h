@@ -278,5 +278,7 @@ int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot);
 void update_first_last_clause(int lit);
 
 void dbg_print_assignment(void);
+void dbg_print_subst(void);
+void dbg_print_witness(srid_t line_num);
 
 #endif /* _GLOBAL_DATA_H_ */

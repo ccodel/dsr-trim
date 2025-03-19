@@ -171,6 +171,8 @@ inline peval_t peval_lit_under_alpha(int lit) {
 }
 
 static void set_mapping_for_subst(int lit, int lit_mapping) {
+  FATAL_ERR_IF(lit < 0 || lit_mapping < SUBST_FF,
+    "set_mapping_for_subst(): tried to map %d to %d", lit, lit_mapping);
   int var = VAR_FROM_LIT(lit);
   subst_generations[var] = subst_generation;
   // Negates the mapping if the original `lit` is negated
@@ -779,7 +781,7 @@ void update_first_last_clause(int lit) {
 }
 
 void dbg_print_assignment(void) {
-  log_raw(VL_NORMAL, "Assignment: ");
+  log_raw(VL_NORMAL, "[DBG] Assignment: ");
   for (int i = 0; i <= max_var; i++) {
     switch (peval_lit_under_alpha(i * 2)) {
       case TT:
@@ -790,6 +792,41 @@ void dbg_print_assignment(void) {
         break;
       default: break;
     }
+  }
+  log_raw(VL_NORMAL, "\n");
+}
+
+void dbg_print_subst(void) {
+  log_raw(VL_NORMAL, "[DBG] Substitution: ");
+  for (int i = 0; i <= max_var; i++) {
+    int lit = i * 2;
+    int mapped_lit = map_lit_under_subst(lit);
+    switch (mapped_lit) {
+      case SUBST_TT:
+        log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(lit));
+        break;
+      case SUBST_FF:
+        log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(NEGATE_LIT(lit)));
+        break;
+      default:
+        if (lit != mapped_lit) {
+          log_raw(VL_NORMAL, "(%d -> %d) ",
+            TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
+        }
+        break;
+    }
+  }
+  log_raw(VL_NORMAL, "\n");
+}
+
+void dbg_print_witnss(srid_t line_num) {
+  log_raw(VL_NORMAL, "[DBG] Stored subst witness for line %lld: ", line_num);
+  int *witness_iter = get_witness_start(line_num);
+  int *witness_end = get_witness_end(line_num);
+  for (; witness_iter < witness_end; witness_iter++) {
+    int lit = *witness_iter;
+    log_raw(VL_NORMAL, "%d ", lit);
+    if (lit == WITNESS_TERM) break;
   }
   log_raw(VL_NORMAL, "\n");
 }
