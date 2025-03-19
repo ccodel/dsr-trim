@@ -58,12 +58,12 @@ uint num_cnf_vars;
 
 static min_max_clause_t *lits_first_last_clauses = NULL;
 
-llong *alpha = NULL;
-llong *subst_generations = NULL;
+ullong *alpha = NULL;
+ullong *subst_generations = NULL;
 int *subst_mappings = NULL;
 int alpha_subst_alloc_size = 0;
-llong alpha_generation = 0;
-llong subst_generation = 0;
+ullong alpha_generation = 0;
+ullong subst_generation = 0;
 
 range_array_t witnesses;
 
@@ -83,7 +83,7 @@ int intcmp(const void *a, const void *b) {
 int absintcmp(const void *a, const void *b) {
   int ia = *(int*)a;
   int ib = *(int*)b;
-  return (ABS(ia) - ABS(ib)); 
+  return (abs(ia) - abs(ib)); 
 }
 
 int llongcmp(const void *a, const void *b) {
@@ -116,8 +116,8 @@ void init_global_data(void) {
   lits_first_last_clauses = xmalloc_memset(
     alpha_subst_alloc_size * 2 * sizeof(min_max_clause_t), 0xff);
 
-  alpha = xcalloc(alpha_subst_alloc_size, sizeof(llong));
-  subst_generations = xcalloc(alpha_subst_alloc_size, sizeof(llong));
+  alpha = xcalloc(alpha_subst_alloc_size, sizeof(ullong));
+  subst_generations = xcalloc(alpha_subst_alloc_size, sizeof(ullong));
   subst_mappings = xmalloc(alpha_subst_alloc_size * sizeof(int));
 
   switch (p_strategy) {
@@ -154,19 +154,17 @@ void print_proof_checking_result(void) {
 }
 
 // Assumes that VAR_FROM_LIT(lit) < alpha_subst_size
-inline void set_lit_for_alpha(int lit, llong gen) {
-  if (IS_POS_LIT(lit)) {
-    alpha[VAR_FROM_LIT(lit)] = gen;
-  } else {
-    alpha[VAR_FROM_LIT(lit)] = -gen;
-  }
+inline void set_lit_for_alpha(int lit, ullong gen) {
+  int var = VAR_FROM_LIT(lit);
+  // This flips the least-significant bit if `lit` is negated
+  alpha[var] = gen ^ IS_NEG_LIT(lit);
 }
 
 // Compares against alpha_generation
 inline peval_t peval_lit_under_alpha(int lit) {
-  llong gen = alpha[VAR_FROM_LIT(lit)];
-  if (ABS(gen) >= alpha_generation) {
-    return ((gen >= alpha_generation) ^ (IS_POS_LIT(lit))) ? FF : TT;
+  ullong gen = alpha[VAR_FROM_LIT(lit)];
+  if (gen >= alpha_generation) {
+    return IS_NEG_GEN(gen) ^ IS_NEG_LIT(lit);
   } else {
     return UNASSIGNED;
   }
@@ -183,7 +181,7 @@ static void set_mapping_for_subst(int lit, int lit_mapping) {
 // Compares against subst_generation.
 int map_lit_under_subst(int lit) {
   int var = VAR_FROM_LIT(lit);
-  llong gen = subst_generations[var];
+  ullong gen = subst_generations[var];
   if (gen >= subst_generation) {
     // This negates the mapping if `lit` is negated
     return subst_mappings[var] ^ IS_NEG_LIT(lit);
@@ -224,10 +222,10 @@ void insert_lit(int lit) {
     int old_size = alpha_subst_alloc_size;
 
     alpha_subst_alloc_size = RESIZE(max_var);
-    alpha = xrecalloc(alpha, old_size * sizeof(llong),
-      alpha_subst_alloc_size * sizeof(llong));
-    subst_generations = xrecalloc(subst_generations, old_size * sizeof(llong),
-      alpha_subst_alloc_size * sizeof(llong));
+    alpha = xrecalloc(alpha, old_size * sizeof(ullong),
+      alpha_subst_alloc_size * sizeof(ullong));
+    subst_generations = xrecalloc(subst_generations, old_size * sizeof(ullong),
+      alpha_subst_alloc_size * sizeof(ullong));
     subst_mappings = xrealloc(subst_mappings,
       alpha_subst_alloc_size * sizeof(int));
 
@@ -596,13 +594,13 @@ void assume_subst(srid_t line_num) {
 }
 
 // Returns the `pivot` literal of the clause (if nonempty), or `-1` if empty.
-int assume_negated_clause(srid_t clause_index, llong gen) {
+int assume_negated_clause(srid_t clause_index, ullong gen) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
     "assume_negated_clause(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
 
   int *clause_iter = get_clause_start(clause_index);
-  int *end = get_clause_start(clause_index + 1);
+  int *end = get_clause_end(clause_index);
 
   // Only store the pivot if the clause is nonempty
   int pivot = (clause_iter < end) ? clause_iter[0] : -1;
@@ -620,7 +618,7 @@ int assume_negated_clause(srid_t clause_index, llong gen) {
 // If the clause is satisfied by alpha, then the assumption stops.
 // Returns SATISFIED_OR_MUL if the clause is satisfied by alpha (or the subst),
 // and 0 otherwise.
-int assume_negated_clause_under_subst(srid_t clause_index, llong gen) {
+int assume_negated_clause_under_subst(srid_t clause_index, ullong gen) {
   // TODO: Excludes the clause to be added (at formula_size)
   FATAL_ERR_IF(clause_index < 0 || clause_index >= formula_size,
     "assume_nc_under_subst(): Clause index %lld was out of bounds (%lld).",

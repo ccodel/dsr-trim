@@ -12,10 +12,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#ifndef ABS
-#define ABS(x)     (((x) < 0) ? -(x) : (x))
-#endif
-
 #ifndef MIN
 #define MIN(x, y)  (((x) < (y)) ? (x) : (y))
 #endif

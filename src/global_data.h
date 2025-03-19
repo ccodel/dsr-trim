@@ -24,10 +24,22 @@
 #define TO_DIMACS_CLAUSE(x)     ((x) + 1)
 #define FROM_DIMACS_LIT(x)      (((x) < 0) ? (((-(x)) << 1) - 1) : (((x) << 1) - 2))
 #define TO_DIMACS_LIT(x)        (((x) % 2) ? (((x) / -2) - 1) : (((x) / 2) + 1))
+
+#ifdef LONGTYPE
+#define CLAUSE_ABS(x)           (llabs(x))
+#else
+#define CLAUSE_ABS(x)           (abs(x))
+#endif
+
 #define VAR_FROM_LIT(x)         ((x) >> 1)
 #define IS_POS_LIT(x)           (!((x) & 0x1))
 #define IS_NEG_LIT(x)           ((x) & 0x1)
 #define NEGATE_LIT(x)           ((x) ^ 0x1)
+
+#define IS_POS_GEN(x)           (!((x) & 0x1L))
+#define IS_NEG_GEN(x)           ((x) & 0x1L)
+#define NEGATE_GEN(x)           ((x) ^ 0x1L)
+#define GEN_INC                 (2L)
 
 /*
  * Each LSR proof line starts with a line ID. This ID (almost always) starts
@@ -50,9 +62,9 @@
 // A typed result of an evaluation under a partial assignment
 // TODO: Rename, so name doesn't directly clash with SUBST_TT, etc.
 typedef enum peval {
-  FF = -1,
-  UNASSIGNED = 0,
-  TT = 1
+  UNASSIGNED = -1,
+  TT = 0,
+  FF = 1,
 } peval_t;
 
 #define NOT_REDUCED              (-4)
@@ -163,8 +175,8 @@ extern uint num_cnf_vars;
  * Uses "generation bumping" to make clearing the assignment O(1).
  * Indexed by 0-indexed variables, compare value to `current_generation`.
  */
-extern llong *alpha;
-extern llong *subst_generations;
+extern ullong *alpha;
+extern ullong *subst_generations;
 extern int *subst_mappings;
 
 // The allocated size of `alpha`, `subst`, and `lits_first/last_clause`.
@@ -172,10 +184,10 @@ extern int *subst_mappings;
 extern int alpha_subst_alloc_size;
 
 // The generation for alpha. Increase by (1 + RAT steps) for each proof line.
-extern llong alpha_generation;
+extern ullong alpha_generation;
 
 // Generation for substitution. Assume once per SR line, clear by incrementing.
-extern llong subst_generation;
+extern ullong subst_generation;
 
 /**
  * @brief The witness portion of the SR line.
@@ -225,7 +237,7 @@ void init_global_data(void);
 // the empty clause was derived (`derived_empty_clause`).
 void print_proof_checking_result(void);
 
-void set_lit_for_alpha(int lit, llong gen);
+void set_lit_for_alpha(int lit, ullong gen);
 peval_t peval_lit_under_alpha(int lit);
 
 int map_lit_under_subst(int lit);
@@ -258,8 +270,8 @@ int  get_witness_size(srid_t line_num);
 void compute_min_max_clause_to_check(srid_t line_num);
 void assume_subst(srid_t line_num);
 
-int assume_negated_clause(srid_t clause_index, llong gen);
-int assume_negated_clause_under_subst(srid_t clause_index, llong gen);
+int assume_negated_clause(srid_t clause_index, ullong gen);
+int assume_negated_clause_under_subst(srid_t clause_index, ullong gen);
 int reduce_clause_under_subst(srid_t clause_index);
 int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot);
 

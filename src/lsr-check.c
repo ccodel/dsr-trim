@@ -371,7 +371,7 @@ static inline srid_t *get_deletions_end(void) {
  */
 static void insert_hint(srid_t clause_id) {
   // Check that the clause_id is in range
-  srid_t id = ABS(clause_id);
+  srid_t id = CLAUSE_ABS(clause_id);
   id = FROM_DIMACS_CLAUSE(id);
   srid_t current_line_id = LINE_ID_FROM_LINE_NUM(current_line);
   FATAL_ERR_IF(id > current_line_id || is_clause_deleted(id),
@@ -639,7 +639,7 @@ static int reduce(srid_t clause_index) {
  * 
  * @return `CONTRADICTION` if a clause evaluates to false, and 0 otherwise.
  */
-static int unit_propagate(srid_t **hint_ptr, srid_t *hints_end, llong gen) {
+static int unit_propagate(srid_t **hint_ptr, srid_t *hints_end, ullong gen) {
   int up_res;
   srid_t up_clause;
   srid_t *hints_iter = *hint_ptr;
@@ -722,7 +722,7 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
           }
         }
 
-        alpha_generation++;
+        alpha_generation += GEN_INC;
         break;
       case CONTRADICTION:
         log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
@@ -756,11 +756,11 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
  */
 static void check_line(void) {
   // Clear the previous partial assignment and substitution
-  alpha_generation++;
+  alpha_generation += GEN_INC;
   subst_generation++;
 
   // Make the negated literals of the candidate clause persist for all RAT hints
-  llong cc_gen = alpha_generation + get_num_RAT_hints();
+  ullong cc_gen = alpha_generation + (GEN_INC * get_num_RAT_hints());
   srid_t candidate_clause_id = CLAUSE_ID_FROM_LINE_NUM(current_line);
   int pivot = assume_negated_clause(candidate_clause_id, cc_gen);
 
@@ -863,7 +863,7 @@ static void check_line(void) {
         }
 
         hints_iter = MAX(hints_iter, up_iter);
-        alpha_generation++; // Clear the negated RAT clause and UP extensions
+        alpha_generation += GEN_INC; // Clear the RAT UP units
         break;
       case CONTRADICTION:
         log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",

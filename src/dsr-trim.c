@@ -83,7 +83,7 @@ Potential optimizations:
 
 // When setting literals "globally" under initial unit propagation, we use the
 // largest possible generation value.
-#define GLOBAL_GEN   (LLONG_MAX)
+#define GLOBAL_GEN   (ULLONG_MAX - 1)
 
 /**
  * @brief The generation value used when assuming the negation of a
@@ -95,7 +95,7 @@ Potential optimizations:
  * from global unit literals, we pick the next-highest timestamp value
  * beneath `GLOBAL_GEN`.
  */
-#define ASSUMED_GEN  (GLOBAL_GEN - 1)
+#define ASSUMED_GEN  (GLOBAL_GEN - GEN_INC)
 
 #define MARK_USER_DEL_LUI(x)       ((x) | SRID_MSB)
 #define IS_USER_DEL_LUI(x)         (((x) & SRID_MSB) && ((x) != -1))
@@ -207,7 +207,7 @@ static uint RAT_assumed_literals_index = 0;
 static uint RAT_unit_literals_index = 0;
 
 // Generations for clauses involved in UP derivations. Indexed by clauses.
-static llong *dependency_markings = NULL;
+static ullong *dependency_markings = NULL;
 static srid_t dependencies_alloc_size = 0;
 
 // When assuming the RAT clause under the substitution, we record specially
@@ -232,8 +232,6 @@ static srid_t current_line = 0;
 static srid_t max_RAT_line = -1;
 
 static srid_t *clause_id_map = NULL;
-// static llong generation_before_line_checking = 0;
-// static srid_t up_falsified_clause = -1; // Set by unit propagation, -1 if none found
 
 // Because deletion lines in the DSR format identify a clause to be deleted,
 // and not a clause ID, we use a hash table to store clause IDs, where the
@@ -1307,7 +1305,7 @@ static void prepare_dsr_trim_data(void) {
 
   // Allocate space for the dependency markings
   dependencies_alloc_size = formula_size * 2;
-  dependency_markings = xcalloc(dependencies_alloc_size, sizeof(llong));
+  dependency_markings = xcalloc(dependencies_alloc_size, sizeof(ullong));
 
   RAT_marked_vars_alloc_size = (max_var + 1);
   RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
@@ -1369,7 +1367,7 @@ static void resize_sr_trim_data(void) {
   RESIZE_MEMSET_ARR(up_reasons,
     up_reasons_alloc_size, (max_var + 1), sizeof(srid_t), 0xff);
   RECALLOC_ARR(dependency_markings,
-    dependencies_alloc_size, formula_size, sizeof(llong));
+    dependencies_alloc_size, formula_size, sizeof(ullong));
 }
 
 static void resize_units(void) {
@@ -1540,7 +1538,7 @@ static void minimize_RAT_hints(void) {
  *            Only clauses with a dependency marking strictly greater than
  *            `gen` are added as UP hints.
  */
- static void store_active_dependencies(llong gen) {
+ static void store_active_dependencies(ullong gen) {
   for (uint i = 0; i < unit_clauses_size; i++) {
     srid_t c = unit_clauses[i];
     if (dependency_markings[c] > gen) {
@@ -1557,7 +1555,7 @@ static void minimize_RAT_hints(void) {
  * @param gen The generation strictly less than the `alpha_generation`
  *            values used to mark clauses in `dependency_markings`.
  */
-static void print_or_store_lsr_line(llong gen) {
+static void print_or_store_lsr_line(ullong gen) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     minimize_RAT_hints();
   }
@@ -1705,7 +1703,7 @@ static inline void mark_up_derivation(srid_t from_clause) {
  * @param from_clause 
  * @param gen 
  */
-static void mark_and_store_up_refutation(srid_t from_clause, llong gen) {
+static void mark_and_store_up_refutation(srid_t from_clause, ullong gen) {
   mark_up_derivation(from_clause);
   ra_commit_range(&hints);
   store_active_dependencies(gen);
@@ -1902,7 +1900,7 @@ static void decrement_state(void) {
 // Sets the literal to true, and adds it to the unit_literals array.
 // Infers the correct generation value from state.
 static inline void assume_unit_literal(int lit) {
-  llong gen = (up_state == CANDIDATE_UP) ? ASSUMED_GEN : alpha_generation;
+  ullong gen = (up_state == CANDIDATE_UP) ? ASSUMED_GEN : alpha_generation;
   set_lit_for_alpha(lit, gen);
   resize_units();
   unit_literals[unit_literals_size++] = lit;
@@ -1917,7 +1915,7 @@ static inline void assume_unit_literal(int lit) {
 // Sets the literal in the clause to true, assuming it is unit in the clause.
 // Then adds the literal to the unit_literals array, to look for more unit clauses later.
 // NOTE: When doing unit propagation, take the negation of the literal in the unit_literals array.
-static void set_unit_clause(int lit, srid_t clause, llong gen) {
+static void set_unit_clause(int lit, srid_t clause, ullong gen) {
   set_lit_for_alpha(lit, gen);
   up_reasons[VAR_FROM_LIT(lit)] = clause;
 
@@ -1984,7 +1982,7 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
 }
 
 // Returns the clause ID that becomes falsified, or -1 if not found.
-static srid_t perform_up_for_backwards_checking(llong gen) {
+static srid_t perform_up_for_backwards_checking(ullong gen) {
   // When performing UP for backwards checking, we do the same thing
   // Except we skip unmarked clauses as possible units, in favor of
   // marked clauses, to reduce the number of "dependent" clauses in the formula
@@ -2203,7 +2201,7 @@ restart_up:
 // Performs unit propagation. Sets the falsified clause (the contradiction) to
 // up_falsified_clause. -1 if not found.
 // Any literals found are set to the provided generation value.
-static srid_t perform_up_for_forwards_checking(llong gen) {
+static srid_t perform_up_for_forwards_checking(ullong gen) {
   /* The unit propagation algorithm is quite involved and immersed in invariants.
    * Buckle up, cowboys.
    *
@@ -2328,7 +2326,7 @@ static srid_t perform_up_for_forwards_checking(llong gen) {
  * @return The clause ID of the falsified clause implied by unit propagation,
  *         or `-1` if no such clause is found.
  */
-static inline srid_t perform_up(llong gen) {
+static inline srid_t perform_up(ullong gen) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     return perform_up_for_backwards_checking(gen);
   } else {
@@ -2340,7 +2338,7 @@ static inline srid_t perform_up(llong gen) {
 // Skips clauses already processed (i.e. when adding a new redundant clause,
 // only adds watch pointers/sets unit on that clause).
 // Should be called when the global `up_state == GLOBAL_UP`.
-static void add_wps_and_perform_up(srid_t clause_index, llong gen) {
+static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
   FATAL_ERR_IF(up_state != GLOBAL_UP, "up_state not GLOBAL_UP.");
 
   int *clause = get_clause_start(clause_index);
@@ -2488,7 +2486,7 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
 
   // If we have either satisfied the clause, or found a UP derivation, emit it
   if (falsified_clause != -1) {
-    mark_and_store_up_refutation(falsified_clause, alpha_generation - 1);
+    mark_and_store_up_refutation(falsified_clause, alpha_generation - GEN_INC);
     return -1;
   }
 
@@ -2730,8 +2728,8 @@ static void set_min_max_clause_to_check(void) {
 static void check_dsr_line(void) {
   // We save the generation at the start of line checking so we can determine
   // which clauses are marked in the `dependency_markings` array.
-  llong old_alpha_gen = alpha_generation;
-  alpha_generation++;
+  ullong old_alpha_gen = alpha_generation;
+  alpha_generation += GEN_INC;
   subst_generation++;
 
   srid_t cc_index = CLAUSE_ID_FROM_LINE_NUM(current_line);
@@ -2778,7 +2776,7 @@ static void check_dsr_line(void) {
           store_RAT_dependencies(falsified_clause);
         }
         unassume_RAT_clause(i);
-        alpha_generation++; // Clear this round of RAT units from alpha
+        alpha_generation += GEN_INC; // Clear this round of RAT units from alpha
         break;
       case CONTRADICTION:
         log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
@@ -2911,7 +2909,7 @@ static void add_wps_and_up_initial_clauses(void) {
 
 static void check_proof(void) {
   up_state = GLOBAL_UP;
-  alpha_generation = 1;
+  alpha_generation = GEN_INC;
 
   add_wps_and_up_initial_clauses();
 
