@@ -22,10 +22,4 @@ int parse_clause(FILE *f);
 // On success, closes the FILE.
 void parse_cnf(FILE *cnf_file);
 
-// Prints the clause to stdout, for debugging purposes.
-void dbg_print_clause(srid_t clause_index);
-
-// Prints the CNF to stdout, for debugging purposes.
-void dbg_print_cnf(void); 
-
 #endif /* _CNF_PARSER_H_ */

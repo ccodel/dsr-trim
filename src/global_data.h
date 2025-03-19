@@ -277,6 +277,12 @@ int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot);
 
 void update_first_last_clause(int lit);
 
+// Prints the clause to stdout, for debugging purposes.
+void dbg_print_clause(srid_t clause_index);
+
+// Prints the CNF to stdout, for debugging purposes.
+void dbg_print_cnf(void); 
+
 void dbg_print_assignment(void);
 void dbg_print_subst(void);
 void dbg_print_witness(srid_t line_num);

@@ -2732,6 +2732,50 @@ static void set_min_max_clause_to_check(void) {
   }
 }
 
+static void emit_RAT_UP_failure_error(srid_t clause_index) {
+  log_err("[line %lld] No UP contradiction for RAT clause %lld.",
+    current_line + 1, TO_DIMACS_CLAUSE(clause_index));
+
+  // Print tons of information if verbosity is high enough
+  if (verbosity_level > VL_NORMAL) {
+    log_raw(VL_VERBOSE, "\n//////////////////////////////////////////////\n\n");
+    log_raw(VL_VERBOSE, "c The current candidate clause: ");
+    dbg_print_clause(CLAUSE_ID_FROM_LINE_NUM(current_line));
+
+    log_raw(VL_VERBOSE, "c The failing RAT clause: ");
+    dbg_print_clause(clause_index);
+
+    log_raw(VL_VERBOSE, "\nc The active partial assignment:\n");
+    dbg_print_assignment();
+
+    log_raw(VL_VERBOSE, "\nc The active substitution:\n");
+    dbg_print_subst();
+
+    // Now scan through the unit literals and list how they became unit
+    log_raw(VL_VERBOSE, "\nc The unit literals and why they are unit\n");
+    log_raw(VL_VERBOSE, "c Printed in order of their derivations\n");
+    for (uint i = 0; i < unit_literals_size; i++) {
+      int lit = unit_literals[i];
+      log_raw(VL_VERBOSE, "c Literal %d is unit due to ", TO_DIMACS_LIT(lit));
+
+      srid_t reason = up_reasons[VAR_FROM_LIT(lit)];
+      if (reason == -1) {
+        log_raw(VL_VERBOSE, "being assumed in the negation of the candidate or RAT clause.");
+      } else if (reason < 0) {
+        srid_t clause = reason ^ SRID_MSB;
+        log_raw(VL_VERBOSE, "clause %lld, but is currently assumed in the negation of the candidate or RAT clause: ",
+          TO_DIMACS_CLAUSE(clause));
+        dbg_print_clause(clause);
+      } else {
+        log_raw(VL_VERBOSE, "clause %lld: ", TO_DIMACS_CLAUSE(reason));
+        dbg_print_clause(reason);
+      }
+    }
+  }
+
+  exit(1);
+}
+
 static void check_dsr_line(void) {
   // We save the generation at the start of line checking so we can determine
   // which clauses are marked in the `dependency_markings` array.
@@ -2757,7 +2801,7 @@ static void check_dsr_line(void) {
   set_min_max_clause_to_check();
 
   // Now do RAT checking between min and max clauses to check (inclusive)
-  log_msg(VL_VERBOSE, "  [%d] Checking clauses %lld to %lld", 
+  log_msg(VL_VERBOSE, "[line %d] Checking clauses %lld to %lld", 
     current_line + 1, TO_DIMACS_CLAUSE(min_clause_to_check),
     TO_DIMACS_CLAUSE(max_clause_to_check));
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
@@ -2776,9 +2820,7 @@ static void check_dsr_line(void) {
         // If the RAT clause is not satisfied by alpha, do UP
         if (assume_RAT_clause_under_subst(i) != SATISFIED_OR_MUL) {
           srid_t falsified_clause = perform_up(alpha_generation);
-          FATAL_ERR_IF(falsified_clause == -1,
-              "[line %lld] No UP contradiction for RAT clause %lld.",
-              current_line + 1, TO_DIMACS_CLAUSE(i));
+          if (falsified_clause == -1) emit_RAT_UP_failure_error(i);
           mark_up_derivation(falsified_clause);
           store_RAT_dependencies(falsified_clause);
         }

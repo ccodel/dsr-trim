@@ -780,15 +780,33 @@ void update_first_last_clause(int lit) {
   }
 }
 
+void dbg_print_clause(srid_t clause_index) {
+  if (is_clause_deleted(clause_index)) return;
+
+  int *clause_iter = get_clause_start(clause_index);
+  int *clause_end = get_clause_end(clause_index);
+  log_raw(VL_NORMAL, "[%lld] ", TO_DIMACS_CLAUSE(clause_index));
+  for (; clause_iter < clause_end; clause_iter++) {
+    log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(*clause_iter));
+  }
+  log_raw(VL_NORMAL, "0\n"); 
+}
+
+void dbg_print_cnf(void) {
+  for (srid_t c = 0; c < formula_size; c++) {
+    dbg_print_clause(c);
+  }
+}
+
 void dbg_print_assignment(void) {
   log_raw(VL_NORMAL, "[DBG] Assignment: ");
   for (int i = 0; i <= max_var; i++) {
     switch (peval_lit_under_alpha(i * 2)) {
       case TT:
-        log_raw(VL_NORMAL, "%d (%lld)", TO_DIMACS_LIT(i * 2), alpha[i]);
+        log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(i * 2));
         break;
       case FF:
-        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT((i * 2) + 1), alpha[i]);
+        log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT((i * 2) + 1));
         break;
       default: break;
     }
@@ -810,8 +828,16 @@ void dbg_print_subst(void) {
         break;
       default:
         if (lit != mapped_lit) {
-          log_raw(VL_NORMAL, "(%d -> %d) ",
-            TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
+          // If the literals are swapped, print them once
+          if (map_lit_under_subst(mapped_lit) == lit) {
+            if (lit < mapped_lit) {
+              log_raw(VL_NORMAL, "(%d <-> %d) ",
+                TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
+            }
+          } else {
+            log_raw(VL_NORMAL, "(%d -> %d) ",
+              TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
+          }
         }
         break;
     }
@@ -819,14 +845,20 @@ void dbg_print_subst(void) {
   log_raw(VL_NORMAL, "\n");
 }
 
-void dbg_print_witnss(srid_t line_num) {
-  log_raw(VL_NORMAL, "[DBG] Stored subst witness for line %lld: ", line_num);
+void dbg_print_witness(srid_t line_num) {
   int *witness_iter = get_witness_start(line_num);
   int *witness_end = get_witness_end(line_num);
+
+  log_raw(VL_NORMAL, "[DBG] [line %lld] Witness: ", line_num + 1);
   for (; witness_iter < witness_end; witness_iter++) {
     int lit = *witness_iter;
-    log_raw(VL_NORMAL, "%d ", lit);
-    if (lit == WITNESS_TERM) break;
+    switch (lit) {
+      case WITNESS_TERM: witness_iter = witness_end;          break;
+      case SUBST_FF: log_raw(VL_NORMAL, "FF ");               break;
+      case SUBST_TT: log_raw(VL_NORMAL, "TT ");               break;
+      default: log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(lit)); break;
+    }
   }
-  log_raw(VL_NORMAL, "\n");
+
+  log_raw(VL_NORMAL, "0\n");
 }

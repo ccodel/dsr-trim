@@ -88,21 +88,3 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
   commit_clause();
   // TODO: Remove duplicate literals in the clause or witness?
 }
-
-void dbg_print_witness(srid_t line_num) {
-  int *witness_iter = get_witness_start(line_num);
-  int *witness_end = get_witness_end(line_num);
-
-  log_raw(VL_NORMAL, "[line %lld] Witness: ", line_num + 1);
-  for (; witness_iter < witness_end; witness_iter++) {
-    int lit = *witness_iter;
-    switch (lit) {
-      case WITNESS_TERM: witness_iter = witness_end;          break;
-      case SUBST_FF: log_raw(VL_NORMAL, "FF ");               break;
-      case SUBST_TT: log_raw(VL_NORMAL, "TT ");               break;
-      default: log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(lit)); break;
-    }
-  }
-
-  log_raw(VL_NORMAL, "0\n");
-}

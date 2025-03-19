@@ -31,6 +31,4 @@
  */
 void parse_sr_clause_and_witness(FILE *f, srid_t line_num);
 
-void dbg_print_witness(srid_t line_num);
-
 #endif /* _SR_PARSER_H_ */
