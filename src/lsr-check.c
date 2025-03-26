@@ -713,7 +713,7 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
           // Skip over the remainder of the positive UP hints
           do {
             hints_iter++;
-          } while (*hints_iter > 0 && hints_iter < hints_end);
+          } while (hints_iter < hints_end && *hints_iter > 0);
         } else {
           hints_iter++;
           if (unit_propagate(&hints_iter, hints_end, alpha_generation)
@@ -735,6 +735,89 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
   }
 
   return (occs == goal_occs);
+}
+
+
+/**
+ * @brief 
+ * 
+ * @param clause_index 
+ * @param[out] hints_iter 
+ * @param[in] hints_end 
+ */
+static void check_RAT_clause(srid_t i, srid_t **iter_ptr,
+                             srid_t *hints_start, srid_t *hints_end) {
+  srid_t *hints_iter = *iter_ptr;
+  srid_t *up_iter;
+
+  // Check how the clause behaves under the substitution
+  switch (reduce_clause_under_subst(i)) {
+    case NOT_REDUCED:
+    case SATISFIED_OR_MUL:
+      return;
+    case REDUCED:
+      /* 
+       * Now find the reduced clause's RAT hint group.
+       * In most cases, the RAT hint groups are sorted by increasing
+       * magnitude of the RAT clause's ID, so `hints_iter` should point
+       * to the correct group. But if the RAT hint group doesn't start with
+       * the expected clause ID, we must scan through all RAT hints to find
+       * a matching hint.
+       */
+      if (hints_iter < hints_end && -((*hints_iter) + 1) == i) {
+        up_iter = hints_iter;
+      } else {
+        // Scan all the RAT hints for a negative ID matching this clause
+        for (up_iter = hints_start; up_iter < hints_end; up_iter++) {
+          if (-((*up_iter) + 1) == i) {
+            hints_iter = MAX(hints_iter, up_iter);
+            break;
+          }
+        }
+
+        FATAL_ERR_IF(up_iter == hints_end,
+          "[line %lld] RAT clause %lld has no corresponding RAT hint group.",
+          LINE_ID_FROM_LINE_NUM(current_line), TO_DIMACS_CLAUSE(i));
+      }
+
+      // We successfully found a matching RAT hint
+      // Assume the negation of the RAT clause and perform unit propagation
+      int neg_res = assume_negated_clause_under_subst(i, alpha_generation);
+
+      /* 
+       * It is possible for a RAT clause to have no UP derivation. This occurs
+       * when the clause is immediately satisfied by alpha (when extended
+       * by the UP after assuming the negation of the candidate clause).
+       * Notably, this is different than the witness satisfying the clause.
+       * If alpha satisfies the RAT clause, then we skip its UP hints, if any
+       */
+      if (neg_res == SATISFIED_OR_MUL) {
+        do {
+          up_iter++;
+        } while (up_iter < hints_end && *up_iter > 0);
+      } else {
+        up_iter++; // Move to the first UP hint
+        // We expect a UP contradiction. If not, the proof is invalid
+        if (unit_propagate(&up_iter, hints_end, alpha_generation)
+              != CONTRADICTION) {
+          log_fatal_err("[line %lld] UP on RAT clause %lld didn't derive contradiction.",
+            LINE_ID_FROM_LINE_NUM(current_line), TO_DIMACS_CLAUSE(i));
+        }
+      }
+
+      hints_iter = MAX(hints_iter, up_iter);
+      alpha_generation += GEN_INC; // Clear the RAT UP units
+      break;
+    case CONTRADICTION:
+      log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
+        current_line + 1, TO_DIMACS_CLAUSE(i));
+    default:
+      log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
+        current_line + 1, TO_DIMACS_CLAUSE(i),
+        reduce_clause_under_subst(i)); 
+  }
+
+  *iter_ptr = hints_iter;
 }
 
 /**
@@ -799,81 +882,16 @@ static void check_line(void) {
   // Now for each clause, check that it is either
   //   - Satisfied or not reduced by the witness
   //   - A RAT clause, whose hints derive contradiction
-  srid_t *rat_hints_start = hints_iter;
+  srid_t *hints_start = hints_iter;
   srid_t *up_iter;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
-    if (is_clause_deleted(i)) {
-      continue; // Skip deleted clauses, nothing to prove
-    }
-
-    // Check how the clause behaves under the substitution
-    // TODO: Cache the computed reduction under subst in an array?
-    switch (reduce_clause_under_subst(i)) {
-      case NOT_REDUCED:
-      case SATISFIED_OR_MUL:
-        continue;
-      case REDUCED:
-        /* 
-         * Now find the reduced clause's RAT hint group.
-         * In most cases, the RAT hint groups are sorted by increasing
-         * magnitude of the RAT clause's ID, so `hints_iter` should point
-         * to the correct group. But if the RAT hint group doesn't start with
-         * the expected clause ID, we must scan through all RAT hints to find
-         * a matching hint.
-         */
-        if (hints_iter < hints_end && -((*hints_iter) + 1) == i) {
-          up_iter = hints_iter;
-        } else {
-          // Scan all the RAT hints for a negative ID matching this clause
-          for (up_iter = rat_hints_start; up_iter < hints_end; up_iter++) {
-            if (-((*up_iter) + 1) == i) {
-              hints_iter = MAX(hints_iter, up_iter);
-              break;
-            }
-          }
-
-          FATAL_ERR_IF(up_iter == hints_end,
-            "[line %lld] RAT clause %lld has no corresponding RAT hint group.",
-            LINE_ID_FROM_LINE_NUM(current_line), TO_DIMACS_CLAUSE(i));
-        }
-
-        // We successfully found a matching RAT hint
-        // Assume the negation of the RAT clause and perform unit propagation
-        int neg_res = assume_negated_clause_under_subst(i, alpha_generation);
-
-        /* 
-         * It is possible for a RAT clause to have no UP derivation. This occurs
-         * when the clause is immediately satisfied by alpha (when extended
-         * by the UP after assuming the negation of the candidate clause).
-         * Notably, this is different than the witness satisfying the clause.
-         * If alpha satisfies the RAT clause, then we skip its UP hints, if any
-         */
-        if (neg_res == SATISFIED_OR_MUL) {
-          do {
-            up_iter++;
-          } while (*up_iter > 0 && up_iter < hints_end);
-        } else {
-          up_iter++; // Move to the first UP hint
-          // We expect a UP contradiction. If not, the proof is invalid
-          if (unit_propagate(&up_iter, hints_end, alpha_generation)
-                != CONTRADICTION) {
-            log_fatal_err("[line %lld] UP on RAT clause %lld didn't derive contradiction.",
-              LINE_ID_FROM_LINE_NUM(current_line), TO_DIMACS_CLAUSE(i));
-          }
-        }
-
-        hints_iter = MAX(hints_iter, up_iter);
-        alpha_generation += GEN_INC; // Clear the RAT UP units
-        break;
-      case CONTRADICTION:
-        log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
-          current_line + 1, TO_DIMACS_CLAUSE(i));
-      default:
-        log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
-          current_line + 1, TO_DIMACS_CLAUSE(i),
-          reduce_clause_under_subst(i)); 
-    }
+    if (is_clause_deleted(i)) continue; // Not reduced, nothing to show 
+    check_RAT_clause(i, &hints_iter, hints_start, hints_end);
   }
+
+  // We also check the candidate clause, since the witness doesn't
+  // necessarily satisfy it
+  check_RAT_clause(candidate_clause_id, &hints_iter, hints_start, hints_end);
 
 finish_line:
   alpha_generation = cc_gen; // Clear all unit propagations for this line

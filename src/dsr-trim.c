@@ -1768,17 +1768,22 @@ static void store_RAT_dependencies(srid_t from_clause) {
  * would have to be performed to shuffle the direct-mapped and subst mapped
  * portions around. Alternatively, we could use two separate arrays, but that
  * is bad for locality, and the witness is not usually minimized (that much).
+ * 
+ * @return 1 if a new pivot must be found, 0 otherwise.
  */
-static void minimize_witness(void) {
+static int minimize_witness(void) {
   int *witness_iter = get_witness_start(current_line);
   int *witness_end = get_witness_end(current_line);
  
-  if (witness_iter + 1 >= witness_end) return;
+  if (witness_iter + 1 >= witness_end) return 0;
 
   int pivot = witness_iter[0];
-  int written_pivot_divider = 0;
   witness_iter++; // Skip the pivot
   int *write_iter = witness_iter;
+
+  int found_pivot_divider = 0;
+  int must_find_new_pivot = 0;
+  int iter_inc = 1;
 
   while (witness_iter < witness_end) {
     int lit = *witness_iter;
@@ -1787,28 +1792,52 @@ static void minimize_witness(void) {
     // If the literal is good to keep, then we write it to `write_iter`    
     int keep_lit = 1;
 
-    if (!written_pivot_divider && lit == pivot) {
+    if (!found_pivot_divider && lit == pivot) {
       // This lit is the separator - skip to just writing it down
       goto write_lit_at_write_iter;
     }
 
     // Store what the literal is mapped to under alpha and the subst witness
     peval_t lit_alpha = peval_lit_under_alpha(lit);
-    peval_t lit_subst = (!written_pivot_divider) ? TT : UNASSIGNED;
+    peval_t lit_subst = (!found_pivot_divider) ? TT : UNASSIGNED;
 
     // If we are in the substitution portion, check the truth value of `m`
-    if (written_pivot_divider) {
+    if (found_pivot_divider) {
       int mapped_lit = witness_iter[1];
-      switch (peval_lit_under_alpha(mapped_lit)) {
-        case FF:
-          witness_iter[1] = SUBST_FF;
-          lit_subst = FF;
-          break;
-        case TT:
-          witness_iter[1] = SUBST_TT;
-          lit_subst = TT;
-          break;
+      switch ((lit_subst = peval_lit_under_alpha(mapped_lit))) {
+        case FF: witness_iter[1] = SUBST_FF; break;
+        case TT: witness_iter[1] = SUBST_TT; break;
         default: break;
+      }
+
+      /* In most cases, (l -> m) undergoes normal minimization.
+       * However, we can (extremely rarely) end up in the position where
+       * the pivot `p` is minimized to FF. Because we do not want to repeat
+       * `p` in the TT/FF mappings to encode that it should be mapped to FF,
+       * there is no way for the pivot to be both the pivot and to be mapped
+       * to FF. So we need to find a new pivot.
+       * 
+       * We know that there must be a replacement pivot because the witness
+       * cannot set the entire clause to false - otherwise the SR check would
+       * fail. So there is at least one literal that is mapped to something
+       * other than FF (whether that's TT or a map, that's okay). We use
+       * that literal as the pivot.
+       * 
+       * It is more efficient to look for this literal after calling
+       * `assume_subst()` in `check_dsr_line()`, so we only return that we
+       * `must_find_new_pivot`, and then we call `find_new_pivot()`.
+       * 
+       * Note that we disallow the negation of the pivot to appear in the
+       * PR section of the witness (see `sr_parser.c`). So after adjusting
+       * for the correct sign, we see if the new mapping for the pivot
+       * is FF. If so, we set `must_find_new_pivot` to 1.
+       */
+      if (VAR_FROM_LIT(lit) == VAR_FROM_LIT(pivot) && lit_subst != UNASSIGNED) {
+        if ((lit_subst ^ IS_NEG_LIT(pivot)) == FF) {
+          log_msg(VL_VERBOSE, "WE MUST FIND A NEW PIVOT: %d", pivot);
+          must_find_new_pivot = 1;
+          // We *do* keep this "redundant" literal (TODO document why later)
+        }
       }
     }
 
@@ -1816,10 +1845,8 @@ static void minimize_witness(void) {
     // TODO: Brittle negation, based on hard-coded values of peval_t.
     if (lit_alpha != UNASSIGNED) {
       if (lit_alpha == lit_subst) {
-        log_msg(VL_VERBOSE,
-          "[line %lld] Witness literal %d at index %d was redundant, removing",
-          current_line + 1,
-          TO_DIMACS_LIT(lit),
+        log_msg(VL_VERBOSE, "[line %lld] Redundant witness literal %d (idx %d)",
+          current_line + 1, TO_DIMACS_LIT(lit),
           (int) (witness_iter - get_witness_start(current_line)));
         keep_lit = 0;
       }
@@ -1828,15 +1855,12 @@ static void minimize_witness(void) {
     // Overwrite bad literals as we find good literals
     write_lit_at_write_iter:;
 
-    // Move the pointers forward the appropriate number of lits
-    int iter_inc = (written_pivot_divider) ? 2 : 1;
-
     if (keep_lit) {
       if (write_iter != witness_iter) {
         *write_iter = lit;
 
         // Write down the mapped literal if we've seen the pivot separator
-        if (written_pivot_divider) {
+        if (found_pivot_divider) {
           write_iter[1] = witness_iter[1];
         }
       }
@@ -1848,14 +1872,118 @@ static void minimize_witness(void) {
 
     // Update if we just wrote the separator
     // We need to do this after incrementing the pointers
-    if (!written_pivot_divider && lit == pivot) {
-      written_pivot_divider = 1;
+    if (found_pivot_divider && lit == pivot) {
+      found_pivot_divider = 1;
+      iter_inc = 2;
     }
   }
 
   // Write a new witness terminating element if we shrank the witness
   if (write_iter != witness_iter) {
     *write_iter = WITNESS_TERM;
+  }
+
+  return must_find_new_pivot;
+}
+
+/**
+ * @brief Only called when the pivot maps to false under `minimize_witness()`.
+ * 
+ * Move the pivot to the TT/FF-mapped portion of the witness, then
+ * evaluate the candidate clause against the already-assumed substitution
+ * for any literal that is not mapped to FF.
+ * 
+ * Must be called after calling `assume_subst()`.
+ * 
+ * @param cc_index The clause ID for the candidate clause.
+ */
+static void find_new_pivot_for_witness(srid_t cc_index) {
+  int *clause_iter = get_clause_start(cc_index);
+  int *clause_end = get_clause_end(cc_index);
+
+  // Find a non-FF literal under the witness
+  // Ideally, we find a TT literal, but a mapped literal will do
+  int new_pivot = -1;
+  int pivot_is_tt = 0;
+  for (; clause_iter < clause_end && !pivot_is_tt; clause_iter++) {
+    int lit = *clause_iter;
+    int mapped_lit = map_lit_under_subst(lit);
+    switch (mapped_lit) {
+      case SUBST_FF: break;
+      case SUBST_TT:
+        pivot_is_tt = 1;
+      default: // waterfalls from above
+        new_pivot = lit;
+        break;
+    }
+  }
+
+  FATAL_ERR_IF(new_pivot == -1, "Cound not find a new pivot!");
+
+  /* 
+   * The pivot *must* have a (l -> TT/FF) mapping in the SR portion of the
+   * witness, because otherwise it gets mapped to TT in the PR portion,
+   * and we would not have ended up in this situation. Since we are replacing
+   * the pivot with a new pivot, it's okay to leave this mapping in the
+   * witness, as printing the line will take care of it for us.
+   * 
+   * We need to replace the first pivot and the separator with `new_pivot`
+   * 
+   * If `new_pivot` is in the PR portion, then there is no (new_pivot -> TT/FF)
+   * mapping in the SR portion, due to `assume_subst()`. We swap new_pivot
+   * and pivot in the PR portion, and return.
+   * 
+   * If `new_pivot` is in the SR portion, then either:
+   *   - it is mapped to TT (modulo the sign of `new_pivot`), and so its entry
+   *     needs to be erased/filled in with a later mapping-pair in the SR
+   *     portion (or the WITNESS_TERM needs to be moved back 2 slots, if
+   *     the mapping is at the end)
+   *   
+   *   - it is mapped to another literal. Here, we leave it alone, since it is
+   *     allowed to re-map the pivot only.
+   */
+  int *witness_iter = get_witness_start(current_line);
+  int *witness_end = get_witness_end(current_line);
+  int pivot = witness_iter[0];
+  witness_iter[0] = new_pivot;
+  witness_iter++;
+  
+  int witness_inc = 1; // If it equals 1, then we have not seen the separator
+  int encountered_new_pivot_mapping = 0;
+  for (; witness_iter < witness_end; witness_iter += witness_inc) {
+    int lit = *witness_iter;
+    if (lit == WITNESS_TERM) break;
+
+    if (lit == pivot && witness_inc == 1) {
+      *witness_iter = new_pivot;
+      witness_iter--; // The new increment will add this back
+      witness_inc = 2;
+      if (encountered_new_pivot_mapping) return;
+    } else if (lit == new_pivot) {
+      if (witness_inc == 1) {
+        // Swap with the old pivot
+        *witness_iter = pivot;
+        encountered_new_pivot_mapping = 1;
+      } else {
+        // Swap the mapping with the end of the witness
+        if (witness_iter + 2 < witness_end && witness_iter[2] != WITNESS_TERM) {
+          int *new_pivot_ptr = witness_iter;
+          
+          // Scan forward until the end or until WITNESS_TERM
+          do {
+            witness_iter += 2;
+          } while (witness_iter < witness_end && *witness_iter != WITNESS_TERM);
+
+          // Back up two slots, and put that mapping in the new pivot's spot
+          witness_iter -= 2;
+          new_pivot_ptr[0] = witness_iter[0];
+          new_pivot_ptr[1] = witness_iter[1];
+        }
+
+        *witness_iter = WITNESS_TERM;
+        return;
+      }
+    }
   }
 }
 
@@ -2573,7 +2701,7 @@ static int assume_RAT_clause_under_subst(srid_t clause_index) {
   RAT_marked_vars_size = 0;
 
   int *clause_ptr = get_clause_start(clause_index);
-  int *end = get_clause_start(clause_index + 1);
+  int *end = get_clause_end(clause_index);
   for (; clause_ptr < end; clause_ptr++) {
     int lit = *clause_ptr;
     int mapped_lit = map_lit_under_subst(lit);
@@ -2776,6 +2904,34 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
   exit(1);
 }
 
+static void check_RAT_clause(srid_t clause_index) {
+  switch (reduce_clause_under_subst(clause_index)) {
+    case NOT_REDUCED:
+    case SATISFIED_OR_MUL:
+      return;
+    case REDUCED:
+      add_RAT_clause_hint(clause_index);
+
+      // If the RAT clause is not satisfied by alpha, do UP
+      if (assume_RAT_clause_under_subst(clause_index) != SATISFIED_OR_MUL) {
+        srid_t falsified_clause = perform_up(alpha_generation);
+        if (falsified_clause == -1) emit_RAT_UP_failure_error(clause_index);
+        mark_up_derivation(falsified_clause);
+        store_RAT_dependencies(falsified_clause);
+      }
+      unassume_RAT_clause(clause_index);
+      alpha_generation += GEN_INC; // Clear this round of RAT units from alpha
+      break;
+    case CONTRADICTION:
+      log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
+        current_line + 1, TO_DIMACS_CLAUSE(clause_index));
+    default:
+      log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
+        current_line + 1, TO_DIMACS_CLAUSE(clause_index),
+        reduce_clause_under_subst(clause_index)); 
+  }  
+}
+
 static void check_dsr_line(void) {
   // We save the generation at the start of line checking so we can determine
   // which clauses are marked in the `dependency_markings` array.
@@ -2794,10 +2950,11 @@ static void check_dsr_line(void) {
   // Since we didn't derive UP contradiction, the clause should be nonempty
   FATAL_ERR_IF(new_clause_size == 0, "Didn't derive empty clause.");
 
-  // Now we turn to RAT checking - apply the witness
+  // Now we turn to RAT checking - minimize and assume the witness
   max_RAT_line = MAX(max_RAT_line, current_line);
-  minimize_witness();
+  int must_find_new_pivot = minimize_witness();
   assume_subst(current_line);
+  if (must_find_new_pivot) find_new_pivot_for_witness(cc_index);
   set_min_max_clause_to_check();
 
   // Now do RAT checking between min and max clauses to check (inclusive)
@@ -2808,34 +2965,26 @@ static void check_dsr_line(void) {
   int clause_size;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
     if (can_skip_clause(i)) continue;
-
-    // Evaluate the clause under the substitution
-    switch (reduce_clause_under_subst(i)) {
-      case NOT_REDUCED:
-      case SATISFIED_OR_MUL:
-        continue;
-      case REDUCED:
-        add_RAT_clause_hint(i);
-
-        // If the RAT clause is not satisfied by alpha, do UP
-        if (assume_RAT_clause_under_subst(i) != SATISFIED_OR_MUL) {
-          srid_t falsified_clause = perform_up(alpha_generation);
-          if (falsified_clause == -1) emit_RAT_UP_failure_error(i);
-          mark_up_derivation(falsified_clause);
-          store_RAT_dependencies(falsified_clause);
-        }
-        unassume_RAT_clause(i);
-        alpha_generation += GEN_INC; // Clear this round of RAT units from alpha
-        break;
-      case CONTRADICTION:
-        log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
-          current_line + 1, TO_DIMACS_CLAUSE(i));
-      default:
-        log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
-          current_line + 1, TO_DIMACS_CLAUSE(i),
-          reduce_clause_under_subst(i)); 
-    }    
+    check_RAT_clause(i);
   }
+
+  /*
+    Now check that the candidate, mapped under the witness,
+    is implied by the rest of the formula.
+
+    Before, `dsr-trim` required the witness to satisfy the candidate clause C.
+    This was enforced by requiring that the pivot literal (i.e., the first
+    literal in the witness, used as a separator before the mapped portion
+    of the substitution) not be re-mapped later, meaning that it was set
+    to true in the final witness. Since the pivot is a member of C,
+    this trivially means that the witness satisfies C.
+    
+    However, in the general case, we want to allow witnesses that re-map
+    the pivot literal elsewhere. In the case where the witness does NOT
+    satisfy C, we treat it like any other RAT clause and subject it
+    to a RAT check. The recorded hint ID is the ID of the candidate itself.
+  */
+  check_RAT_clause(cc_index);
 
   print_or_store_lsr_line(old_alpha_gen);
 
