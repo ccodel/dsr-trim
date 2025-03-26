@@ -816,6 +816,8 @@ void dbg_print_assignment(void) {
 
 void dbg_print_subst(void) {
   log_raw(VL_NORMAL, "[DBG] Substitution: ");
+
+  // Do two passes to print the TT/FF first, then the mapped ones
   for (int i = 0; i <= max_var; i++) {
     int lit = i * 2;
     int mapped_lit = map_lit_under_subst(lit);
@@ -823,15 +825,25 @@ void dbg_print_subst(void) {
       case SUBST_TT:
         log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(lit));
         break;
-      case SUBST_FF:
+      case SUBST_FF: 
         log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(NEGATE_LIT(lit)));
         break;
+      default: break;
+    }
+  }
+
+  for (int i = 0; i <= max_var; i++) {
+    int lit = i * 2;
+    int mapped_lit = map_lit_under_subst(lit);
+    switch (mapped_lit) {
+      case SUBST_TT: break;
+      case SUBST_FF: break;
       default:
         if (lit != mapped_lit) {
           // If the literals are swapped, print them once
           if (map_lit_under_subst(mapped_lit) == lit) {
             if (lit < mapped_lit) {
-              log_raw(VL_NORMAL, "(%d <-> %d) ",
+              log_raw(VL_NORMAL, "(%d %d) ",
                 TO_DIMACS_LIT(lit), TO_DIMACS_LIT(mapped_lit));
             }
           } else {
@@ -842,6 +854,7 @@ void dbg_print_subst(void) {
         break;
     }
   }
+
   log_raw(VL_NORMAL, "\n");
 }
 

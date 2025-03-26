@@ -46,6 +46,7 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
         // The occurrence of the pivot acts as a separator
         // Add it to the witness, but account for a now incomplete "pair"
         subst_pair_incomplete = !subst_pair_incomplete;
+        prev_lit = -1;
       }
     }
 
@@ -55,7 +56,9 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
         new_clause_size++;
         break;
       default: // We're reading the substitution part of the witness
-        FATAL_ERR_IF(subst_pair_incomplete && prev_lit == lit,
+        // Only the pivot is allowed to map to itself
+        FATAL_ERR_IF(subst_pair_incomplete && prev_lit == lit
+          && VAR_FROM_LIT(lit) != VAR_FROM_LIT(pivot),
           "[line %lld] Witness maps literal %d to itself",
           line_num + 1, TO_DIMACS_LIT(lit));
         subst_pair_incomplete = !subst_pair_incomplete;

@@ -1810,7 +1810,8 @@ static int minimize_witness(void) {
         default: break;
       }
 
-      /* In most cases, (l -> m) undergoes normal minimization.
+      /* 
+       * In most cases, (l -> m) undergoes normal minimization.
        * However, we can (extremely rarely) end up in the position where
        * the pivot `p` is minimized to FF. Because we do not want to repeat
        * `p` in the TT/FF mappings to encode that it should be mapped to FF,
@@ -1872,7 +1873,7 @@ static int minimize_witness(void) {
 
     // Update if we just wrote the separator
     // We need to do this after incrementing the pointers
-    if (found_pivot_divider && lit == pivot) {
+    if (!found_pivot_divider && lit == pivot) {
       found_pivot_divider = 1;
       iter_inc = 2;
     }
@@ -2880,23 +2881,25 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
     dbg_print_subst();
 
     // Now scan through the unit literals and list how they became unit
-    log_raw(VL_VERBOSE, "\nc The unit literals and why they are unit\n");
-    log_raw(VL_VERBOSE, "c Printed in order of their derivations\n");
-    for (uint i = 0; i < unit_literals_size; i++) {
-      int lit = unit_literals[i];
-      log_raw(VL_VERBOSE, "c Literal %d is unit due to ", TO_DIMACS_LIT(lit));
+    if (verbose_errors) {
+      log_raw(VL_VERBOSE, "\nc The unit literals and why they are unit\n");
+      log_raw(VL_VERBOSE, "c Printed in order of their derivations\n");
+      for (uint i = 0; i < unit_literals_size; i++) {
+        int lit = unit_literals[i];
+        log_raw(VL_VERBOSE, "c Literal %d is unit due to ", TO_DIMACS_LIT(lit));
 
-      srid_t reason = up_reasons[VAR_FROM_LIT(lit)];
-      if (reason == -1) {
-        log_raw(VL_VERBOSE, "being assumed in the negation of the candidate or RAT clause.");
-      } else if (reason < 0) {
-        srid_t clause = reason ^ SRID_MSB;
-        log_raw(VL_VERBOSE, "clause %lld, but is currently assumed in the negation of the candidate or RAT clause: ",
-          TO_DIMACS_CLAUSE(clause));
-        dbg_print_clause(clause);
-      } else {
-        log_raw(VL_VERBOSE, "clause %lld: ", TO_DIMACS_CLAUSE(reason));
-        dbg_print_clause(reason);
+        srid_t reason = up_reasons[VAR_FROM_LIT(lit)];
+        if (reason == -1) {
+          log_raw(VL_VERBOSE, "being assumed in the negation of the candidate or RAT clause.\n");
+        } else if (reason < 0) {
+          srid_t clause = reason ^ SRID_MSB;
+          log_raw(VL_VERBOSE, "clause %lld, but is currently assumed in the negation of the candidate or RAT clause: ",
+            TO_DIMACS_CLAUSE(clause));
+          dbg_print_clause(clause);
+        } else {
+          log_raw(VL_VERBOSE, "clause %lld: ", TO_DIMACS_CLAUSE(reason));
+          dbg_print_clause(reason);
+        }
       }
     }
   }
