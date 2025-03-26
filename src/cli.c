@@ -14,6 +14,22 @@
 #include "global_parsing.h"
 #include "logger.h"
 
+////////////////////////////////////////////////////////////////////////////////
+
+#define HELP_MSG_OFFSET         (0)
+#define QUIET_VERBOSE_OFFSET    (1)
+#define VERBOSE_ERRORS_OFFSET   (2)
+#define DIR_OFFSET              (3)
+#define NAME_OFFSET             (4)
+#define EAGER_STREAMING_OFFSET  (5)
+
+#define HELP_MSG_MASK         (1 << HELP_MSG_OFFSET)
+#define QUIET_VERBOSE_MASK    (1 << QUIET_VERBOSE_OFFSET)
+#define VERBOSE_ERRORS_MASK   (1 << VERBOSE_ERRORS_OFFSET)
+#define DIR_MASK              (1 << DIR_OFFSET)
+#define NAME_MASK             (1 << NAME_OFFSET)
+#define EAGER_STREAMING_MASK  (1 << EAGER_STREAMING_OFFSET)
+
 void cli_init(cli_opts_t *cli) {
   memset(cli, 0, offsetof(cli_opts_t, cnf_file_path_buf));
   cli->cnf_file_path_buf[MAX_FILE_PATH_LEN - 1] = '\0';
@@ -21,8 +37,44 @@ void cli_init(cli_opts_t *cli) {
   cli->lsr_file_path_buf[MAX_FILE_PATH_LEN - 1] = '\0';
 }
 
-static inline void err_if_option_already_set(int val, int optopt) {
-  FATAL_ERR_IF(val, "Option \"-%c\" was already set.", (char) optopt);
+int cli_is_name_opt_set(cli_opts_t *cli) {
+  return cli->opt_set_flags & NAME_MASK;
+}
+
+int cli_is_dir_opt_set(cli_opts_t *cli) {
+  return cli->opt_set_flags & DIR_MASK;
+}
+
+// Returns the bitmask for the option.
+// Returns -1 if the option isn't known (which is possible, since callers
+// may wish to handle their own options).
+static int get_mask_from_opt(int opt) { 
+  switch (opt) {
+    case HELP_MSG_OPT: return HELP_MSG_MASK;
+    case QUIET_MODE_OPT: // waterfall
+    case VERBOSE_MODE_OPT: return QUIET_VERBOSE_MASK;
+    case VERBOSE_ERRORS_OPT: return VERBOSE_ERRORS_MASK;
+    case DIR_OPT: return DIR_MASK;
+    case NAME_OPT: return NAME_MASK;
+    case EAGER_OPT: // waterfall
+    case STREAMING_OPT: return EAGER_STREAMING_MASK;
+    default: return -1;
+  }
+}
+
+static void set_opt_flag_or_err_if_already_set(cli_opts_t *cli, int opt) {
+  int mask = get_mask_from_opt(opt);
+  if (mask >= 0) {
+    FATAL_ERR_IF(cli->opt_set_flags & mask,
+    "Option \"-%c\" (or, maybe, its opposite) was already given.", (char) opt);
+
+    // Special case: NAME and DIR, since we need to track each one separately
+    FATAL_ERR_IF((opt == NAME_OPT && cli_is_dir_opt_set(cli))
+      || (opt == DIR_OPT && cli_is_name_opt_set(cli)),
+      "Cannot provide both a directory and a name prefix.");
+    
+    cli->opt_set_flags |= mask;
+  }
 }
 
 static void copy_and_update_bufs(cli_opts_t *cli, size_t len) {
@@ -35,44 +87,19 @@ static void copy_and_update_bufs(cli_opts_t *cli, size_t len) {
 
 // Handles the common CLI options.
 cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
-  switch (opt) {
-  case HELP_MSG_OPT:
-    return CLI_HELP_MESSAGE;
-  case QUIET_MODE_OPT:
-    err_if_option_already_set(cli->quiet_mode_set, optopt);
-    FATAL_ERR_IF(cli->verbose_mode_set,
-      "Cannot set both quiet and verbose modes.");
-    verbosity_level = VL_QUIET;
-    cli->quiet_mode_set = 1;
-    break;
-  case VERBOSE_MODE_OPT:
-    err_if_option_already_set(cli->verbose_mode_set, optopt);
-    FATAL_ERR_IF(cli->quiet_mode_set,
-      "Cannot set both quiet and verbose modes.");
-    verbosity_level = VL_VERBOSE;
-    cli->verbose_mode_set = 1;
-    break;
-  case EAGER_OPT:
-    err_if_option_already_set(cli->eager_strategy_set, optopt);
-    FATAL_ERR_IF(cli->streaming_strategy_set,
-      "Cannot set both eager and streaming parsing strategies.");
-    p_strategy = PS_EAGER;
-    cli->eager_strategy_set = 1;
-    break;
-  case STREAMING_OPT:
-    err_if_option_already_set(cli->streaming_strategy_set, optopt);
-    FATAL_ERR_IF(cli->eager_strategy_set,
-      "Cannot set both eager and streaming parsing strategies.");
-    p_strategy = PS_STREAMING;
-    cli->streaming_strategy_set = 1;
-    break;
-  case DIR_OPT:
-    err_if_option_already_set(cli->dir_provided, optopt);
-    FATAL_ERR_IF(cli->name_provided,
-      "Cannot provide both a name and a directory prefix.");
-    cli->dir_provided = 1;
+  set_opt_flag_or_err_if_already_set(cli, opt);
+  int len; // Used for string options
 
-    int len = snprintf(cli->cnf_file_path_buf, MAX_FILE_PATH_LEN, "%s", optarg);
+  // Now actually process the option
+  switch (opt) {
+  case HELP_MSG_OPT:        return CLI_HELP_MESSAGE;
+  case QUIET_MODE_OPT:      verbosity_level = VL_QUIET; break;
+  case VERBOSE_MODE_OPT:    verbosity_level = VL_VERBOSE; break;
+  case VERBOSE_ERRORS_OPT:  verbose_errors = 1; break;
+  case EAGER_OPT:           p_strategy = PS_EAGER; break;
+  case STREAMING_OPT:       p_strategy = PS_STREAMING; break;
+  case DIR_OPT:
+    len = snprintf(cli->cnf_file_path_buf, MAX_FILE_PATH_LEN, "%s", optarg);
     FATAL_ERR_IF(len >= MAX_FILE_PATH_LEN,
       "Directory prefix too long.");
     FATAL_ERR_IF(len == 0, "Empty directory provided.");
@@ -87,11 +114,6 @@ cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
     copy_and_update_bufs(cli, len);
     break;
   case NAME_OPT:
-    err_if_option_already_set(cli->name_provided, optopt);
-    FATAL_ERR_IF(cli->dir_provided,
-      "Cannot provide both a name and a directory prefix.");
-    cli->name_provided = 1;
-    
     len = snprintf(cli->cnf_file_path_buf, MAX_FILE_PATH_LEN, "%s", optarg);
     FATAL_ERR_IF(len >= MAX_FILE_PATH_LEN, "Name prefix too long.");
     cli->cnf_file_path = ((char *) cli->cnf_file_path_buf) + len;
@@ -101,7 +123,7 @@ cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
     log_err("Unknown option provided.");
     return CLI_HELP_MESSAGE;
   case ':':
-    log_err("Argument missing for option \"-%c\".", (char) optopt);
+    log_err("Argument missing for option \"-%c\".", (char) opt);
     return CLI_HELP_MESSAGE;
   default:
     return CLI_UNRECOGNIZED;

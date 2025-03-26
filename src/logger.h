@@ -32,6 +32,9 @@ typedef enum verbosity_level {
 // The global verbosity level. By default, it is set to `VL_NORMAL`.
 extern vlevel_t verbosity_level;
 
+// Set to `1` if verbose errors are enabled, `0` otherwise.
+extern int verbose_errors;
+
 // Logs a message to `stdout` if the provided `level` is `<= verbosity_level`.
 // Does not begin with a `"c "` or end with a newline `'\n'`.
 void log_raw(vlevel_t level, const char *format, ...);

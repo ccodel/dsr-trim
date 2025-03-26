@@ -142,7 +142,7 @@ static uint *lits_occurrences = NULL;
 
 // The option string used by `getopt_long()`.
 // Specifies the (short) command line options and whether they take arguments.
-#define OPT_STR  ("d:ehn:qsv")
+#define OPT_STR  BASE_CLI_OPT_STR
 
 // A flag that is set when the CLI arguments request the longer help message.
 static int long_help_msg_flag = 0;
@@ -971,14 +971,14 @@ int main(int argc, char *argv[]) {
   //   (modulo some behavior changes due to `-n` and `-d` flags)
   switch (argc - optind) {
     case 0:
-      FATAL_ERR_IF(!cli.name_provided, "No file prefix provided.");
+      FATAL_ERR_IF(!cli_is_name_opt_set(&cli), "No file prefix provided.");
       cli_concat_path_extensions(&cli, ".cnf", ".dsr", ".lsr");
       break;
     case 1:
-      FATAL_ERR_IF(cli.dir_provided,
+      FATAL_ERR_IF(cli_is_dir_opt_set(&cli),
         "Cannot provide a directory without an LSR file path.");
 
-      if (cli.name_provided) {
+      if (cli_is_name_opt_set(&cli)) {
         cli_concat_path_extensions(&cli, ".cnf", "", argv[optind]);
       } else {
         // The CNF file is provided as a normal file path
@@ -987,7 +987,7 @@ int main(int argc, char *argv[]) {
       }
       break;
     case 2:
-      if (cli.dir_provided || cli.name_provided) {
+      if (cli_is_name_opt_set(&cli) || cli_is_dir_opt_set(&cli)) {
         cli_concat_path_extensions(&cli, argv[optind], "", argv[optind + 1]);
       } else {
         cli.cnf_file_path = argv[optind];

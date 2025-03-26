@@ -13,6 +13,7 @@
 #include "logger.h"
 
 vlevel_t verbosity_level = VL_NORMAL;
+int verbose_errors = 0;
 
 void log_raw(vlevel_t level, const char *format, ...) {
   if (level <= verbosity_level) {

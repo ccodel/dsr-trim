@@ -25,10 +25,13 @@
 #define HELP_MSG_OPT            ('h')
 #define QUIET_MODE_OPT          ('q')
 #define VERBOSE_MODE_OPT        ('v')
+#define VERBOSE_ERRORS_OPT      ('V')
 #define DIR_OPT                 ('d')
 #define NAME_OPT                ('n')
 #define EAGER_OPT               ('e')
 #define STREAMING_OPT           ('s')
+
+#define BASE_CLI_OPT_STR        "d:ehn:qsvV"
 
 typedef enum cli_handling_result {
   CLI_SUCCESS,
@@ -37,16 +40,11 @@ typedef enum cli_handling_result {
 } cli_res_t;
 
 typedef struct common_cli_opts {
-  int eager_strategy_set;
-  int streaming_strategy_set;
-  int quiet_mode_set;
-  int verbose_mode_set;
-  int dir_provided;
-  int name_provided;
-  size_t buf_offset;
-  char *cnf_file_path;
-  char *dsr_file_path;
-  char *lsr_file_path;
+  unsigned long long opt_set_flags;  // Bitvector recording set options
+  size_t buf_offset;    // Index of the end of the string in the buffers
+  char *cnf_file_path;  // Typically points to a string in `argv[]`
+  char *dsr_file_path;  // Typically points to a string in `argv[]`
+  char *lsr_file_path;  // Typically points to a string in `argv[]`
   char cnf_file_path_buf[MAX_FILE_PATH_LEN];
   char dsr_file_path_buf[MAX_FILE_PATH_LEN];
   char lsr_file_path_buf[MAX_FILE_PATH_LEN];
@@ -54,6 +52,9 @@ typedef struct common_cli_opts {
 
 void cli_init(cli_opts_t *cli);
 cli_res_t cli_handle_opt(cli_opts_t *cli, int option, int optopt, char *optarg);
+
+int cli_is_name_opt_set(cli_opts_t *cli);
+int cli_is_dir_opt_set(cli_opts_t *cli);
 
 void cli_concat_path_extensions(cli_opts_t *cli,
                                 char *cnf_ext, char *dsr_ext, char *lsr_ext);

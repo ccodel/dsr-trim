@@ -308,7 +308,7 @@ static min_max_clause_t *lines_min_max_clauses_to_check = NULL;
 
 #define FORWARD_OPT   ('f')
 #define BACKWARD_OPT  ('b')
-#define OPT_STR       ("bd:efhn:qsv")
+#define OPT_STR       ("bf" BASE_CLI_OPT_STR)
 
 // A flag set by `getopt_long()` when the user requests a longer help message.
 static int long_help_msg_flag = 0;
@@ -3208,14 +3208,14 @@ int main(int argc, char **argv) {
 
   switch (argc - optind) {
     case 0:
-      FATAL_ERR_IF(!cli.name_provided, "No file prefix provided.");
+      FATAL_ERR_IF(!cli_is_name_opt_set(&cli), "No file prefix provided.");
       cli_concat_path_extensions(&cli, ".cnf", ".sr", ".lsr");
       break;
     case 1:
-      FATAL_ERR_IF(cli.dir_provided,
+      FATAL_ERR_IF(cli_is_dir_opt_set(&cli),
         "Cannot provide a directory without a DSR file path.");
 
-      if (cli.name_provided) {
+      if (cli_is_name_opt_set(&cli)) {
         cli_concat_path_extensions(&cli, ".cnf", argv[optind], ".lsr");
       } else {
         cli.cnf_file_path = argv[optind];
@@ -3224,7 +3224,7 @@ int main(int argc, char **argv) {
       }
       break;
     case 2:
-      if (cli.dir_provided || cli.name_provided) {
+      if (cli_is_dir_opt_set(&cli) || cli_is_name_opt_set(&cli)) {
         cli_concat_path_extensions(&cli, argv[optind], argv[optind+1], ".lsr");
       } else {
         cli.cnf_file_path = argv[optind];
@@ -3233,7 +3233,7 @@ int main(int argc, char **argv) {
       }
       break;
     case 3:
-      if (cli.dir_provided || cli.name_provided) {
+      if (cli_is_dir_opt_set(&cli) || cli_is_name_opt_set(&cli)) {
         cli_concat_path_extensions(&cli,
           argv[optind], argv[optind + 1], argv[optind + 2]);
       } else {
