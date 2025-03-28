@@ -2874,6 +2874,20 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
     log_raw(VL_VERBOSE, "c The failing RAT clause: ");
     dbg_print_clause(clause_index);
 
+    log_raw(VL_VERBOSE, "c The RAT clause, under the subst: ");
+    int *clause_iter = get_clause_start(clause_index);
+    int *end = get_clause_end(clause_index);
+    for (; clause_iter < end; clause_iter++) {
+      int lit = *clause_iter;
+      int mapped_lit = map_lit_under_subst(lit);
+      switch (mapped_lit) {
+        case SUBST_TT: log_raw(VL_VERBOSE, "TT "); break;
+        case SUBST_FF: log_raw(VL_VERBOSE, "FF "); break;
+        default: log_raw(VL_VERBOSE, "%d ", TO_DIMACS_LIT(mapped_lit));
+      }
+    }
+    log_raw(VL_VERBOSE, "0\n");
+
     log_raw(VL_VERBOSE, "\nc The active partial assignment:\n");
     dbg_print_assignment();
 
@@ -2947,6 +2961,8 @@ static void check_dsr_line(void) {
   // Find implied candidate unit clauses
   // If a UP refutation is found, it is stored, and we may finish the line
   if (assume_candidate_clause_and_perform_up(cc_index) == -1) {
+    log_msg(VL_VERBOSE, "[line %lld] Clause %lld was RUP, moving to next line",
+      current_line + 1, TO_DIMACS_CLAUSE(cc_index));
     goto candidate_valid;
   }
 
@@ -2961,7 +2977,7 @@ static void check_dsr_line(void) {
   set_min_max_clause_to_check();
 
   // Now do RAT checking between min and max clauses to check (inclusive)
-  log_msg(VL_VERBOSE, "[line %d] Checking clauses %lld to %lld", 
+  log_msg(VL_VERBOSE, "[line %lld] Not RUP, checking clauses %lld to %lld", 
     current_line + 1, TO_DIMACS_CLAUSE(min_clause_to_check),
     TO_DIMACS_CLAUSE(max_clause_to_check));
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
