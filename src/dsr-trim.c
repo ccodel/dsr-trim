@@ -1550,6 +1550,119 @@ static void minimize_RAT_hints(void) {
   }
 }
 
+// Marks the clauses causing each literal in the clause to be false.
+// Ignore literals that are assumed fresh, whether in CANDIDATE or RAT.
+// Literals that were globally set to unit, but are candidate assumed, are ignored.
+static void mark_clause(srid_t clause, int offset, ullong gen) {
+  int *clause_iter = get_clause_start(clause) + offset; 
+  int *clause_end = get_clause_end(clause);
+  for (; clause_iter < clause_end; clause_iter++) {
+    int lit = *clause_iter;
+    int var = VAR_FROM_LIT(lit);
+    srid_t clause_reason = up_reasons[var];
+    if (clause_reason >= 0) {
+      dependency_markings[clause_reason] = gen; 
+    }
+  }
+}
+
+/**
+ * @brief Marks the dependencies for each false literal in a unit clause.
+ *        Used to minimize the number of printed UP hints.
+ * 
+ * @param clause The 0-indexed ID of the clause to mark.
+ */
+static inline void mark_unit_clause(srid_t clause, ullong gen) {
+  mark_clause(clause, 1, gen);
+}
+
+/**
+ * @brief Marks the dependencies for an entire falsified clause.
+ *        Used to minimize the number of printed UP hints.
+ * 
+ * @param clause The 0-indexed ID of the clause to mark.
+ */
+static inline void mark_entire_clause(srid_t clause, ullong gen) {
+  mark_clause(clause, 0, gen);
+}
+
+/**
+ * @brief Marks dependencies among the derived unit clauses to minimize the
+ *        number of printed UP hints.
+ * 
+ * During unit propagation, any unit literal records which clause caused it
+ * to become unit. These clauses are stored in `up_reasons`.
+ * 
+ * Then, when UP encounters a refutation (i.e. a falsified clause), it marks
+ * which unit literals/clauses are necessary to cause the refutation
+ * (as UP might derive many more units than necessary). This minimized
+ * set is computed by this function.
+ * 
+ * After the caller marks the falsified clause with `mark_entire_clause()`
+ * (see `mark_up_derivation()`), this function scans backwards through
+ * the unit clauses and sets each unit clause's `dependency_markings`
+ * to the current `alpha_generation`.
+ * 
+ * Later, when printing or storing the UP hints, only unit clauses with
+ * a `dependency_markings` value strictly greater than the `alpha_generation`
+ * before checking the current line are stored as UP hints.
+ */
+static void mark_dependencies(int until_index, ullong gen) {
+  // We use an int here because we scan backwards until the counter is negative
+  for (int i = ((int) unit_clauses_size) - 1; i >= until_index; i--) {
+    srid_t clause = unit_clauses[i];
+    if (dependency_markings[clause] >= gen) {
+      mark_unit_clause(clause, gen);
+    }
+  }
+}
+
+// Backwards marks the dependencies for the UP derivation.
+// Starts the marking at the clause stored in up_falsified_clause.
+static inline void mark_up_derivation(srid_t from_clause, ullong gen) {
+  mark_entire_clause(from_clause, gen);
+
+  // If RAT UP, then only scan until RAT unit clauses are done
+  // Later, mark the UP clauses needed more "globally"
+  int index = (up_state == RAT_UP) ? RAT_unit_clauses_index : 0;
+  mark_dependencies(index, gen);
+}
+
+// TODO: Think about how to make the empty clause not be the special case
+// Probably reroute the "store" to "print_or_store_line" somehow
+// And then don't have a special `add_wps_and_()` call before the check line loop?
+/**
+ * @brief Marks UP dependencies and stores UP hints, starting from the
+ *        falsified clause `from_clause`.
+ * 
+ * @param from_clause 
+ * @param gen 
+ */
+static void mark_and_store_up_refutation(srid_t from_clause, ullong gen) {
+  mark_up_derivation(from_clause, gen + GEN_INC);
+  ra_commit_range(&hints);
+  store_active_dependencies(gen);
+  add_up_hint(from_clause);
+
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    ra_commit_range(&hints);
+  } else {
+    print_lsr_line(current_line, LINE_ID_FROM_LINE_NUM(current_line));
+    ra_reset(&hints);
+  }
+}
+
+static void store_RAT_dependencies(srid_t from_clause) {
+  for (int i = RAT_unit_clauses_index; i < unit_clauses_size; i++) {
+    srid_t unit_clause = unit_clauses[i];
+    if (dependency_markings[unit_clause] == alpha_generation) {
+      add_RAT_up_hint(unit_clause);
+    }
+  }
+
+  add_RAT_up_hint(from_clause);
+}
+
 /**
  * @brief Prints or stores the LSR line.
  * 
@@ -1564,6 +1677,7 @@ static void print_or_store_lsr_line(ullong gen) {
   }
 
   ra_commit_range(&hints);
+  mark_dependencies(0, gen + GEN_INC);
   store_active_dependencies(gen);
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     ra_commit_range(&hints);
@@ -1624,114 +1738,6 @@ static void print_stored_lsr_proof(void) {
   print_lsr_line(num_parsed_add_lines - 1, printed_line_id);
 
   timer_print_elapsed(&timer, TIMER_LOCAL, "Printing the LSR proof");
-}
-
-// Marks the clauses causing each literal in the clause to be false.
-// Ignore literals that are assumed fresh, whether in CANDIDATE or RAT.
-// Literals that were globally set to unit, but are candidate assumed, are ignored.
-static void mark_clause(srid_t clause, int offset) {
-  int *clause_iter = get_clause_start(clause) + offset; 
-  int *clause_end = get_clause_end(clause);
-  for (; clause_iter < clause_end; clause_iter++) {
-    int lit = *clause_iter;
-    int var = VAR_FROM_LIT(lit);
-    srid_t clause_reason = up_reasons[var];
-    if (clause_reason >= 0) {
-      dependency_markings[clause_reason] = alpha_generation; 
-    }
-  }
-}
-
-/**
- * @brief Marks the dependencies for each false literal in a unit clause.
- *        Used to minimize the number of printed UP hints.
- * 
- * @param clause The 0-indexed ID of the clause to mark.
- */
-static inline void mark_unit_clause(srid_t clause) {
-  mark_clause(clause, 1);
-}
-
-/**
- * @brief Marks the dependencies for an entire falsified clause.
- *        Used to minimize the number of printed UP hints.
- * 
- * @param clause The 0-indexed ID of the clause to mark.
- */
-static inline void mark_entire_clause(srid_t clause) {
-  mark_clause(clause, 0);
-}
-
-/**
- * @brief Marks dependencies among the derived unit clauses to minimize the
- *        number of printed UP hints.
- * 
- * During unit propagation, any unit literal records which clause caused it
- * to become unit. These clauses are stored in `up_reasons`.
- * 
- * Then, when UP encounters a refutation (i.e. a falsified clause), it marks
- * which unit literals/clauses are necessary to cause the refutation
- * (as UP might derive many more units than necessary). This minimized
- * set is computed by this function.
- * 
- * After the caller marks the falsified clause with `mark_entire_clause()`
- * (see `mark_up_derivation()`), this function scans backwards through
- * the unit clauses and sets each unit clause's `dependency_markings`
- * to the current `alpha_generation`.
- * 
- * Later, when printing or storing the UP hints, only unit clauses with
- * a `dependency_markings` value strictly greater than the `alpha_generation`
- * before checking the current line are stored as UP hints.
- */
-static void mark_dependencies(void) {
-  // We use an int here because we scan backwards until the counter is negative
-  for (int i = unit_clauses_size - 1; i >= 0; i--) {
-    srid_t clause = unit_clauses[i];
-    if (dependency_markings[clause] == alpha_generation) {
-      mark_unit_clause(clause);
-    }
-  }
-}
-
-// Backwards marks the dependencies for the UP derivation.
-// Starts the marking at the clause stored in up_falsified_clause.
-static inline void mark_up_derivation(srid_t from_clause) {
-  mark_entire_clause(from_clause);
-  mark_dependencies();
-}
-
-// TODO: Think about how to make the empty clause not be the special case
-// Probably reroute the "store" to "print_or_store_line" somehow
-// And then don't have a special `add_wps_and_()` call before the check line loop?
-/**
- * @brief Marks UP dependencies and stores UP hints, starting from the
- *        falsified clause `from_clause`.
- * 
- * @param from_clause 
- * @param gen 
- */
-static void mark_and_store_up_refutation(srid_t from_clause, ullong gen) {
-  mark_up_derivation(from_clause);
-  ra_commit_range(&hints);
-  store_active_dependencies(gen);
-  add_up_hint(from_clause);
-
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    ra_commit_range(&hints);
-  } else {
-    print_lsr_line(current_line, LINE_ID_FROM_LINE_NUM(current_line));
-    ra_reset(&hints);
-  }
-}
-
-static void store_RAT_dependencies(srid_t from_clause) {
-  for (int i = RAT_unit_clauses_index; i < unit_clauses_size; i++) {
-    if (dependency_markings[unit_clauses[i]] == alpha_generation) {
-      add_RAT_up_hint(unit_clauses[i]);
-    }
-  }
-
-  add_RAT_up_hint(from_clause);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2742,7 +2748,7 @@ static int assume_RAT_clause_under_subst(srid_t clause_index) {
               // includes things in the global and candidate UPs.
               // The RAT check (the caller) will store the (-clause) in the line.
               // TODO????
-              mark_up_derivation(reason);
+              mark_up_derivation(reason, alpha_generation);
             }
             return SATISFIED_OR_MUL;
           case UNASSIGNED:
@@ -2940,7 +2946,7 @@ static void check_RAT_clause(srid_t clause_index) {
       if (assume_RAT_clause_under_subst(clause_index) != SATISFIED_OR_MUL) {
         srid_t falsified_clause = perform_up(alpha_generation);
         if (falsified_clause == -1) emit_RAT_UP_failure_error(clause_index);
-        mark_up_derivation(falsified_clause);
+        mark_up_derivation(falsified_clause, alpha_generation);
         store_RAT_dependencies(falsified_clause);
       }
       unassume_RAT_clause(clause_index);
