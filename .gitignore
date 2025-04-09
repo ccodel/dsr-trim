@@ -3,6 +3,7 @@ dsr-trim
 lsr-check
 compress
 decompress
+bin/*
 
 # Pigeonhole executables and CNF/proof files
 php/php

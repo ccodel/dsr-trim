@@ -23,7 +23,7 @@
 #define FROM_DIMACS_CLAUSE(x)   ((x) - 1)
 #define TO_DIMACS_CLAUSE(x)     ((x) + 1)
 #define FROM_DIMACS_LIT(x)      (((x) < 0) ? (((-(x)) << 1) - 1) : (((x) << 1) - 2))
-#define TO_DIMACS_LIT(x)        (((x) % 2) ? (((x) / -2) - 1) : (((x) / 2) + 1))
+#define TO_DIMACS_LIT(x)        (((x) & 1) ? (((x) / -2) - 1) : (((x) / 2) + 1))
 
 #ifdef LONGTYPE
 #define CLAUSE_ABS(x)           (llabs(x))
