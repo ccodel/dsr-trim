@@ -6,6 +6,7 @@ sr_parser.c:
 lsr-check:
     (4/15/24): Not incrementing alpha_generation when a RAT clause is indicated but has no hints (see comment on line 249 of lsr-check.c).
     (1/7/25): When implementing EAGER proof checking, the first/last updates were assuming the literals of interest are in the candidate clause. But now we must perform FLUs as we check the formula, and so an explicit clause_index is passed. Otherwise, we try to RAT check clauses beyond where we've checked so far.
+    (4/9/25): `max_line_id` was always set to `num_cnf_clauses`, even when doing EAGER parsing, which would cause lsr-check to think there are no LSR lines after all. Now `max_line_id` is only set during STREAMING parsing.
 
 dsr-trim:
     - Some invariant regarding candidate_assumed_literals_index/candidate_unit_clauses_index and RAT_assumed_literals_index/RAT_unit_literals_index was off. Refactored into increment/decrement_state(). (Needs better name.)

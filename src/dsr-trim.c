@@ -48,6 +48,7 @@
 #include "cli.h"
 #include "cnf_parser.h"
 #include "sr_parser.h"
+#include "timer.h"
 
 /*
 TODOs:
@@ -301,6 +302,8 @@ static uint num_RAT_hints = 0;
 // Indexed by the 0-indexed `current_line`.
 // Used only during backwards checking, and allocated by `add_initial_wps()`.
 static min_max_clause_t *lines_min_max_clauses_to_check = NULL;
+
+static timer_t timer;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1579,6 +1582,8 @@ static void print_or_store_lsr_line(ullong gen) {
 static void print_stored_lsr_proof(void) {
   if (ch_mode != BACKWARDS_CHECKING_MODE) return; 
 
+  timer_record(&timer, TIMER_LOCAL);
+
   generate_clause_id_map();
   print_initial_clause_deletions();
 
@@ -1617,6 +1622,8 @@ static void print_stored_lsr_proof(void) {
 
   // Specially print the empty clause, since we don't mark it as "needed"
   print_lsr_line(num_parsed_add_lines - 1, printed_line_id);
+
+  timer_print_elapsed(&timer, TIMER_LOCAL, "Printing the LSR proof");
 }
 
 // Marks the clauses causing each literal in the clause to be false.
@@ -3127,6 +3134,7 @@ static void add_wps_and_up_initial_clauses(void) {
 static void check_proof(void) {
   up_state = GLOBAL_UP;
   alpha_generation = GEN_INC;
+  timer_record(&timer, TIMER_LOCAL);
 
   add_wps_and_up_initial_clauses();
 
@@ -3156,6 +3164,8 @@ static void check_proof(void) {
   }
 
   print_proof_checking_result();
+  timer_print_elapsed(&timer, TIMER_LOCAL, "Proof checking");
+
   print_stored_lsr_proof();
   print_valid_formula_if_requested();
 }
@@ -3311,9 +3321,16 @@ int main(int argc, char **argv) {
     log_fatal_err("Forwards checking and eager parsing not implemented.");
   }
 
+  timer_init(&timer);
+  timer_record(&timer, TIMER_GLOBAL);
+
+  timer_record(&timer, TIMER_LOCAL);
   parse_cnf(cnf_file);
+  timer_print_elapsed(&timer, TIMER_LOCAL, "Parsing the CNF");
+
   prepare_dsr_trim_data();
   check_proof();
 
+  timer_print_elapsed(&timer, TIMER_GLOBAL, "Total runtime");
   return 0;
 }

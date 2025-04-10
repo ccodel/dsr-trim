@@ -56,4 +56,4 @@ $(OFILES): %.o: %.c
 
 $(EXECS): % : $(SRCDIR)/%.c $(OFILES)
 	$(cc-bin-command)
-	ln -s $(BINDIR)/$@ $@
+	ln -sf $(BINDIR)/$@ $@

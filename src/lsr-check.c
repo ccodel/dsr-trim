@@ -91,6 +91,7 @@
 #include "cli.h"
 #include "cnf_parser.h"
 #include "sr_parser.h"
+#include "timer.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -135,6 +136,8 @@ static FILE *lsr_file = NULL;
 // Indexed by literal. Counts the number of clauses each literal appears in.
 // These can be used to check just the claimed RAT clauses.
 static uint *lits_occurrences = NULL;
+
+static timer_t timer;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -474,6 +477,8 @@ static void parse_entire_lsr_file(void) {
   FATAL_ERR_IF(p_strategy != PS_EAGER,
     "To parse the entire LSR file eagerly, the p_strategy must be EAGER.");
 
+  timer_record(&timer, TIMER_LOCAL);
+
   int detected_empty_clause = 0;
   while (has_another_line(lsr_file)) {
     parse_lsr_line();
@@ -496,6 +501,7 @@ static void parse_entire_lsr_file(void) {
   }
 
   logc("Parsed %lld proof lines.", current_line + 1);
+  timer_print_elapsed(&timer, TIMER_LOCAL, "Parsing the LSR proof");
 }
 
 /**
@@ -513,6 +519,7 @@ static void prepare_lsr_check_data(void) {
     parse_entire_lsr_file();
   } else {
     ra_init(&hints, num_cnf_vars * 10, 2, sizeof(srid_t));
+    max_line_id = num_cnf_clauses;
     // No deletions, since we process them as we go
   }
 
@@ -522,7 +529,6 @@ static void prepare_lsr_check_data(void) {
     add_occurrences_for_clause(c);
   }
 
-  max_line_id = num_cnf_clauses;
   current_line = 0;
 }
 
@@ -910,6 +916,7 @@ finish_line:
  */
 static void check_proof(void) {
   logc("Checking proof...");
+  timer_record(&timer, TIMER_LOCAL);
 
   while (!derived_empty_clause && has_another_lsr_line()) {
     line_type_t line_type = prepare_next_line();
@@ -923,6 +930,13 @@ static void check_proof(void) {
   }
 
   print_proof_checking_result();
+
+  if (p_strategy == PS_EAGER) {
+    timer_print_elapsed(&timer, TIMER_LOCAL, "Proof checking");
+  } else {
+    timer_print_elapsed(&timer, TIMER_LOCAL, "Proof checking (and parsing)");
+  }
+  
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1021,9 +1035,16 @@ int main(int argc, char *argv[]) {
     logc("Using a STREAMING parsing strategy.");
   }
 
+  timer_init(&timer);
+  timer_record(&timer, TIMER_GLOBAL);
+
+  timer_record(&timer, TIMER_LOCAL);
   parse_cnf(cnf_file);
+  timer_print_elapsed(&timer, TIMER_LOCAL, "Parsing the CNF");
+
   prepare_lsr_check_data();
   check_proof();
 
+  timer_print_elapsed(&timer, TIMER_GLOBAL, "Total runtime");
   return 0;
 }
