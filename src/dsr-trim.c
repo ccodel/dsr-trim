@@ -303,7 +303,7 @@ static uint num_RAT_hints = 0;
 // Used only during backwards checking, and allocated by `add_initial_wps()`.
 static min_max_clause_t *lines_min_max_clauses_to_check = NULL;
 
-static timer_t timer;
+static sr_timer_t timer;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -3334,3 +3334,4 @@ int main(int argc, char **argv) {
   timer_print_elapsed(&timer, TIMER_GLOBAL, "Total runtime");
   return 0;
 }
+

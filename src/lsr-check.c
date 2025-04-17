@@ -137,7 +137,7 @@ static FILE *lsr_file = NULL;
 // These can be used to check just the claimed RAT clauses.
 static uint *lits_occurrences = NULL;
 
-static timer_t timer;
+static sr_timer_t timer;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1048,3 +1048,4 @@ int main(int argc, char *argv[]) {
   timer_print_elapsed(&timer, TIMER_GLOBAL, "Total runtime");
   return 0;
 }
+

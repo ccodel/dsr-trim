@@ -20,10 +20,10 @@ typedef enum timer_types {
 
 typedef struct timer {
   struct timeval timers[TOTAL_TIMERS];
-} timer_t;
+} sr_timer_t;
 
-void timer_init(timer_t *t);
-void timer_record(timer_t *t, timer_type_t ty);
-void timer_print_elapsed(timer_t *t, timer_type_t ty, char *prefix);
+void timer_init(sr_timer_t *t);
+void timer_record(sr_timer_t *t, timer_type_t ty);
+void timer_print_elapsed(sr_timer_t *t, timer_type_t ty, char *prefix);
 
 #endif /* _TIMER_H_ */
