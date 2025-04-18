@@ -1,8 +1,8 @@
 # Project-specific files
-dsr-trim
-lsr-check
-compress
-decompress
+/dsr-trim
+/lsr-check
+/compress
+/decompress
 bin/*
 
 # Pigeonhole executables and CNF/proof files

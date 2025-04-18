@@ -40,14 +40,18 @@ typedef unsigned long ulong;
 // purposes, an int can be used instead.
 #ifdef LONGTYPE
 typedef llong srid_t;
-#define SRID_MSB                MSB64
+#define SRID_MSB         MSB64
+#define SRID_MIN         LLONG_MIN
+#define SRID_MAX         LLONG_MAX
 #else
 typedef int srid_t;
-#define SRID_MSB                MSB32
+#define SRID_MSB         MSB32
+#define SRID_MIN         INT_MIN
+#define SRID_MAX         INT_MAX
 #endif
 
 /** Resizes an "allocation size value" when the container gets full. */
-#define RESIZE(x)               (((x) * 3) >> 1)
+#define RESIZE(x)        (((x) * 3) >> 1)
 
 #define RESIZE_ARR(arr, alloc_size, size, data_size)       do {                \
     if (size >= alloc_size) {                                                  \

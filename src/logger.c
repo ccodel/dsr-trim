@@ -13,7 +13,7 @@
 #include "logger.h"
 
 vlevel_t verbosity_level = VL_NORMAL;
-int verbose_errors = 0;
+vlevel_t err_verbosity_level = VL_QUIET;
 
 void log_raw(vlevel_t level, const char *format, ...) {
   if (level <= verbosity_level) {
@@ -52,6 +52,13 @@ void log_err(const char *format, ...) {
   fprintf(stderr, "Error: ");
   vfprintf(stderr, format, ap);
   fprintf(stderr, "\n");
+  va_end(ap);
+}
+
+void log_err_raw(const char *format, ...) {
+  va_list ap;
+  va_start(ap, format);
+  vfprintf(stderr, format, ap);
   va_end(ap);
 }
 

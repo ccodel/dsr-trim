@@ -279,6 +279,8 @@ void update_first_last_clause(int lit);
 
 // Prints the clause to stdout, for debugging purposes.
 void dbg_print_clause(srid_t clause_index);
+void dbg_print_clause_under_alpha(srid_t clause_index);
+void dbg_print_clause_under_subst(srid_t clause_index);
 
 // Prints the CNF to stdout, for debugging purposes.
 void dbg_print_cnf(void); 

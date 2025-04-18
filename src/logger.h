@@ -32,8 +32,8 @@ typedef enum verbosity_level {
 // The global verbosity level. By default, it is set to `VL_NORMAL`.
 extern vlevel_t verbosity_level;
 
-// Set to `1` if verbose errors are enabled, `0` otherwise.
-extern int verbose_errors;
+// The verbosity level for error messages. By default, it is set to `VL_QUIET`.
+extern vlevel_t err_verbosity_level;
 
 // Logs a message to `stdout` if the provided `level` is `<= verbosity_level`.
 // Does not begin with a `"c "` or end with a newline `'\n'`.
@@ -49,6 +49,10 @@ void logc(const char *format, ...);
 // Logs a message to `stderr`.
 // Begins the message with `"Error: "` and end the message with a newline `'\n'`.
 void log_err(const char *format, ...);
+
+// Logs a message to `stderr`.
+// Does not begin with a `"c "` or end with a newline `'\n'`.
+void log_err_raw(const char *format, ...);
 
 // Logs a fatal error (along with a newline `'\n'`) and exits.
 void log_fatal_err(const char *format, ...);

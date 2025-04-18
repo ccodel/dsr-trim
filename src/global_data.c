@@ -792,6 +792,38 @@ void dbg_print_clause(srid_t clause_index) {
   log_raw(VL_NORMAL, "0\n"); 
 }
 
+void dbg_print_clause_under_alpha(srid_t clause_index) {
+  log_raw(VL_NORMAL, "[%lld|a] ", TO_DIMACS_CLAUSE(clause_index));
+  int *clause_iter = get_clause_start(clause_index);
+  int *end = get_clause_end(clause_index);
+  for (; clause_iter < end; clause_iter++) {
+    int lit = *clause_iter;
+    int mapped_lit = peval_lit_under_alpha(lit);
+    switch (mapped_lit) {
+      case TT: log_raw(VL_NORMAL, "TT "); break;
+      case FF: log_raw(VL_NORMAL, "FF "); break;
+      default: log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(mapped_lit));
+    }
+  }
+  log_raw(VL_NORMAL, "0\n");
+}
+
+void dbg_print_clause_under_subst(srid_t clause_index) {
+  log_raw(VL_NORMAL, "[%lld|w] ", TO_DIMACS_CLAUSE(clause_index));
+  int *clause_iter = get_clause_start(clause_index);
+  int *end = get_clause_end(clause_index);
+  for (; clause_iter < end; clause_iter++) {
+    int lit = *clause_iter;
+    int mapped_lit = map_lit_under_subst(lit);
+    switch (mapped_lit) {
+      case SUBST_TT: log_raw(VL_NORMAL, "TT "); break;
+      case SUBST_FF: log_raw(VL_NORMAL, "FF "); break;
+      default: log_raw(VL_NORMAL, "%d ", TO_DIMACS_LIT(mapped_lit));
+    }
+  }
+  log_raw(VL_NORMAL, "0\n");
+}
+
 void dbg_print_cnf(void) {
   for (srid_t c = 0; c < formula_size; c++) {
     dbg_print_clause(c);
@@ -799,7 +831,6 @@ void dbg_print_cnf(void) {
 }
 
 void dbg_print_assignment(void) {
-  log_raw(VL_NORMAL, "[DBG] Assignment: ");
   for (int i = 0; i <= max_var; i++) {
     switch (peval_lit_under_alpha(i * 2)) {
       case TT:
@@ -815,8 +846,6 @@ void dbg_print_assignment(void) {
 }
 
 void dbg_print_subst(void) {
-  log_raw(VL_NORMAL, "[DBG] Substitution: ");
-
   // Do two passes to print the TT/FF first, then the mapped ones
   for (int i = 0; i <= max_var; i++) {
     int lit = i * 2;

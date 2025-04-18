@@ -7,7 +7,8 @@ BINDIR = bin
 # Supporting files
 # These get compiled to `.o` files without linking
 SUPPFILES = cli cnf_parser global_data global_parsing hash_table logger \
-						range_array sr_parser timer xio xmalloc
+						range_array sr_parser timer xio xmalloc \
+						lsr-check/lsr_data lsr-check/lsr_err
 SUPPFILESWITHDIR = $(addprefix $(SRCDIR)/,$(SUPPFILES))
 OFILES = $(addsuffix .o,$(SUPPFILESWITHDIR))
 
@@ -33,7 +34,7 @@ endef
 # .PHONY means these rules get executed even if files of these names exist
 .PHONY: all clean long
 
-all: $(BINDIR) $(EXECS)
+all: $(BINDIR) $(OFILES) $(EXECS)
 
 long: CFLAGS += -DLONGTYPE
 long: $(EXECS)
@@ -43,6 +44,8 @@ debug: $(EXECS)
 
 clean:
 	$(RM) $(SRCDIR)/*.o
+	$(RM) $(SRCDIR)/dsr-trim/*.o
+	$(RM) $(SRCDIR)/lsr-check/*.o
 	$(RM) $(EXECSWITHBINDIR)
 	$(RM) $(EXECS)
 

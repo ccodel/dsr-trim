@@ -2902,7 +2902,7 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
     dbg_print_subst();
 
     // Now scan through the unit literals and list how they became unit
-    if (verbose_errors) {
+    if (err_verbosity_level > VL_QUIET) {
       log_raw(VL_VERBOSE, "\nc The unit literals and why they are unit\n");
       log_raw(VL_VERBOSE, "c Printed in order of their derivations\n");
       for (uint i = 0; i < unit_literals_size; i++) {
@@ -3163,11 +3163,12 @@ static void check_proof(void) {
     fclose(dsr_file);
   }
 
-  print_proof_checking_result();
   timer_print_elapsed(&timer, TIMER_LOCAL, "Proof checking");
+  print_proof_checking_result();
 
   print_stored_lsr_proof();
   print_valid_formula_if_requested();
+  timer_print_elapsed(&timer, TIMER_GLOBAL, "Total runtime");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3330,8 +3331,6 @@ int main(int argc, char **argv) {
 
   prepare_dsr_trim_data();
   check_proof();
-
-  timer_print_elapsed(&timer, TIMER_GLOBAL, "Total runtime");
   return 0;
 }
 

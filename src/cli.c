@@ -94,8 +94,11 @@ cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
   switch (opt) {
   case HELP_MSG_OPT:        return CLI_HELP_MESSAGE;
   case QUIET_MODE_OPT:      verbosity_level = VL_QUIET; break;
-  case VERBOSE_MODE_OPT:    verbosity_level = VL_VERBOSE; break;
-  case VERBOSE_ERRORS_OPT:  verbose_errors = 1; break;
+  case VERBOSE_MODE_OPT:
+    verbosity_level = VL_VERBOSE;
+    err_verbosity_level = VL_NORMAL;
+    break;
+  case VERBOSE_ERRORS_OPT:  err_verbosity_level = VL_VERBOSE; break;
   case EAGER_OPT:           p_strategy = PS_EAGER; break;
   case STREAMING_OPT:       p_strategy = PS_STREAMING; break;
   case DIR_OPT:
