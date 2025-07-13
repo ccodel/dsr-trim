@@ -367,7 +367,7 @@ static void check_RAT_clause(srid_t i, srid_t **iter_ptr,
 
       // We successfully found a matching RAT hint
       // Assume the negation of the RAT clause and perform unit propagation
-      hints_iter++;
+      up_iter++;
 
       /* 
        * It is possible for a RAT clause to have no UP derivation. This occurs
