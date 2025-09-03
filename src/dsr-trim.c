@@ -6,7 +6,7 @@
  *  annotates them with unit propagation hints to form linear substitution
  *  redundancy (LSR) proofs, which can be checked by `lsr-check`.
  * 
- *  DSR proofs are (roughly) used to show that two propositional logic
+ *  Roughly, DSR proofs are used to show that two propositional logic
  *  formulas are equisatisfiable, meaning that the original formula is
  *  satisfiable if and only if the derived formula is. DSR proofs do this
  *  by incrementally adding and deleting clauses from the formula. Added
@@ -16,8 +16,8 @@
  * 
  *  In most cases, DSR proofs are *unsatisfiability* proofs, meaning that
  *  the empty clause is eventually shown to be redundant. Since the empty
- *  clause is by definition unsatisfiable, this makes the original formula
- *  unsatisfiable as well.
+ *  clause is by definition unsatisfiable, this means that the original
+ *  formula is unsatisfiable as well.
  * 
  *  DSR proofs only contain clauses and substitution witnesses, and so
  *  `dsr-trim` must perform a kind of proof search to derive unit propagation
@@ -28,7 +28,7 @@
  *  More details can be found in the paper:
  * 
  *    "Verified Substitution Redundancy Checking"
- *    Cayden Codel, Jeremy Avigad, Marijn Heule
+ *    Cayden Codel, Jeremy Avigad, Marijn J. H. Heule
  *    In FMCAD 2024
  * 
  * @author Cayden Codel (ccodel@andrew.cmu.edu)
@@ -74,13 +74,13 @@ Potential optimizations:
 ////////////////////////////////////////////////////////////////////////////////
 
 // The initial allocation size for the watch pointer lists for any literal.
-#define INIT_LIT_WP_ARRAY_SIZE          (4)
+#define INIT_LIT_WP_ARRAY_SIZE  (4)
 
 // The initial allocation size for tracking the multiplicity of clauses.
 // This allows the checker to accept multiple copies of any clause without
 // actually storing multiple copies.
 // See `clause_mult_t`.
-#define INIT_CLAUSE_MULT_SIZE  (4)
+#define INIT_CLAUSE_MULT_SIZE   (4)
 
 // When setting literals "globally" under initial unit propagation, we use the
 // largest possible generation value.
@@ -1524,8 +1524,8 @@ static void minimize_RAT_hints(void) {
 }
 
 /**
- * @brief Stores the unit propagation hints for those unit clauses that
- *        had their dependency marked during UP/RAT UP derivations.
+ * @brief Stores the unit clauses, in order, that were needed to derive
+ *        (RAT) UP refutation. These clauses are stored as UP hints.
  * 
  * When checking a DSR line, potentially many rounds of RAT unit propagation
  * are done. These might use a strict subset of all unit literals derived
@@ -1550,9 +1550,34 @@ static void minimize_RAT_hints(void) {
   }
 }
 
-// Marks the clauses causing each literal in the clause to be false.
-// Ignore literals that are assumed fresh, whether in CANDIDATE or RAT.
-// Literals that were globally set to unit, but are candidate assumed, are ignored.
+/**
+ * @brief Marks the unit-propagation-dependency timestamps for each unit clause
+ *        that causes the literals in `clause` to be false.
+ * 
+ * When storing or printing an LSR line, we want to minimize the number of
+ * UP hints in the line. We calculate this minimal set of unit clauses
+ * needed to derive the falsified clause by looping over the unit clauses
+ * in reverse order of when they were derived, i.e., newer unit clauses
+ * are processed first, and updating their "dependency markings".
+ * This function updates the markings for a single clause.
+ * 
+ * The general strategy is as follows:
+ * For every literal `l` in `clause`, we see which unit
+ * clause `c` is causing `l` to be FF. If `l` was an assumed literal,
+ * then we don't mark `c` (if there is such a `c` to mark). But if not,
+ * then we store `gen` in `dependency_markings` for `c`.
+ * 
+ * This function loops over the literals in `clause` (after the `offset`,
+ * which is either `0` or `1` for falsified or unit clauses, respectively)
+ * and updates the `dependency_markings` for the appropriate unit clauses.
+ * 
+ * @param clause The clause whose literals will be used to update unit clause
+ *               dependency markings.
+ * @param offset The index to start the loop at. `0` for falsified clause,
+ *               `1` for unit clauses. See `mark_unit_clause()`
+ *               and `mark_entire_clause()`.
+ * @param gen The generation value to mark the dependencies with.
+ */
 static void mark_clause(srid_t clause, int offset, ullong gen) {
   int *clause_iter = get_clause_start(clause) + offset; 
   int *clause_end = get_clause_end(clause);
@@ -1567,8 +1592,8 @@ static void mark_clause(srid_t clause, int offset, ullong gen) {
 }
 
 /**
- * @brief Marks the dependencies for each false literal in a unit clause.
- *        Used to minimize the number of printed UP hints.
+ * @brief Marks the dependency timestamps for the unit clauses causing
+ *        `clause` to be unit. Used to minimize the number of UP hints.
  * 
  * @param clause The 0-indexed ID of the clause to mark.
  */
@@ -1577,8 +1602,8 @@ static inline void mark_unit_clause(srid_t clause, ullong gen) {
 }
 
 /**
- * @brief Marks the dependencies for an entire falsified clause.
- *        Used to minimize the number of printed UP hints.
+ * @brief Marks the dependency timestamps for the unit clauses causing
+ *        `clause` to be falsified. Used to minimize the number of UP hints.
  * 
  * @param clause The 0-indexed ID of the clause to mark.
  */
@@ -1588,9 +1613,9 @@ static inline void mark_entire_clause(srid_t clause, ullong gen) {
 
 /**
  * @brief Marks dependencies among the derived unit clauses to minimize the
- *        number of printed UP hints.
+ *        number of UP hints.
  * 
- * During unit propagation, any unit literal records which clause caused it
+ * During unit propagation, every unit literal records which clause caused it
  * to become unit. These clauses are stored in `up_reasons`.
  * 
  * Then, when UP encounters a refutation (i.e. a falsified clause), it marks
@@ -1601,11 +1626,14 @@ static inline void mark_entire_clause(srid_t clause, ullong gen) {
  * After the caller marks the falsified clause with `mark_entire_clause()`
  * (see `mark_up_derivation()`), this function scans backwards through
  * the unit clauses and sets each unit clause's `dependency_markings`
- * to the current `alpha_generation`.
+ * to the provided `gen`.
  * 
  * Later, when printing or storing the UP hints, only unit clauses with
  * a `dependency_markings` value strictly greater than the `alpha_generation`
  * before checking the current line are stored as UP hints.
+ * 
+ * The `until_index` is the (inclusive) index of the first unit clause 
+ * in `unit_clauses` with which to stop marking dependencies.
  */
 static void mark_dependencies(int until_index, ullong gen) {
   // We use an int here because we scan backwards until the counter is negative
@@ -1617,8 +1645,15 @@ static void mark_dependencies(int until_index, ullong gen) {
   }
 }
 
-// Backwards marks the dependencies for the UP derivation.
-// Starts the marking at the clause stored in up_falsified_clause.
+/**
+ * @brief Marks the unit clauses needed to falsify `from_clause`.
+ *        The dependency markings are updated with the timestamp `gen`.
+ * 
+ * @param from_clause The falsified clause to mark.
+ * @param gen The timestamp to mark unit clauses with. `gen` should be strictly
+ *            greater than the value of `alpha_generation` before checking
+ *            the current line. (i.e., `gen > old_alpha_generation`)
+ */
 static inline void mark_up_derivation(srid_t from_clause, ullong gen) {
   mark_entire_clause(from_clause, gen);
 
@@ -1628,9 +1663,6 @@ static inline void mark_up_derivation(srid_t from_clause, ullong gen) {
   mark_dependencies(index, gen);
 }
 
-// TODO: Think about how to make the empty clause not be the special case
-// Probably reroute the "store" to "print_or_store_line" somehow
-// And then don't have a special `add_wps_and_()` call before the check line loop?
 /**
  * @brief Marks UP dependencies and stores UP hints, starting from the
  *        falsified clause `from_clause`.
@@ -2508,10 +2540,10 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
         return;
       case TT:;
         /* If the literal is true, then the unit clause is "duplicated"
-          * by another clause made unit via UP. Since we prefer true unit
-          * clauses in future UP derivations, we replace the clause reason
-          * for `lit` with the current clause ID, and we replace the previous
-          * clause's ID in `unit_clauses`. */
+         * by another clause made unit via UP. Since we prefer true unit
+         * clauses in future UP derivations, we replace the clause reason
+         * for `lit` with the current clause ID, and we replace the previous
+         * clause's ID in `unit_clauses`. */
 
         // TODO: What if the previous "unit" is a duplicate unit clause
         int var = VAR_FROM_LIT(lit);
@@ -2533,44 +2565,43 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
   } else {
     // The clause has at least two literals - add watch pointers
 
-    /* [Note made on 10-02-2025]
-      Typically, clauses are not added with "redundant" literals, meaning
-      that if a unit `l` has already been set, `-l` won't appear in the
-      clause. However, some procedures (such as `sr2drat`) do not
-      perform this check, and will occasionally add clauses with redundant
-      literals. Thus, we must scan the clause for two valid unassigned
-      literals. (Along the way, we might discover that the clause is
-      unit or false!)
+    /*
+      Watch pointers must be non-FF literals (when eval'ed under alpha).
+      Typically, if a unit clause `(l)` is present in the formula,
+      other clauses won't contain `-l`. But this need not be the case
+      (perhaps the formula hasn't undergone pre-processing yet),
+      and some tools, such as `sr2drat`, add clauses with these kinds of
+      "useless" literals. So to maintain the invariant that watch pointers
+      must be non-FF literals, we scan the clause for two such literals.
+      Along the way, we might discover that the clause is unit or falsified.
     */
-
-    int first_wp;
-    uint lit_counter = 0;
-    for (uint i = 0; i < clause_size && lit_counter < 2; i++) {
+    uint non_ff_lit_counter = 0;
+    for (uint i = 0; i < clause_size && non_ff_lit_counter < 2; i++) {
       int lit = clause[i];
       if (peval_lit_under_alpha(lit) != FF) {
-        // Maintain the invariant that the wps are the first two literals
-        if (i != lit_counter) {
-          clause[i] = clause[lit_counter];
-          clause[lit_counter] = lit;
+        // Swap the non-FF literal to be a watch pointer
+        if (i != non_ff_lit_counter) {
+          clause[i] = clause[non_ff_lit_counter];
+          clause[non_ff_lit_counter] = lit;
         }
 
-        add_wp_for_lit(lit, clause_index);
-        if (lit_counter == 0) first_wp = lit;
-        lit_counter++;
+        non_ff_lit_counter++;
       }
     }
 
-    switch (lit_counter) {
+    switch (non_ff_lit_counter) {
       case 0:
         derived_empty_clause = 1;
         mark_and_store_up_refutation(clause_index, gen);
         break;
       case 1:
-        remove_wp_for_lit(first_wp, clause_index);
-        set_unit_clause(first_wp, clause_index, GLOBAL_GEN);
+        set_unit_clause(clause[0], clause_index, GLOBAL_GEN);
         break;
-      case 2: break;
-      default: log_fatal_err("Bad unassigned counter: %d", lit_counter);
+      case 2:
+        add_wp_for_lit(clause[0], clause_index);
+        add_wp_for_lit(clause[1], clause_index);
+        break;
+      default: log_fatal_err("Bad unassigned counter: %d", non_ff_lit_counter);
     }
   }
 
