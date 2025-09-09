@@ -222,7 +222,10 @@ static FILE *dsr_file = NULL;
 static FILE *lsr_file = NULL;
 
 // The total number of addition lines parsed. Incremented by `parse_dsr_line()`.
+// Note that during backwards checking, if the empty clause is derived
 static srid_t num_parsed_add_lines = 0;
+static srid_t num_parsed_lines = 0;
+static uint parsed_empty_clause = 0;
 
 // 0-indexed current line ID.
 static srid_t current_line = 0;
@@ -382,12 +385,9 @@ static int has_another_dsr_line(void) {
  * @return A pointer to the start of the block of hints.
  */
 static inline srid_t *get_UP_hints_start(srid_t line_num) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    srid_t idx = UP_HINTS_IDX_FROM_LINE_NUM(line_num);
-    return ra_get_range_start(&hints, idx);
-  } else {
-    return ra_get_range_start(&hints, 1);
-  }
+  srid_t idx = (ch_mode == BACKWARDS_CHECKING_MODE) ?
+    UP_HINTS_IDX_FROM_LINE_NUM(line_num) : 1;
+  return ra_get_range_start(&hints, idx);
 }
 
 /**
@@ -398,30 +398,21 @@ static inline srid_t *get_UP_hints_start(srid_t line_num) {
  * @return The exclusive end of the UP hints.
  */
 static inline srid_t *get_UP_hints_end(srid_t line_num) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    srid_t idx = UP_HINTS_IDX_FROM_LINE_NUM(line_num);
-    return ra_get_range_start(&hints, idx + 1);
-  } else {
-    return ra_get_range_start(&hints, 2);
-  }
+  srid_t idx = (ch_mode == BACKWARDS_CHECKING_MODE) ?
+    UP_HINTS_IDX_FROM_LINE_NUM(line_num) : 1;
+  return ra_get_range_end(&hints, idx);
 }
 
 static inline srid_t *get_RAT_hints_start(srid_t line_num) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    srid_t idx = RAT_HINTS_IDX_FROM_LINE_NUM(line_num);
-    return ra_get_range_start(&hints, idx);
-  } else {
-    return ra_get_range_start(&hints, 0);
-  }
+  srid_t idx = (ch_mode == BACKWARDS_CHECKING_MODE) ?
+    RAT_HINTS_IDX_FROM_LINE_NUM(line_num) : 0;
+  return ra_get_range_start(&hints, idx);
 }
 
 static inline srid_t *get_RAT_hints_end(srid_t line_num) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    srid_t idx = RAT_HINTS_IDX_FROM_LINE_NUM(line_num);
-    return ra_get_range_start(&hints, idx + 1);
-  } else {
-    return ra_get_range_start(&hints, 1);
-  }
+  srid_t idx = (ch_mode == BACKWARDS_CHECKING_MODE) ?
+    RAT_HINTS_IDX_FROM_LINE_NUM(line_num) : 0;
+  return ra_get_range_end(&hints, idx);
 }
 
 /**
@@ -439,7 +430,7 @@ static inline srid_t get_effective_formula_size(void) {
   }
 }
 
-static inline uint get_num_RAT_hints(srid_t line_num) {
+static inline uint get_num_RAT_hint_groups(srid_t line_num) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     return line_num_RAT_hints[line_num];
   } else {
@@ -467,21 +458,15 @@ static inline void store_user_deletion(srid_t clause_id) {
 }
 
 static srid_t *get_deletions_start(srid_t line_num) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    srid_t idx = DEL_IDX_FROM_LINE_NUM(line_num);
-    return ra_get_range_start(&deletions, idx);
-  } else {
-    return ra_get_range_start(&deletions, 0);
-  }
+  srid_t idx = (ch_mode == BACKWARDS_CHECKING_MODE) ?
+    DEL_IDX_FROM_LINE_NUM(line_num) : 0;
+  return ra_get_range_start(&deletions, idx);
 }
 
 static srid_t *get_deletions_end(srid_t line_num) {
-  if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    srid_t idx = DEL_IDX_FROM_LINE_NUM(line_num);
-    return ra_get_range_start(&deletions, idx + 1);
-  } else {
-    return ra_get_range_start(&deletions, 1);
-  }
+  srid_t idx = (ch_mode == BACKWARDS_CHECKING_MODE) ?
+    DEL_IDX_FROM_LINE_NUM(line_num) : 0;
+  return ra_get_range_end(&deletions, idx);
 }
 
 static uint get_num_deletions(srid_t line_num) {
@@ -536,7 +521,7 @@ static inline void add_up_hint(srid_t clause_id) {
 }
 
 static void add_RAT_clause_hint(srid_t clause_id) {
-  ra_insert_srid_elt(&hints, -TO_DIMACS_CLAUSE(clause_id));
+  ra_insert_srid_elt(&hints, TO_RAT_HINT(clause_id));
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     line_num_RAT_hints[current_line]++;
   } else {
@@ -544,7 +529,7 @@ static void add_RAT_clause_hint(srid_t clause_id) {
   }
 }
 
-static void add_RAT_up_hint(srid_t clause_id) {
+static inline void add_RAT_up_hint(srid_t clause_id) {
   ra_insert_srid_elt(&hints, TO_DIMACS_CLAUSE(clause_id));
 }
 
@@ -605,7 +590,7 @@ static void print_nrhs(void) {
   uint sum = 0;
   uint size = MIN(num_parsed_add_lines, line_num_RAT_hints_alloc_size);
   for (int i = 0; i < size; i++) {
-    sum += get_num_RAT_hints(i);
+    sum += get_num_RAT_hint_groups(i);
   }
 
   if (sum == 0) return;
@@ -616,7 +601,7 @@ static void print_nrhs(void) {
     if (i % 5 == 4) {
       log_raw(VL_NORMAL, "[%d] ", i + 1);
     }
-    log_raw(VL_NORMAL, "%d ", get_num_RAT_hints(i));
+    log_raw(VL_NORMAL, "%d ", get_num_RAT_hint_groups(i));
   }
   log_raw(VL_NORMAL, "\n\n");
 }
@@ -891,10 +876,10 @@ static void print_hints(srid_t line_num) {
     print_mapped_hint(hint);
   }
 
-  srid_t *rat_hints_iter = get_RAT_hints_start(line_num);
-  srid_t *rat_hints_end = get_RAT_hints_end(line_num);
-  for (; rat_hints_iter < rat_hints_end; rat_hints_iter++) {
-    srid_t rat_hint = *rat_hints_iter; // Hints are already in DIMACS format
+  hints_iter = get_RAT_hints_start(line_num);
+  hints_end = get_RAT_hints_end(line_num);
+  for (; hints_iter < hints_end; hints_iter++) {
+    srid_t rat_hint = *hints_iter; // Hints are already in DIMACS format
     print_mapped_hint(rat_hint);
   }
 }
@@ -916,7 +901,7 @@ static void print_lsr_line(srid_t line_num, srid_t printed_line_id) {
   print_clause(CLAUSE_ID_FROM_LINE_NUM(line_num));
 
   // Only print a witness if there are RAT/reduced clauses
-  if (get_num_RAT_hints(line_num) > 0) {
+  if (get_num_RAT_hint_groups(line_num) > 0) {
     print_witness(line_num);
   }
 
@@ -1252,6 +1237,7 @@ static int parse_dsr_line(void) {
       log_fatal_err("Corrupted line type: %d", line_type);
   }
 
+  num_parsed_lines++;
   return line_type;
 }
 
@@ -1262,22 +1248,20 @@ static void parse_entire_dsr_file(void) {
   FATAL_ERR_IF(p_strategy != PS_EAGER,
     "To parse the entire DSR file eagerly, the p_strategy must be EAGER.");
 
-  int detected_empty_clause = 0;
-  while (!detected_empty_clause && has_another_line(dsr_file)) {
+  parsed_empty_clause = 0;
+  while (!parsed_empty_clause && has_another_line(dsr_file)) {
     parse_dsr_line();
-    detected_empty_clause = (new_clause_size == 0);
+    parsed_empty_clause = (new_clause_size == 0);
   }
 
   fclose(dsr_file);
-  logc("Parsed %lld addition lines.", num_parsed_add_lines);
 
-  if (!detected_empty_clause && ch_mode == BACKWARDS_CHECKING_MODE) {
-    logc("No empty clause detected. Attempting to derive it now.");
-  }
-
-  if (detected_empty_clause) {
-    logc("Detected the empty clause on proof line %lld.",
-        num_parsed_add_lines);   
+  if (parsed_empty_clause) {
+    logc("Parsed the empty clause after %lld proof lines (%lld additions).",
+      num_parsed_lines, num_parsed_add_lines);
+  } else {
+    logc("Parsed %lld proof lines (%lld additions), but not the empty clause.",
+      num_parsed_lines, num_parsed_add_lines);
   }
 }
 
@@ -1402,8 +1386,8 @@ static void minimize_RAT_hints(void) {
   static uint skipped_RAT_indexes_size = 0;
 
   // Iterate over the RAT hint groups and mark last used IDs
-  uint nrh = get_num_RAT_hints(current_line);
-  if (nrh == 0) return;
+  uint nrhg = get_num_RAT_hint_groups(current_line);
+  if (nrhg == 0) return;
 
   skipped_RAT_indexes_size = 0;
   if (skipped_RAT_indexes == NULL) {
@@ -1416,8 +1400,8 @@ static void minimize_RAT_hints(void) {
   srid_t *hints_start = get_RAT_hints_start(current_line);
   srid_t *hints_end = get_RAT_hints_end(current_line);
   srid_t *hints_iter = hints_start;
-  for (uint i = 0; i < nrh; i++) {
-    srid_t RAT_clause = FROM_RAT_CLAUSE(*hints_iter);
+  for (uint i = 0; i < nrhg; i++) {
+    srid_t RAT_clause = FROM_RAT_HINT(*hints_iter);
     hints_iter++;
     srid_t RAT_lui = clauses_lui[RAT_clause];
     if (RAT_lui >= current_line) {
@@ -1436,7 +1420,7 @@ static void minimize_RAT_hints(void) {
       SKIP_REMAINING_UP_HINTS(hints_iter, hints_end);
     } else {
       log_fatal_err("[line %lld] RAT clause %lld was deleted before UP hint.",
-        current_line + 1, TO_DIMACS_CLAUSE(RAT_clause));
+        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(RAT_clause));
     }
   }
 
@@ -1453,7 +1437,7 @@ static void minimize_RAT_hints(void) {
     for (uint i = 0; i < old_len; i++) {
       uint offset = skipped_RAT_indexes[i];
       srid_t *iter = hints_start + offset;
-      srid_t RAT_clause = FROM_RAT_CLAUSE(*iter);
+      srid_t RAT_clause = FROM_RAT_HINT(*iter);
       srid_t RAT_lui = clauses_lui[RAT_clause];
 
       if (IS_UNUSED_LUI(RAT_lui)) {
@@ -1733,9 +1717,10 @@ static void print_stored_lsr_proof(void) {
   generate_clause_id_map();
   print_initial_clause_deletions();
 
-  // For each "active" addition clause, print its LSR line
   srid_t printed_line_id = num_cnf_clauses + 1;
   int is_active_deletion_line = 0;
+
+  // For each "active" non-empty addition clause, print its LSR line
   for (srid_t line = 0; line < num_parsed_add_lines - 1; line++) {
     srid_t clause_id = CLAUSE_ID_FROM_LINE_NUM(line);
     if (IS_USED_LUI(clauses_lui[clause_id])) {
@@ -2605,7 +2590,6 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
     }
   }
 
-
   // We don't have an immediate contradiction, so perform unit propagation
   srid_t falsified_clause = perform_up(GLOBAL_GEN);
   if (falsified_clause >= 0) {
@@ -3006,7 +2990,7 @@ static void check_dsr_line(void) {
   // If a UP refutation is found, it is stored, and we may finish the line
   if (assume_candidate_clause_and_perform_up(cc_index) == -1) {
     log_msg(VL_VERBOSE, "[line %lld] Clause %lld was RUP, moving to next line",
-      current_line + 1, TO_DIMACS_CLAUSE(cc_index));
+      TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(cc_index));
     goto candidate_valid;
   }
 
@@ -3067,8 +3051,6 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
   srid_t *dels = get_bcu_deletions_start(line);
   srid_t *del_end = get_bcu_deletions_end(line);
 
-  if (dels == del_end) return;
-
   for (; dels < del_end; dels++) {
     srid_t del_id = *dels;
     int *del_clause = get_clause_start(del_id);
@@ -3082,8 +3064,6 @@ static void restore_wps_for_user_deleted_clauses(srid_t clause_id) {
   srid_t line = LINE_NUM_FROM_CLAUSE_ID(clause_id);
   srid_t *dels = get_bcu_deletions_start(line);
   srid_t *del_end = get_bcu_deletions_end(line);
-
-  if (dels == del_end) return;
 
   for (; dels < del_end; dels++) {
     srid_t del_id = *dels;
@@ -3129,6 +3109,10 @@ static void add_wps_and_up_initial_clauses(void) {
   }
 
   if (ch_mode == FORWARDS_CHECKING_MODE) return;
+  
+  if (!parsed_empty_clause) {
+    logc("No empty clause detected. Attempting to derive it now.");
+  }
 
   // TODO: Encapsulate better
   // TODO: No need to RESIZE from formula_size when this is the largest it'll be
@@ -3142,7 +3126,7 @@ static void add_wps_and_up_initial_clauses(void) {
 
   // Add implied unit clauses, clause by clause
   // Stop when we finally derive the empty clause
-  for (; c < formula_size - 1 && !derived_empty_clause; c++) {
+  for (; c < formula_size && !derived_empty_clause; c++) {
     store_clause_check_range(current_line);
     current_line++;
     remove_wps_from_user_deleted_clauses(c);
@@ -3152,19 +3136,30 @@ static void add_wps_and_up_initial_clauses(void) {
   FATAL_ERR_IF(!derived_empty_clause,
     "The empty clause could not be derived (even if it was in the proof?).");
 
-  log_msg(VL_VERBOSE,
-    "A UP refutation was successfully found for the empty clause.");
-
   remove_wps_from_user_deleted_clauses(c); // TODO: Fix this
   c--; // `c` stored one more than the ID of the clause that derived empty
 
-  logc("Empty was supposedly derived after adding clause %lld",
-    TO_DIMACS_CLAUSE(c));
+  if (!parsed_empty_clause) {
+    logc("The empty clause was derived after adding clause %lld on line %lld.",
+        TO_DIMACS_CLAUSE(c), TO_DIMACS_LINE(current_line - 1));
+  } else if (c < formula_size - 1) {
+    logc("The empty clause was derived sooner, after clause %lld on line %lld.",
+        TO_DIMACS_CLAUSE(c), TO_DIMACS_LINE(current_line - 1));
+  }
 
   // Discard the rest of the formula, if necessary
   if (c < formula_size - 1) {
     discard_formula_after_clause(c);
     num_parsed_add_lines = current_line + 1;
+  } else if (!parsed_empty_clause) {
+    /*
+     * We derived the empty clause, but we didn't originally parse it.
+     * Commit the empty clause to the formula (to adjust `formula_size`),
+     * and "parse" the empty clause.
+     */
+    commit_clause();
+    num_parsed_lines++;
+    num_parsed_add_lines++;
   }
 }
 
@@ -3370,4 +3365,3 @@ int main(int argc, char **argv) {
   check_proof();
   return 0;
 }
-

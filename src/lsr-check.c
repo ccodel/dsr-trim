@@ -283,8 +283,7 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
   uint occs = 0;
   srid_t c, max_clause = -1; // Assume increasing hint groups
   while (hints_iter < hints_end) {
-    c = *hints_iter;
-    c = FROM_RAT_CLAUSE(c);
+    c = FROM_RAT_HINT(*hints_iter);
     FATAL_ERR_IF(c <= max_clause, "Not increasing IDs");
     max_clause = c;
 

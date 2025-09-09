@@ -667,7 +667,7 @@ int reduce_clause_under_subst(srid_t clause_index) {
   // If the witness is a substitution, tautologies can be produced. But we don't
   // report those here, because when the clause is assumed into alpha, one of
   // the two literals will either be true, or assumed fresh and set the other to true.
-  for (; iter< end; iter++) {
+  for (; iter < end; iter++) {
     int lit = *iter;
     int mapped_lit = map_lit_under_subst(lit);
     switch (mapped_lit) {
@@ -824,7 +824,7 @@ void dbg_print_clause_under_subst(srid_t clause_index) {
   log_raw(VL_NORMAL, "0\n");
 }
 
-void dbg_print_cnf(void) {
+void dbg_print_formula(void) {
   for (srid_t c = 0; c < formula_size; c++) {
     dbg_print_clause(c);
   }

@@ -48,6 +48,7 @@ void ra_uncommit_data_by(range_array_t *ra, ullong amount);
 void *ra_get_data_start(range_array_t *ra);
 void *ra_get_data_end(range_array_t *ra);
 void *ra_get_range_start(range_array_t *ra, ullong range_index);
+void *ra_get_range_end(range_array_t *ra, ullong range_index);
 ullong ra_get_range_size(range_array_t *ra, ullong range_index);
 
 #endif /* _RANGE_ARRAY_H_ */

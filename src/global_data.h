@@ -18,12 +18,14 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Converts a negative DIMACS clause ID to a 0-indexed clause ID.
-#define FROM_RAT_CLAUSE(x)      (-(x) - 1)
+// Converts a negative DIMACS RAT hint clause ID to a 0-indexed clause ID.
+#define FROM_RAT_HINT(x)        (-(x) - 1)
+#define TO_RAT_HINT(x)          (-(x) - 1)
 #define FROM_DIMACS_CLAUSE(x)   ((x) - 1)
 #define TO_DIMACS_CLAUSE(x)     ((x) + 1)
 #define FROM_DIMACS_LIT(x)      (((x) < 0) ? (((-(x)) << 1) - 1) : (((x) << 1) - 2))
 #define TO_DIMACS_LIT(x)        (((x) & 1) ? (((x) / -2) - 1) : (((x) / 2) + 1))
+#define TO_DIMACS_LINE(x)       ((x) + 1)
 
 #ifdef LONGTYPE
 #define CLAUSE_ABS(x)           (llabs(x))
@@ -286,7 +288,7 @@ void dbg_print_clause_under_alpha(srid_t clause_index);
 void dbg_print_clause_under_subst(srid_t clause_index);
 
 // Prints the CNF to stdout, for debugging purposes.
-void dbg_print_cnf(void); 
+void dbg_print_formula(void); 
 
 void dbg_print_assignment(void);
 void dbg_print_subst(void);
