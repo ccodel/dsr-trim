@@ -3133,8 +3133,12 @@ static void add_wps_and_up_initial_clauses(void) {
     add_wps_and_perform_up(c, 0);
   }
 
-  FATAL_ERR_IF(!derived_empty_clause,
-    "The empty clause could not be derived (even if it was in the proof?).");
+  if (!derived_empty_clause) {
+    log_err("Could not derive the empty clause during backwards checking.");
+    log_err_raw("If the proof is instead a proof of equisatisfiability, or a ");
+    log_err_raw("proof of symmetry breaking, use forwards checking (-f).\n");
+    exit(1);
+  }
 
   remove_wps_from_user_deleted_clauses(c); // TODO: Fix this
   c--; // `c` stored one more than the ID of the clause that derived empty
