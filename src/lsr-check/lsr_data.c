@@ -314,7 +314,10 @@ line_type_t prepare_next_lsr_line(void) {
  * This way, we reduce our memory overhead and benefit from caching.
  */
 line_type_t parse_lsr_line(void) {
+  // Track the number of parsed lines across calls to this function
+  // We don't need this variable outside this function, so we mark it `static`
   static srid_t num_parsed_lines = 0;
+
   num_parsed_lines++;
   srid_t line_id, clause_id;
   line_type_t line_type = read_lsr_line_start(lsr_file, &line_id);

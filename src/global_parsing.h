@@ -21,8 +21,38 @@
 
 // We make the addition and deletion characters unprintable so we are able to
 // differentiate binary and textual proof files with the first character.
-#define BINARY_ADDITION_LINE_START    (1)
-#define BINARY_DELETION_LINE_START    (2)
+// We also differentiate DSR and LSR lines, so that the (de)compression tool
+// can automatically detect which kind of proof we are reading.
+#define DSR_BINARY_ADDITION_LINE_START    (1)
+#define DSR_BINARY_DELETION_LINE_START    (2)
+#define LSR_BINARY_ADDITION_LINE_START    (3)
+#define LSR_BINARY_DELETION_LINE_START    (4)
+
+/**
+ * @brief Determines if `c` is one of the binary line start characters.
+ * 
+ * The correctness of this macro depends on the BINARY line start characters
+ * being contiguous and in increasing order. If any of the above values change,
+ * this macro must be updated.
+ * 
+ * @return 1 if `c` is a binary line start character, and 0 otherwise.
+ */
+#define IS_BINARY_LINE_START(c) \
+      (DSR_BINARY_ADDITION_LINE_START <= (c) \
+       && (c) <= LSR_BINARY_DELETION_LINE_START)
+
+/**
+ * @brief Determines if a non-whitespace character `c` may appear in a DSR
+ *        or an LSR proof file.
+ * 
+ * Other than whitespace characters, the only acceptable characters that
+ * may appear in DSR and LSR proofs are 'd' (for deletion lines),
+ * '-' (for literals and negative clause IDs), and the digits [0-9].
+ * 
+ * @return `1` if `c` is one of these characters, and `0` otherwise.
+ */
+#define IS_HUMAN_READABLE_PROOF_CHAR(c)  \
+      ((c) == 'd' || (c) == '-' || isdigit(c))
 
 // Uses `fscanf()` to read a single `long` token from `f`.
 // Does not consume any trailing newlines.
@@ -72,6 +102,15 @@ extern int read_binary;
 // A flag for whether the LSR proof file should be written in binary format.
 // By default. assumes the proof should not be written in binary format.
 extern int write_binary;
+
+// Checks the first character of the proof file `f` to determine
+// if the proof is in binary or human-readable format.
+// Adjusts `read_binary` accordingly.
+// When the function returns, any consumed characters are placed back into `f`.
+// Returns 1 if in binary, 0 if human-readable.
+int configure_proof_file_parsing(FILE *f);
+
+int scan_until_char(FILE *f, int match);
 
 // Parses a literal in binary format. Called by `parse_lit`.
 // Return value is in DIMACS format.

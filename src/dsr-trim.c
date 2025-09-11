@@ -1,8 +1,8 @@
 /**
  * @file dsr-trim.c
- * @brief Tool for labeling and trimming SR proof certificates.
+ * @brief A tool for labeling and trimming SR proof certificates.
  * 
- *  This tool checks deletion substitution redundancy (DSR) proofs and
+ *  `dsr-trim` checks deletion substitution redundancy (DSR) proofs and
  *  annotates them with unit propagation hints to form linear substitution
  *  redundancy (LSR) proofs, which can be checked by `lsr-check`.
  * 
@@ -10,20 +10,27 @@
  *  formulas are equisatisfiable, meaning that the original formula is
  *  satisfiable if and only if the derived formula is. DSR proofs do this
  *  by incrementally adding and deleting clauses from the formula. Added
- *  clauses must be redundant, meaning that adding them to the formula
- *  does not affect its satisfiability. (In other words, that F and
- *  (F and C) are equisatisfiable.)
+ *  clauses must be redundant, i.e., adding them to the formula does not
+ *  affect its satisfiability. In other words, a clause C is redundant
+ *  with respect to formula F if formulas F and (F /\ C) are equisatisfiable.
  * 
  *  In most cases, DSR proofs are *unsatisfiability* proofs, meaning that
  *  the empty clause is eventually shown to be redundant. Since the empty
  *  clause is by definition unsatisfiable, this means that the original
  *  formula is unsatisfiable as well.
  * 
+ *  In clausal proof systems generally, addition lines may contain witnesses
+ *  that help the proof checker show that the clause is redundant. In SR,
+ *  these witnesses are substitutions, which map variables to either true,
+ *  false, or a literal. Intuitively, the substitution expresses how to
+ *  "repair" the formula if a satisfying assignment for F doesn't satisfy C.
+ * 
+ *  This repository uses two distinct proof formats: DSR and LSR.
  *  DSR proofs only contain clauses and substitution witnesses, and so
- *  `dsr-trim` must perform a kind of proof search to derive unit propagation
- *  hints. It maintains several data structures, such as a stack of unit
- *  literals/clauses and a record of which clauses were used in which UP
- *  derivations so as to minimize the number of hints.
+ *  `dsr-trim` must perform unit propagation across the entire formula to
+ *  derive hints. To that end, It maintains several data structures, such as
+ *  a stack of unit literals/clauses and a record of which clauses were used
+ *  in which UP derivations so that the number of hints may be minimized.
  * 
  *  More details can be found in the paper:
  * 
@@ -80,7 +87,7 @@ Potential optimizations:
 // This allows the checker to accept multiple copies of any clause without
 // actually storing multiple copies.
 // See `clause_mult_t`.
-#define INIT_CLAUSE_MULT_SIZE   (4)
+#define INIT_CLAUSE_MULT_SIZE   (16)
 
 // When setting literals "globally" under initial unit propagation, we use the
 // largest possible generation value.
@@ -312,9 +319,11 @@ static sr_timer_t timer;
 
 // Help messages and command line options
 
-#define FORWARD_OPT   ('f')
-#define BACKWARD_OPT  ('b')
-#define OPT_STR       ("bf" BASE_CLI_OPT_STR)
+#define FORWARD_OPT         ('f')
+#define BACKWARD_OPT        ('b')
+#define COMPRESS_PROOF_OPT  ('c')
+
+#define OPT_STR             ("bcf" BASE_CLI_OPT_STR)
 
 // A flag set by `getopt_long()` when the user requests a longer help message.
 static int long_help_msg_flag = 0;
@@ -332,6 +341,7 @@ static struct option const longopts[] = {
   { "streaming", no_argument, NULL, STREAMING_OPT },
   { "forward", no_argument, NULL, FORWARD_OPT },
   { "backward", no_argument, NULL, BACKWARD_OPT },
+  { "compress", no_argument, NULL, COMPRESS_PROOF_OPT },
   { "emit-valid-formula-to", required_argument, &emit_valid_formula, 1 },
   { NULL, 0, NULL, 0 }  // The array of structs must be NULL/0-terminated
 };
@@ -3215,9 +3225,8 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  p_strategy = PS_EAGER;
+  int forward_set = 0, backward_set = 0, compress_opt_set = 0;
   cli_opts_t cli;
-  int forward_set = 0, backward_set = 0;
   cli_init(&cli);
   
   // For emitting VALID formulas to a file, upon request
@@ -3230,45 +3239,48 @@ int main(int argc, char **argv) {
   cli_res_t cli_res;
   while ((ch = getopt_long(argc, argv, OPT_STR, longopts, NULL)) != -1) {
     switch (ch) {
-      case FORWARD_OPT:
-        FATAL_ERR_IF(backward_set, "Cannot set both backward and forward checking.");
-        FATAL_ERR_IF(forward_set, "Forward checking was set twice.");
-        forward_set = 1;
-        p_strategy = PS_STREAMING; // TODO: Make eager possible
-        ch_mode = FORWARDS_CHECKING_MODE;
-        break;
-      case BACKWARD_OPT:
-        FATAL_ERR_IF(forward_set, "Cannot set both backward and forward checking.");
-        FATAL_ERR_IF(backward_set, "Backward checking was set twice.");
-        backward_set = 1;
-        ch_mode = BACKWARDS_CHECKING_MODE;
-        break;
-      case 0: // Defined long options without a corresponding short option
-        if (long_help_msg_flag) {
-          print_long_help_msg(stdout);
+    case FORWARD_OPT:
+      FATAL_ERR_IF(backward_set, "Cannot set both backward and forward checking.");
+      FATAL_ERR_IF(forward_set, "Forward checking was set twice.");
+      forward_set = 1;
+      p_strategy = PS_STREAMING; // TODO: Make eager possible
+      ch_mode = FORWARDS_CHECKING_MODE;
+      break;
+    case BACKWARD_OPT:
+      FATAL_ERR_IF(forward_set, "Cannot set both backward and forward checking.");
+      FATAL_ERR_IF(backward_set, "Backward checking was set twice.");
+      backward_set = 1;
+      ch_mode = BACKWARDS_CHECKING_MODE;
+      break;
+    case COMPRESS_PROOF_OPT:
+      compress_opt_set = 1;
+      break;
+    case 0: // Defined long options without a corresponding short option
+      if (long_help_msg_flag) {
+        print_long_help_msg(stdout);
+        return 0;
+      } else if (emit_valid_formula) {
+        FATAL_ERR_IF(emit_valid_formula_opt_set,
+          "Cannot set the emit-valid-formula option twice.");
+        emit_valid_formula_opt_set = 1;
+        strncpy(emit_valid_formula_file_path, optarg, MAX_FILE_PATH_LEN - 1);
+      } else {
+        log_fatal_err("Unimplemented long option.");
+      }
+      break;
+    default:
+      cli_res = cli_handle_opt(&cli, ch, optopt, optarg);
+      switch (cli_res) {
+        case CLI_UNRECOGNIZED:
+          log_err("Unimplemented option.");
+          print_short_help_msg(stderr);
+          return 1;
+        case CLI_HELP_MESSAGE:
+          print_short_help_msg(stderr);
           return 0;
-        } else if (emit_valid_formula) {
-          FATAL_ERR_IF(emit_valid_formula_opt_set,
-            "Cannot set the emit-valid-formula option twice.");
-          emit_valid_formula_opt_set = 1;
-          strncpy(emit_valid_formula_file_path, optarg, MAX_FILE_PATH_LEN - 1);
-        } else {
-          log_fatal_err("Unimplemented long option.");
-        }
-        break;
-      default:
-        cli_res = cli_handle_opt(&cli, ch, optopt, optarg);
-        switch (cli_res) {
-          case CLI_UNRECOGNIZED:
-            log_err("Unimplemented option.");
-            print_short_help_msg(stderr);
-            return 1;
-          case CLI_HELP_MESSAGE:
-            print_short_help_msg(stderr);
-            return 0;
-          case CLI_SUCCESS: break;
-          default: log_fatal_err("Corrupted CLI result: %d", cli_res);
-        }
+        case CLI_SUCCESS: break;
+        default: log_fatal_err("Corrupted CLI result: %d", cli_res);
+      }
     }
   }
 
@@ -3354,6 +3366,11 @@ int main(int argc, char **argv) {
     logc("Doing BACKWARDS proof checking.");
   }
 
+  if (compress_opt_set) {
+    write_binary = 1;
+    logc("The emitted LSR proof will be in binary format (`-c` specified).");
+  }
+
   if (ch_mode == FORWARDS_CHECKING_MODE && p_strategy == PS_EAGER) {
     log_fatal_err("Forwards checking and eager parsing not implemented.");
   }
@@ -3364,6 +3381,15 @@ int main(int argc, char **argv) {
   timer_record(&timer, TIMER_LOCAL);
   parse_cnf(cnf_file);
   timer_print_elapsed(&timer, TIMER_LOCAL, "Parsing the CNF");
+
+  int input_proof_is_in_binary = configure_proof_file_parsing(dsr_file);
+  if (input_proof_is_in_binary) {
+    logc("Detected that the DSR proof is in binary format.");
+    if (write_binary == 0) {
+      logc("The emitted LSR proof will also be in binary format.");
+      write_binary = 1;
+    }
+  }
 
   prepare_dsr_trim_data();
   check_proof();

@@ -86,6 +86,7 @@
 #include "xmalloc.h"
 #include "logger.h"
 #include "global_data.h"
+#include "global_parsing.h"
 #include "range_array.h"
 #include "cli.h"
 #include "cnf_parser.h"
@@ -197,7 +198,7 @@ static void print_long_help_msg(FILE *f) {
  * specify clauses that become unit, or evaluate to false, under the
  * current partial assignment. If they are unit, then 
  * 
- * @returns `SATISFIED_OR_MUL`, `CONTRADICTION`, or the unit literal.
+ * @return `SATISFIED_OR_MUL`, `CONTRADICTION`, or the unit literal.
  */
 static int reduce(srid_t clause_index) {
   FATAL_ERR_IF(is_clause_deleted(clause_index),
@@ -613,6 +614,11 @@ int main(int argc, char *argv[]) {
   timer_record(&timer, TIMER_LOCAL);
   parse_cnf(cnf_file);
   timer_print_elapsed(&timer, TIMER_LOCAL, "Parsing the CNF");
+
+  int input_proof_is_in_binary = configure_proof_file_parsing(lsr_file);
+  if (input_proof_is_in_binary) {
+    logc("Detected that the LSR proof is in binary format.");
+  }
 
   prepare_lsr_check_data();
   check_proof();

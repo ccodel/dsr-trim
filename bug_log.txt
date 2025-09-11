@@ -26,7 +26,8 @@ dsr-trim:
     - (1/30/25) minimize_witness() had an off-by-one error when setting the write_iter, leading to a malformed minimized witness.
     - (2/12/25) During forwards/backwards checking, the order of literals in the clauses get rearranged, due to the reordering of watch pointers. Yet during backwards checking, we need to know what the pivot literal is. So we now store the pivot in the first slot of the witness, even if the witness is empty.
     - (2/14/25) When printing a clause back into an LSR proof, we were fetching the wrong pivot (based off of the clause id, instead of the line num).
-    - (2/26/26) Calling `add_wp_for_lit()` can re-allocate both the watch pointers array `wps` or the watch pointer list for any literal `wps[lit]`, so after calling it, aliases used in unit propagation need to be refreshed.
+    - (2/26/25) Calling `add_wp_for_lit()` can re-allocate both the watch pointers array `wps` or the watch pointer list for any literal `wps[lit]`, so after calling it, aliases used in unit propagation need to be refreshed.
+    - (9/9/25) Off-by-one error when calculating num_parsed_add_lines/indexes into `hints`. Mostly due to deriving the empty clause that isn't present in the SR proof, so we never incremenet num_parsed_add_lines appropriately.
 
 global_parsing.c:
     - Not taking the absolute value of a token, meaning that negative tokens get "mapped twice."

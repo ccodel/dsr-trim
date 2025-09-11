@@ -36,8 +36,8 @@ typedef unsigned long long ullong;
 typedef unsigned int uint;
 typedef unsigned long ulong;
 
-// If the SR proofs are massive, then `long long`s should be used. But for most
-// purposes, an int can be used instead.
+// If the SR proofs are massive, then `long long`s should be used.
+// But for most purposes, `int`s can be used instead.
 #ifdef LONGTYPE
 typedef llong srid_t;
 #define SRID_MSB         MSB64

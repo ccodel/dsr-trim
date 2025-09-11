@@ -13,7 +13,7 @@ SUPPFILESWITHDIR = $(addprefix $(SRCDIR)/,$(SUPPFILES))
 OFILES = $(addsuffix .o,$(SUPPFILESWITHDIR))
 
 # Executable files
-EXECS = dsr-trim lsr-check compress decompress
+EXECS = dsr-trim lsr-check compress
 EXECSWITHBINDIR = $(addprefix $(BINDIR)/,$(EXECS))
 
 # A note on Makefile conventions/syntax:

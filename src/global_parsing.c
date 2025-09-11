@@ -6,19 +6,37 @@
  * @date 2024-04-02
  */
 
+#include <ctype.h>
+
 #include "global_data.h"
 #include "global_parsing.h"
+#include "logger.h"
 
-#include <ctype.h>
+////////////////////////////////////////////////////////////////////////////////
 
 int read_binary = 0;
 int write_binary = 0;
 
-// Scans the input stream until a matching character is found. Ignores whitespace.
-// Consumes that matching character.
-// Returns 1 if the character was found, and 0 if a non-matching, non-whitespace character was found.
-// Errors and exits if EOF encountered.
-static inline int scan_until_char(FILE *f, int match) {
+int configure_proof_file_parsing(FILE *f) {
+  int c = getc_unlocked(f);
+  ungetc(c, f);
+  read_binary = IS_BINARY_LINE_START(c);
+  return read_binary;
+}
+
+/**
+ * @brief Scans the file `f` until a matching character `match` is found.
+ *        
+ * Any intervening whitespace is consumed.
+ * If `match` is found, then the `match` character is consumed from `f`.
+ * 
+ * Errors and exits if EOF is encountered before `match` is found.
+ * 
+ * @param f The file stream to read characters from.
+ * @param match The character to search for. Cannot be a whitespace character.
+ * @return 1 if `match` was found and consumed, 0 otherwise.
+ */
+int scan_until_char(FILE *f, int match) {
   int c;
   while ((c = getc_unlocked(f)) != EOF) {
     if (c == match) {
@@ -185,18 +203,50 @@ void write_clause_id(FILE *f, srid_t clause_id) {
 }
 #endif
 
+/**
+ * @brief Throws a fatal error that the file `f` is not a binary proof file.
+ * 
+ * Rather than throw a blanket "unexpected character" error when trying to
+ * parse a binary proof file, we instead examine `f` to see if it is an
+ * uncompressed proof file or if we encountered a truly unexpected
+ * character. This function prints the appropriate error message.
+ * 
+ * @param f The proof file that was expected to contain a binary proof.
+ */
+static void err_not_binary_proof(FILE *f) {
+  // If `f` starts with human-readable proof characters,
+  // then `f` might contain an uncompressed DSR/LSR proof
+  int c;
+  while ((c = getc_unlocked(f)) != EOF) {
+    if (isspace(c)) {
+      continue;
+    } else if (IS_HUMAN_READABLE_PROOF_CHAR(c)) {
+      log_fatal_err("Expected a binary proof, got an uncompressed proof.");
+    } else {
+      log_fatal_err("Unexpected character encountered: %c.", c);
+    }
+  }
+  
+  log_fatal_err("The proof file was empty or contained only whitespace.");
+}
+
 line_type_t read_dsr_line_start(FILE *f) {
   if (read_binary) {
-    // The next character should be 'a' or 'd'
+    // The next character should be the binary version of 'a' or 'd'
     int c = getc_unlocked(f);
     switch (c) {
-      case BINARY_ADDITION_LINE_START: return ADDITION_LINE;
-      case BINARY_DELETION_LINE_START: return DELETION_LINE;
-      default: log_fatal_err("Line didn't start with a good character.");
+      case DSR_BINARY_ADDITION_LINE_START: return ADDITION_LINE;
+      case DSR_BINARY_DELETION_LINE_START: return DELETION_LINE;
+      case LSR_BINARY_ADDITION_LINE_START:
+      case LSR_BINARY_DELETION_LINE_START:
+        log_fatal_err("Expected a binary DSR proof, got an LSR proof instead.");
+      default:
+        err_not_binary_proof(f);
     }
   } else {
     if (scan_until_char(f, 'd')) {
-      // Check that the next character is whitespace
+      // We found a deletion line!
+      // Check that the next character is whitespace (and consume it)
       int c = getc_unlocked(f);
       FATAL_ERR_IF(!isspace(c), "Expected whitespace after 'd'.");
       return DELETION_LINE;
@@ -208,10 +258,21 @@ line_type_t read_dsr_line_start(FILE *f) {
 
 line_type_t read_lsr_line_start(FILE *f, srid_t *line_id) {
   if (read_binary) {
-    // Scan for addition/deletion line, then a clause id
-    int res = read_dsr_line_start(f);
+    // Consume the BINARY start character, and then the clause ID
+    int c = getc_unlocked(f);
+    line_type_t line_type;
+    switch (c) {
+      case DSR_BINARY_ADDITION_LINE_START:
+      case DSR_BINARY_DELETION_LINE_START:
+        log_fatal_err("Expected a binary LSR proof, got a DSR proof instead.");
+      case LSR_BINARY_ADDITION_LINE_START: line_type = ADDITION_LINE; break;
+      case LSR_BINARY_DELETION_LINE_START: line_type = DELETION_LINE; break;
+      default:
+        err_not_binary_proof(f);
+    }
+    
     *line_id = read_clause_id_binary(f);
-    return res;
+    return line_type;
   } else {
     // Scan the line ID first, and then check for a deletion line.
     int res;
@@ -223,13 +284,13 @@ line_type_t read_lsr_line_start(FILE *f, srid_t *line_id) {
 
 void write_dsr_addition_line_start(FILE *f) {
   if (write_binary) {
-    putc_unlocked(BINARY_ADDITION_LINE_START, f);
+    putc_unlocked(DSR_BINARY_ADDITION_LINE_START, f);
   }
 }
 
 void write_dsr_deletion_line_start(FILE *f) {
   if (write_binary) {
-    putc_unlocked(BINARY_DELETION_LINE_START, f);
+    putc_unlocked(DSR_BINARY_DELETION_LINE_START, f);
   } else {
     putc_unlocked('d', f);
     putc_unlocked(' ', f);
@@ -237,7 +298,7 @@ void write_dsr_deletion_line_start(FILE *f) {
 }
 void write_lsr_addition_line_start(FILE *f, srid_t line_id) {
   if (write_binary) {
-    putc_unlocked(BINARY_ADDITION_LINE_START, f);
+    putc_unlocked(LSR_BINARY_ADDITION_LINE_START, f);
     write_clause_id_binary(f, line_id);
   } else {
     write_clause_id(f, line_id);
@@ -246,7 +307,7 @@ void write_lsr_addition_line_start(FILE *f, srid_t line_id) {
 
 void write_lsr_deletion_line_start(FILE *f, srid_t line_id) {
   if (write_binary) {
-    putc_unlocked(BINARY_DELETION_LINE_START, f);
+    putc_unlocked(LSR_BINARY_DELETION_LINE_START, f);
     write_clause_id_binary(f, line_id);
   } else {
     write_clause_id(f, line_id);
@@ -268,19 +329,20 @@ int has_another_line(FILE *f) {
   int c;
   if (read_binary) {
     // Should find either 'a' or 'd'
-    switch ((c = getc_unlocked(f))) {
-      case BINARY_ADDITION_LINE_START:
-      case BINARY_DELETION_LINE_START:
-        ungetc(c, f);
-        return 1;
-      case EOF: return 0;
-      default:  log_fatal_err("Unexpected binary character found.");
+    int c = getc_unlocked(f);
+    if (c == EOF) {
+      return 0;
+    } else if (IS_BINARY_LINE_START(c)) {
+      ungetc(c, f);
+      return 1;
+    } else {
+      log_fatal_err("Unexpected binary character found: %c.", c);
     }
   } else {
     // Ignore whitespace until a digit is found. Error if non-digit found.
     while ((c = getc_unlocked(f)) != EOF) {
       if (!isspace(c)) {
-        if (isdigit(c) || c == '-' || c == 'd') {
+        if (IS_HUMAN_READABLE_PROOF_CHAR(c)) {
           ungetc(c, f);
           return 1;
         } else {
