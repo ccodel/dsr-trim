@@ -537,7 +537,8 @@ static int sort_and_dedup_new_clause(int is_sr) {
   // Loop over the literals and compare adjacent literals
   // If the literals are the same, don't increment the write pointer
   // If the literals are negations, then we have a tautology
-  for (int i = 0; i < new_clause_size - 1; i++) {
+  uint comparisons_to_make = new_clause_size - (1 + is_sr);
+  for (uint i = 0; i < comparisons_to_make; i++) {
     prev_lit = lit;
     read_ptr++;
     lit = *read_ptr;
