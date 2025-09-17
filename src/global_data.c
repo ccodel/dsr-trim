@@ -628,6 +628,9 @@ static void set_min_and_max_clause_to_check(int lit) {
 }
 
 void compute_min_max_clause_to_check(srid_t line_num) {
+  // If we are trying to show the redundancy of the clause on `line_num`,
+  // we must potentially consider all clauses from index 0 to the index
+  // before the clause ID for `line_num`.
   min_clause_to_check = CLAUSE_ID_FROM_LINE_NUM(line_num) - 1;
   max_clause_to_check = 0;
 
@@ -721,16 +724,16 @@ void assume_subst(srid_t line_num) {
 // Returns the `pivot` literal of the clause (if nonempty), or `-1` if empty.
 int assume_negated_clause(srid_t clause_index, ullong gen) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "assume_negated_clause(): Clause index %lld was out of bounds (%lld).",
-    clause_index, formula_size);
+    "assume_negated_clause(): Clause %lld was out of bounds (%lld).",
+    TO_DIMACS_CLAUSE(clause_index), formula_size);
 
-  int *clause_iter = get_clause_start(clause_index);
-  int *end = get_clause_end(clause_index);
+  int *clause_iter = get_clause_start_unsafe(clause_index);
+  int *clause_end = get_clause_end(clause_index);
 
   // Only store the pivot if the clause is nonempty
-  int pivot = (clause_iter < end) ? clause_iter[0] : -1;
+  int pivot = (clause_iter != clause_end) ? clause_iter[0] : -1;
 
-  for (; clause_iter < end; clause_iter++) {
+  for (; clause_iter < clause_end; clause_iter++) {
     int lit = *clause_iter;
     set_lit_for_alpha(NEGATE_LIT(lit), gen);
   }
@@ -738,28 +741,48 @@ int assume_negated_clause(srid_t clause_index, ullong gen) {
   return pivot;
 }
 
-// Assumes the negation of the clause under the substitution.
-// As the negated literals are read in, they are evaluated against alpha.
-// If the clause is satisfied by alpha, then the assumption stops.
-// Returns SATISFIED_OR_MUL if the clause is satisfied by alpha (or the subst),
-// and 0 otherwise.
+/**
+ * @brief Assumes into the current truth assignment
+ *        the negation of the clause when mapped under the substitution.
+ * 
+ * When performing a RAT check, we get to assume the negation of the RAT clause
+ * `clause_index` (after mapping it under the current substitution)
+ * into the current truth assignment. Syntactically, this looks like:
+ * 
+ *   `F /\ !C /\ !(D|s) |-1 \bot`
+ * 
+ * Note that since all CNF clauses are disjunctive, the negation of a clause
+ * is the AND of the clause's negated unit literals.
+ * 
+ * To assume the negated mapped clause `D`, we loop through the literals of `D`
+ * and map each literal `l` under the current substitution. We then add the
+ * negation of the mapped literal to `alpha`.
+ * 
+ * If any literal evaluates to true under the substitution, or any mapped
+ * literal evaluates to true under `alpha`, then `D` is either not
+ * in `(F /\ C)|s` or it causes a trivial UP refutation, respectively.
+ * Any mapped literal that evaluates to false under `alpha` is ignored,
+ * since assuming it into `alpha` would have no effect.
+ * 
+ * @param clause_index The index of the clause to assume the negation of.
+ * @param gen The generation/timestamp to set for assumed literals.
+ * @return `SATISFIED_OR_MUL` if the clause is trivially satisfied/refuted,
+ *         and `0` otherwise.
+ */
 int assume_negated_clause_under_subst(srid_t clause_index, ullong gen) {
-  // TODO: Excludes the clause to be added (at formula_size)
-  FATAL_ERR_IF(clause_index < 0 || clause_index >= formula_size,
-    "assume_nc_under_subst(): Clause index %lld was out of bounds (%lld).",
-    clause_index, formula_size);
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "assume_neg_clause_under_subst(): Clause %lld was out of bounds (%lld).",
+    TO_DIMACS_CLAUSE(clause_index), formula_size);
   
-  int *clause_ptr = get_clause_start(clause_index);
-  int *end = get_clause_start(clause_index + 1);
-  for (; clause_ptr < end; clause_ptr++) {
-    int lit = *clause_ptr;
+  int *clause_iter = get_clause_start_unsafe(clause_index);
+  int *clause_end = get_clause_end(clause_index);
+  for (; clause_iter < clause_end; clause_iter++) {
+    int lit = *clause_iter;
     int mapped_lit = map_lit_under_subst(lit);
-    // Evaluate the lit under the substitution, assuming it won't be satisfied
     switch (mapped_lit) {
-      case SUBST_TT: return SATISFIED_OR_MUL;
       case SUBST_FF: break; // Ignore the literal
+      case SUBST_TT: return SATISFIED_OR_MUL;
       default:;
-        // Now evaluate the mapped literal under alpha. If it's unassigned, set it
         int mapped_eval = peval_lit_under_alpha(mapped_lit);
         switch (mapped_eval) {
           case FF: break; // Ignore the literal
@@ -782,7 +805,7 @@ int reduce_clause_under_subst(srid_t clause_index) {
 
   uint id_mapped_lits = 0;
   uint falsified_lits = 0;
-  int *iter = get_clause_start(clause_index);
+  int *iter = get_clause_start_unsafe(clause_index);
   int *end = get_clause_end(clause_index);
   int clause_size = end - iter;
 
@@ -817,16 +840,15 @@ int reduce_clause_under_subst(srid_t clause_index) {
 
 int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot) {
   FATAL_ERR_IF(is_clause_deleted(clause_index),
-  "Trying to reduce a deleted clause (%lld).",
-  TO_DIMACS_CLAUSE(clause_index));
+    "Trying to reduce supposed RAT clause %lld, but it has been deleted.",
+    TO_DIMACS_CLAUSE(clause_index));
 
-  uint negated_lits = 0;
-  int *iter = get_clause_start(clause_index);
+  int *iter = get_clause_start_unsafe(clause_index);
   int *end = get_clause_end(clause_index);
   int clause_size = end - iter;
   int negated_pivot = NEGATE_LIT(pivot);
 
-  for (; iter< end; iter++) {
+  for (; iter < end; iter++) {
     int lit = *iter;
     if (lit == pivot) {
       return SATISFIED_OR_MUL;
@@ -847,7 +869,7 @@ static srid_t move_min_forward(int lit, srid_t first, srid_t last) {
   for (++first; first < last; first++) {
     if (!is_clause_deleted(first)) {
       // Check the clause for the literal
-      int *clause_ptr = get_clause_start(first);
+      int *clause_ptr = get_clause_start_unsafe(first);
       int *end_ptr = get_clause_end(first);
       for (; clause_ptr < end_ptr; clause_ptr++) {
         if (*clause_ptr == lit) {
@@ -865,7 +887,7 @@ static srid_t move_max_backward(int lit, srid_t first, srid_t last) {
   for (--last; last > first; last--) {
     if (!is_clause_deleted(last)) {
       // Check the clause for the literal
-      int *clause_ptr = get_clause_start(last);
+      int *clause_ptr = get_clause_start_unsafe(last);
       int *end_ptr = get_clause_end(last);
       for (; clause_ptr < end_ptr; clause_ptr++) {
         if (*clause_ptr == lit) {

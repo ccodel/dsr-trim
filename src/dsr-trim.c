@@ -91,7 +91,7 @@ Potential optimizations:
 
 // When setting literals "globally" under initial unit propagation, we use the
 // largest possible generation value.
-#define GLOBAL_GEN   (ULLONG_MAX - 1)
+#define GLOBAL_GEN   (ULLONG_MAX - 1L)
 
 /**
  * @brief The generation value used when assuming the negation of a
@@ -480,8 +480,7 @@ static srid_t *get_deletions_end(srid_t line_num) {
 }
 
 static uint get_num_deletions(srid_t line_num) {
-  return (uint) (get_deletions_end(line_num) 
-    - get_deletions_start(line_num));
+  return (uint) (get_deletions_end(line_num) - get_deletions_start(line_num));
 }
 
 /**
@@ -892,6 +891,26 @@ static void print_hints(srid_t line_num) {
     srid_t rat_hint = *hints_iter; // Hints are already in DIMACS format
     print_mapped_hint(rat_hint);
   }
+}
+
+static void dbg_print_hints(srid_t line_num) {
+  log_raw(VL_NORMAL, "[line %lld] Hints: ", TO_DIMACS_LINE(line_num));
+
+  srid_t *hints_iter = get_UP_hints_start(line_num);
+  srid_t *hints_end = get_UP_hints_end(line_num);
+  for (; hints_iter < hints_end; hints_iter++) {
+    srid_t hint = *hints_iter; // Hints are already in DIMACS format
+    log_raw(VL_NORMAL, "%d ", hint);
+  }
+
+  hints_iter = get_RAT_hints_start(line_num);
+  hints_end = get_RAT_hints_end(line_num);
+  for (; hints_iter < hints_end; hints_iter++) {
+    srid_t rat_hint = *hints_iter; // Hints are already in DIMACS format
+    log_raw(VL_NORMAL, "%d ", rat_hint);
+  }
+
+  log_raw(VL_NORMAL, "\n");
 }
 
 /**
@@ -1376,7 +1395,7 @@ static void resize_units(void) {
 
     if (ch_mode == BACKWARDS_CHECKING_MODE) {
       unit_literals_wp_up_indexes = xrecalloc(unit_literals_wp_up_indexes,
-        old_size * sizeof(int), units_alloc_size * sizeof(int));
+        old_size * sizeof(uint), units_alloc_size * sizeof(uint));
     }
   }
 }
@@ -1399,6 +1418,7 @@ static void minimize_RAT_hints(void) {
   uint nrhg = get_num_RAT_hint_groups(current_line);
   if (nrhg == 0) return;
 
+  // Reset the skipped-indexes array, and malloc() if not yet allocated
   skipped_RAT_indexes_size = 0;
   if (skipped_RAT_indexes == NULL) {
     skipped_RAT_indexes_alloc_size = max_var;
@@ -1419,8 +1439,8 @@ static void minimize_RAT_hints(void) {
       srid_t hint;
       while (hints_iter < hints_end && (hint = *hints_iter) > 0) {
         hint = FROM_DIMACS_CLAUSE(hint);
-        hints_iter++;
         num_marked += adjust_clause_lui(hint);
+        hints_iter++;
       }
     } else if (IS_UNUSED_LUI(RAT_lui)) {
       // Add unused or "current" hints to the skipped indexes list
@@ -1573,7 +1593,7 @@ static void minimize_RAT_hints(void) {
  * @param gen The generation value to mark the dependencies with.
  */
 static void mark_clause(srid_t clause, int offset, ullong gen) {
-  int *clause_iter = get_clause_start(clause) + offset; 
+  int *clause_iter = get_clause_start_unsafe(clause) + offset; 
   int *clause_end = get_clause_end(clause);
   for (; clause_iter < clause_end; clause_iter++) {
     int lit = *clause_iter;
@@ -1676,6 +1696,12 @@ static void mark_and_store_up_refutation(srid_t from_clause, ullong gen) {
     print_lsr_line(current_line, LINE_ID_FROM_LINE_NUM(current_line));
     ra_reset(&hints);
   }
+}
+
+// A wrapper for `mark_and_store_up_refutation()` for the empty clause.
+static inline void mark_and_store_empty_clause_refutation(srid_t c, ullong g) {
+  derived_empty_clause = 1;
+  mark_and_store_up_refutation(c, g);
 }
 
 static void store_RAT_dependencies(srid_t from_clause) {
@@ -1787,10 +1813,6 @@ static void print_stored_lsr_proof(void) {
  * the same overall effect as mapping l to m's truth value directly when
  * evaluating the clause under the substitution and doing RAT checking.
  * 
- * A witness containing a literal l set to true that is set to false via global
- * UP before assuming the negation of the candidate, means a witness is
- * inconsistent with the formula, and will cause an error.
- * 
  * Minimization is done by a single loop over the witness. Unnecessary literals
  * l -> T/F are removed, and any l -> m in the substitution portion with
  * m -> T/F in alpha are set to l -> T/F. If l -> m is set to l -> T/F, it
@@ -1875,7 +1897,8 @@ static int minimize_witness(void) {
        */
       if (VAR_FROM_LIT(lit) == VAR_FROM_LIT(pivot) && lit_subst != UNASSIGNED) {
         if ((lit_subst ^ IS_NEG_LIT(pivot)) == FF) {
-          log_msg(VL_VERBOSE, "WE MUST FIND A NEW PIVOT: %d", pivot);
+          logv("[line %lld] We must find a new pivot: %d",
+            TO_DIMACS_LINE(current_line), TO_DIMACS_LIT(pivot));
           must_find_new_pivot = 1;
           // We *do* keep this "redundant" literal (TODO document why later)
         }
@@ -1886,8 +1909,8 @@ static int minimize_witness(void) {
     // TODO: Brittle negation, based on hard-coded values of peval_t.
     if (lit_alpha != UNASSIGNED) {
       if (lit_alpha == lit_subst) {
-        log_msg(VL_VERBOSE, "[line %lld] Redundant witness literal %d (idx %d)",
-          current_line + 1, TO_DIMACS_LIT(lit),
+        logv("[line %lld] Redundant witness literal %d (idx %d)",
+          TO_DIMACS_LINE(current_line), TO_DIMACS_LIT(lit),
           (int) (witness_iter - get_witness_start(current_line)));
         keep_lit = 0;
       }
@@ -1939,7 +1962,7 @@ static int minimize_witness(void) {
  * @param cc_index The clause ID for the candidate clause.
  */
 static void find_new_pivot_for_witness(srid_t cc_index) {
-  int *clause_iter = get_clause_start(cc_index);
+  int *clause_iter = get_clause_start_unsafe(cc_index);
   int *clause_end = get_clause_end(cc_index);
 
   // Find a non-FF literal under the witness
@@ -2097,10 +2120,6 @@ static void set_unit_clause(int lit, srid_t clause, ullong gen) {
 
   // log_msg(VL_VERBOSE, "[line %lld] Setting clause %d to unit on literal %d",
   //  current_line, TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
-
-  FATAL_ERR_IF(clause > CLAUSE_ID_FROM_LINE_NUM(current_line),
-    "Clause %lld is set to unit before its line %lld",
-    TO_DIMACS_CLAUSE(clause), current_line);
 
   resize_units();
 
@@ -2517,7 +2536,7 @@ static inline srid_t perform_up(ullong gen) {
 static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
   FATAL_ERR_IF(up_state != GLOBAL_UP, "up_state not GLOBAL_UP.");
 
-  int *clause = get_clause_start(clause_index);
+  int *clause = get_clause_start_unsafe(clause_index);
   uint clause_size = get_clause_size(clause_index);
 
   FATAL_ERR_IF(clause_size == 0, "Cannot add wps and UP on the empty clause");
@@ -2530,8 +2549,7 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
     switch (peval_lit_under_alpha(lit)) {
       case FF:
         // If the literal is false, then we have a UP refutation
-        derived_empty_clause = 1;
-        mark_and_store_up_refutation(clause_index, gen);
+        mark_and_store_empty_clause_refutation(clause_index, gen);
         return;
       case TT:;
         /* If the literal is true, then the unit clause is "duplicated"
@@ -2586,8 +2604,7 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
 
     switch (non_ff_lit_counter) {
       case 0:
-        derived_empty_clause = 1;
-        mark_and_store_up_refutation(clause_index, gen);
+        mark_and_store_empty_clause_refutation(clause_index, gen);
         break;
       case 1:
         set_unit_clause(clause[0], clause_index, GLOBAL_GEN);
@@ -2603,8 +2620,7 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
   // We don't have an immediate contradiction, so perform unit propagation
   srid_t falsified_clause = perform_up(GLOBAL_GEN);
   if (falsified_clause >= 0) {
-    derived_empty_clause = 1;
-    mark_and_store_up_refutation(falsified_clause, gen);
+    mark_and_store_empty_clause_refutation(falsified_clause, gen);
   }
 }
 
@@ -2885,8 +2901,8 @@ static void store_clause_check_range(srid_t line_num) {
   min_max_clause_t *mm = &lines_min_max_clauses_to_check[line_num];
   mm->min_clause = min_clause_to_check;
   mm->max_clause = max_clause_to_check;
-  log_msg(VL_VERBOSE, "[line %lld] Storing clause range %lld to %lld",
-    line_num + 1, TO_DIMACS_CLAUSE(min_clause_to_check),
+  logv("[line %lld] Storing clause range %lld to %lld",
+    TO_DIMACS_LINE(line_num), TO_DIMACS_CLAUSE(min_clause_to_check),
     TO_DIMACS_CLAUSE(max_clause_to_check));
 }
 
@@ -2970,10 +2986,14 @@ static void check_RAT_clause(srid_t clause_index) {
       // If the RAT clause is not satisfied by alpha, do UP
       if (assume_RAT_clause_under_subst(clause_index) != SATISFIED_OR_MUL) {
         srid_t falsified_clause = perform_up(alpha_generation);
-        if (falsified_clause == -1) emit_RAT_UP_failure_error(clause_index);
+        if (falsified_clause == -1) {
+          emit_RAT_UP_failure_error(clause_index);
+        }
+
         mark_up_derivation(falsified_clause, alpha_generation);
         store_RAT_dependencies(falsified_clause);
       }
+
       unassume_RAT_clause(clause_index);
       alpha_generation += GEN_INC; // Clear this round of RAT units from alpha
       break;
@@ -3051,8 +3071,8 @@ candidate_valid:
 
   if (ch_mode == FORWARDS_CHECKING_MODE) {
     perform_clause_first_last_update(CLAUSE_ID_FROM_LINE_NUM(current_line));
+    add_wps_and_perform_up(get_effective_formula_size(), old_alpha_gen);
     current_line++;
-    add_wps_and_perform_up(get_effective_formula_size() - 1, old_alpha_gen);
   }
 }
 
