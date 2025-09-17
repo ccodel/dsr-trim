@@ -202,7 +202,8 @@ static inline void update_first_last(int lit, srid_t clause_index) {
 }
 
 /**
- * @brief Inserts a literal into the literal database.
+ * @brief Inserts a literal into the literal database, adjusts `max_var`,
+ *        and increments the `new_clause_size`.
  * 
  * In addition, this function updates `max_var` and allocates data structures
  * that depend on `max_var` for their allocation size, if necessary.
@@ -216,6 +217,7 @@ static inline void update_first_last(int lit, srid_t clause_index) {
 void insert_lit(int lit) {
   // Insert the literal into the literal database
   INSERT_ARR_ELT_CONCAT(lits_db, sizeof(int), lit);
+  new_clause_size++;
 
   // Resize the other var-indexed arrays if new max would exceed allocated size
   int var = VAR_FROM_LIT(lit);
@@ -301,8 +303,6 @@ void commit_clause_with_first_last_update(void) {
 void uncommit_clause_with_first_last_update(void) {
   // Reverse direction of `commit_clause_w_f_l_update()`.
   formula_size--;
-  // int *clause = get_clause_start_unsafe(formula_size);
-  // uint clause_size = get_clause_size(formula_size);
 }
 
 inline int is_clause_deleted(srid_t clause_index) {
@@ -415,8 +415,8 @@ inline int *get_clause_start_unsafe(srid_t clause_index) {
 
 int *get_clause_start(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "get_clause_start(): Clause index %lld was out of bounds (%lld).",
-    clause_index, formula_size);
+    "get_clause_start(): Clause %lld was out of bounds (%lld).",
+    TO_DIMACS_CLAUSE(clause_index), formula_size);
   return lits_db + CLAUSE_IDX(formula[clause_index]);
 }
 
@@ -430,8 +430,8 @@ int *get_clause_end_unsafe(srid_t clause_index) {
 
 int *get_clause_end(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "get_clause_end(): Clause index %lld was out of bounds (%lld).",
-    clause_index, formula_size);
+    "get_clause_end(): Clause %lld was out of bounds (%lld).",
+    TO_DIMACS_CLAUSE(clause_index), formula_size);
 
   if (clause_index == formula_size) {
     return lits_db + lits_db_size;
@@ -453,6 +453,128 @@ uint get_clause_size(srid_t clause_index) {
       - CLAUSE_IDX(formula[clause_index]));
   }
 }
+
+/**
+ * @brief Sorts the literals in the uncommitted, newly-parsed clause,
+ *        removes duplicates, and checks for tautologies.
+ * 
+ * This function sorts the literals of the new clause in increasing order
+ * of magnitude, removes duplicate literals, and detects if the clause
+ * is a tautology. The `new_clause_size` is updated to reflect the number
+ * of distinct literals.
+ * 
+ * Assumes the caller has set `new_clause_size` to the correct number
+ * of uncommitted literals. If the caller uses `insert_lit()`, then
+ * this handled automatically, as long as `new_clause_size` was set to
+ * `0` before parsing a new clause.
+ * 
+ * If `1` is returned, then the clause may not be deduplicated, but
+ * all distinct literals will still be present and sorted. The value of
+ * `new_clause_size` will be unaffected.
+ * 
+ * @param is_sr `1` if the first literal (i.e., the pivot) should be
+ *              fixed in the 0th position, regardless of its value.
+ * @return `1` if the clause is a tautology, and `0` otherwise.
+ */
+static int sort_and_dedup_new_clause(int is_sr) {
+  // Units and the empty clause are already sorted and cannot be tautologies
+  // Also, `qsort()` has undefined behavior on 0 or 1 elements
+  // (Or rather, I ran into some trouble at very low sizes in `dsr-trim`)
+  if (new_clause_size <= 1) {
+    return 0;
+  }
+
+  /* 
+   * We now sort the literals of the clause in increasing order of magnitude,
+   * which standardizes the representation of the clause. Sorting the literals
+   * in this fashion also lets us efficiently detect duplicated literals
+   * and whether the clause is a tautology.
+   * 
+   * In almost all cases, clauses will not be tautologies and won't
+   * contain duplicated literals, but we do this check to be safe.
+   * Certainly when it comes to efficient RAT proof checking, we want
+   * to have an accurate count of how many times each literal occurs.
+   * See `lsr-check.c` for more information.
+   * 
+   * As for why we especially want to check for tautologies:
+   * When it comes to proof checking, tautological clauses are useless, and
+   * so the caller might want to ignore tautologies, or reject CNF formulas
+   * that contain tautologies.
+   * 
+   * The way we remove duplicate literals is somewhat complicated.
+   * After sorting, we move a read pointer over the clause. Any time we
+   * find a duplicate literal, we skip it, and we write subsequent literals
+   * to a `write_ptr` that lags behind the read pointer. This is an in-place
+   * version of looping over one array and writing valid elements to a
+   * second array, ignoring invalid elements.
+   */
+
+  int *read_ptr = get_clause_start(formula_size) + is_sr;
+  int *write_ptr = read_ptr + 1; // First literal is always in the correct spot
+  int negated_pivot = (is_sr) ? NEGATE_LIT(read_ptr[-1]) : -1;
+
+  // Edge case: binary SR clauses. Check if the second literal causes tautology
+  if (is_sr && new_clause_size == 2) {
+    return (read_ptr[0] == negated_pivot);
+  }
+
+  qsort(read_ptr, new_clause_size - is_sr, sizeof(int), absintcmp);
+
+  // If we are sorting an SR clause, we need to keep the pivot in mind.
+  // The SR parser should never place two copies of the pivot in the clause,
+  // but we could have a tautology on the pivot.
+
+  int skipped_lits = 0;
+  int prev_lit;
+  int lit = read_ptr[0];
+
+  // Since the loop below does all adjacent comparisons, we add a special
+  // check for the very first literal after the pivot
+  if (is_sr && lit == negated_pivot) {
+    return 1;
+  }
+
+  // Loop over the literals and compare adjacent literals
+  // If the literals are the same, don't increment the write pointer
+  // If the literals are negations, then we have a tautology
+  for (int i = 0; i < new_clause_size - 1; i++) {
+    prev_lit = lit;
+    read_ptr++;
+    lit = *read_ptr;
+
+    if (prev_lit == lit) {
+      skipped_lits++;
+    } else if (prev_lit == NEGATE_LIT(lit)
+                || (is_sr && lit == negated_pivot)) {
+      return 1;
+    } else {
+      // Only write a literal if the write pointer has lagged behind
+      // Otherwise, writing `lit` is a no-op, as it would write in-place
+      if (skipped_lits > 0) {
+        *write_ptr = lit;
+      }
+
+      write_ptr++;
+    }
+  }
+
+  new_clause_size -= skipped_lits;
+  lits_db_size -= skipped_lits;
+  return 0;
+}
+
+// Sorts and deduplicates a new uncommitted CNF clause.
+// See `sort_and_dedup_new_clause()` in `global_data.c`.
+inline int sort_and_dedup_new_cnf_clause(void) {
+  return sort_and_dedup_new_clause(0);
+}
+
+// Sorts and deduplicates a new uncommitted SR clause.
+// See `sort_and_dedup_new_clause()` in `global_data.c`.
+inline int sort_and_dedup_new_sr_clause(void) {
+  return sort_and_dedup_new_clause(1);
+}
+
 
 /**
  * @brief Scrubs the existence of any clause after `clause_index`, instead

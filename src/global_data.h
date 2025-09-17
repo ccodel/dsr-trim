@@ -74,6 +74,8 @@ typedef enum peval {
 
 #define NOT_REDUCED              (-4)
 #define REDUCED                  (-3)
+
+// Satisfied or multiple unassigned literals
 #define SATISFIED_OR_MUL         (-2)
 #define CONTRADICTION            (-1)
 
@@ -266,6 +268,8 @@ int *get_clause_end_unsafe(srid_t clause_index);
 int *get_clause_end(srid_t clause_index);
 uint get_clause_size(srid_t clause_index);
 
+int sort_and_dedup_new_cnf_clause(void);
+int sort_and_dedup_new_sr_clause(void);
 void discard_formula_after_clause(srid_t clause_index);   
 
 int *get_witness_start(srid_t line_num);

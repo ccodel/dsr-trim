@@ -53,22 +53,21 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
     switch (num_times_found_pivot) {
       case 1: // We're reading the clause
         insert_lit(lit);
-        new_clause_size++;
         break;
       default: // We're reading the substitution part of the witness
         // Only the pivot is allowed to map to itself
         FATAL_ERR_IF(subst_pair_incomplete && prev_lit == lit
           && VAR_FROM_LIT(lit) != VAR_FROM_LIT(pivot),
           "[line %lld] Witness maps literal %d to itself",
-          line_num + 1, TO_DIMACS_LIT(lit));
+          TO_DIMACS_LINE(line_num), TO_DIMACS_LIT(lit));
         subst_pair_incomplete = !subst_pair_incomplete;
       case 2:  // We're reading the witness (waterfalls from above)
         FATAL_ERR_IF(VAR_FROM_LIT(lit) > max_var,
           "[line %lld] Var %d out of range.",
-          line_num + 1, VAR_FROM_LIT(lit));
+          TO_DIMACS_LINE(line_num), VAR_FROM_LIT(lit));
         FATAL_ERR_IF(num_times_found_pivot == 2 && lit == NEGATE_LIT(pivot),
           "[line %lld] In the PR part of the witness, the pivot %d maps to FF",
-          line_num + 1);
+          TO_DIMACS_LINE(line_num));
         num_witness_atoms_parsed++;
         ra_insert_int_elt(&witnesses, lit);
         break;
@@ -76,14 +75,14 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
   }
 
   FATAL_ERR_IF(subst_pair_incomplete,
-    "[line %lld] Missing half of subst map.", line_num + 1);
+    "[line %lld] Missing half of subst map.", TO_DIMACS_LINE(line_num));
 
   // Because the witness might get minimized, we add the witness terminator
   if (num_witness_atoms_parsed > 0) {
     ra_insert_int_elt(&witnesses, WITNESS_TERM);
   } else if (num_times_found_pivot > 0) {
     /*
-      Along that `num_witness_atoms_parsed == 0`, we know that the clause
+      Since `num_witness_atoms_parsed == 0`, we know that the clause
       cannot be empty, but it will either be a UP clause or a DRAT clause,
       since we didn't parse any additional witness atoms.
       We need to store the pivot to that during backwrads checking we don't
@@ -92,7 +91,12 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
     ra_insert_int_elt(&witnesses, pivot);
   }
 
-  ra_commit_range(&witnesses);
+  // Put the SR clause in "standard form" and check for tautology
+  int is_tautology = sort_and_dedup_new_sr_clause();
+  FATAL_ERR_IF(is_tautology, "[line %lld] The SR clause is a tautology.",
+    TO_DIMACS_LINE(line_num));
+
+  // Officially add both the SR clause and its witness to the data structures
   commit_clause();
-  // TODO: Remove duplicate literals in the clause or witness?
+  ra_commit_range(&witnesses);
 }

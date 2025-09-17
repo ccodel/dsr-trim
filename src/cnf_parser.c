@@ -1,6 +1,6 @@
 /**
  * @file cnf_parser.c
- * @brief Parses CNF files and stores them in global data structures.
+ * @brief Parses CNF formulas and stores them in global data structures.
  * 
  * @author Cayden Codel (ccodel@andrew.cmu.edu)
  * @date 2024-02-11
@@ -15,56 +15,46 @@
 #include "cnf_parser.h"
 #include "logger.h"
 
+////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * @brief Consumes and parses a single new clause from the CNF file `f`.
+ *        Returns `1` if the clause is a tautology, and `0` otherwise.
+ * 
+ * The newly consumed and parsed clause is stored in the literals database
+ * `lits_db`, but the new clause is not committed. This allows the caller
+ * to handle tautologies and potentially remove the uncommitted clause.
+ * The number of parsed literals is stored in `new_clause_size`.
+ * 
+ * The new clause will have its literals sorted in increasing order of
+ * magnitude, and duplicate literals will be removed.
+ * 
+ * This function does NOT adjust the clause's first/last literal values.
+ * To do that, the caller must call `commit_clause_with_first_last_update()`.
+ * Also see `lits_first_last_clauses` in `global_data.h`.
+ * 
+ * Any comment lines before the start of the clause, or appearing between
+ * literals of the clause, are consumed and ignored. Note: comment lines may
+ * appear at any point, as long as they appear on their own line starting
+ * with a `'c'`. Comments after the ending of the clause are not consumed.
+ * 
+ * If the clause is a tautology (i.e., a `1` is returned), then
+ * 
+ * @param f The file stream to parse a clause from.
+ * @return `1` if the clause is a tautology, and `0` otherwise.
+ */
 int parse_clause(FILE *f) {
+  // Since we're parsing a new clause, reset the global variable
   new_clause_size = 0;
+
+  // Parse literals until we see an ending `0`
   int parsed_lit = 0;
   while ((parsed_lit = read_formula_lit(f)) != 0) {
     int lit = FROM_DIMACS_LIT(parsed_lit);
     insert_lit(lit);
-    new_clause_size++;
   }
 
-  // TODO: Pull this out into helper for sr_parser?
-  int *write_ptr, *read_ptr = get_clause_start(formula_size);
-  if (new_clause_size <= 1) {
-    return 0;
-  }
-
-  // Now we sort the literals in the clause
-  // Then, we efficiently remove duplicate literals and detect tautologies
-  qsort(read_ptr, new_clause_size, sizeof(int), absintcmp);
-  int is_tautology = 0;
-  int skipped_lits = 0;
-  int lit, next_lit = read_ptr[0];
-
-  for (int i = 0; i < new_clause_size - 1; i++) {
-    read_ptr++;
-    lit = next_lit;
-    next_lit = *read_ptr;
-
-    if (lit == next_lit) {
-      skipped_lits++;
-      if (skipped_lits == 1) {
-        write_ptr = read_ptr - 1;
-      }
-    } else if (lit == NEGATE_LIT(next_lit)) {
-      is_tautology = 1;
-      break;
-    } else if (skipped_lits > 0) {
-      *write_ptr = lit;
-      write_ptr++;
-    }
-  }
-
-  // Write the last literal - this could "write" a duplicate
-  // However, the duplicate is "erased" when the lits_db_size is adjusted below
-  if (skipped_lits > 0) {
-    *write_ptr = next_lit;
-  }
-
-  new_clause_size -= skipped_lits;
-  lits_db_size -= skipped_lits;
-  return is_tautology;
+  return sort_and_dedup_new_cnf_clause();
 }
 
 void parse_cnf(FILE *f) {
@@ -92,19 +82,19 @@ void parse_cnf(FILE *f) {
 
   // Formula parsing requires that newlines are left unconsumed until
   // the next call to `parse_formula_lit()`. This allows the parser 
-  // to know where valid comment lines occur (after a newline).
+  // to know where valid comment lines occur (i.e., after a newline).
   // We add the newline here to maintain this invariant.
   ungetc('\n', f);
 
   init_global_data();
 
   // Now parse in the rest of the CNF file
-  // We assume that no more comment lines can appear
+  // Any intervening comment lines are ignored. (See `read_formula_lit()`.)
   while (formula_size < num_cnf_clauses) {
     int is_tautology = parse_clause(f);
     if (new_clause_size == 0) {
       log_fatal_err("The empty clause was found at clause %lld in the CNF.",
-        formula_size);
+        TO_DIMACS_CLAUSE(formula_size));
     } else if (is_tautology) {
       logc("Tautology in clause %lld detected, deleting...", formula_size);
       commit_clause();
