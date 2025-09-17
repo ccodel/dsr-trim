@@ -13,5 +13,6 @@
 
 void lsr_err_no_rat_hint_group(srid_t clause_id);
 void lsr_err_no_up_contradiction(srid_t clause_id, srid_t contra_hint);
+void lsr_err_satisfied_clause_hint(srid_t clause_id);
 
 #endif /* _LSR_CHECK_ERR_H_ */

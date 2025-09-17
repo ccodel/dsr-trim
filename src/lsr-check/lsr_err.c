@@ -118,3 +118,19 @@ void lsr_err_no_up_contradiction(srid_t clause_id, srid_t contra_hint) {
 
   exit(1);
 }
+
+void lsr_err_satisfied_clause_hint(srid_t clause_id) {
+  switch (err_verbosity_level) {
+    case VL_VERBOSE:
+      dbg_print_clause(CLAUSE_ID_FROM_LINE_NUM(current_line));
+      dbg_print_witness(current_line);
+    case VL_NORMAL:
+      log_err(
+          "[line %lld | id %lld] UP-hinted clause %lld was satisfied.",
+          get_line_id_for_line_num(current_line),
+          LINE_ID_FROM_LINE_NUM(current_line), TO_DIMACS_CLAUSE(clause_id));
+    default: LOG_MORE_INFO_MSG();
+  }
+
+  exit(1);
+}

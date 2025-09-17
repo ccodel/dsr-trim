@@ -207,10 +207,10 @@ static int reduce(srid_t clause_index) {
     TO_DIMACS_CLAUSE(clause_index));
 
   int unit_lit = CONTRADICTION;
-  int *start = get_clause_start_unsafe(clause_index);
-  int *end = get_clause_start(clause_index + 1);
-  for (; start < end; start++) {
-    int lit = *start;
+  int *clause_iter = get_clause_start_unsafe(clause_index);
+  int *clause_end = get_clause_end(clause_index);
+  for (; clause_iter < clause_end; clause_iter++) {
+    int lit = *clause_iter;
     int peval_lit = peval_lit_under_alpha(lit);
     switch (peval_lit) {
       case UNASSIGNED:
@@ -263,8 +263,7 @@ static int unit_prop(srid_t **hint_ptr, srid_t *hints_end, ullong gen) {
         *hint_ptr = hints_iter;
         return CONTRADICTION;
       case SATISFIED_OR_MUL: // Unit propagation shouldn't give us either
-        log_fatal_err("[line %lld] Found satisfied clause %lld in UP hint.",
-          LINE_ID_FROM_LINE_NUM(current_line), up_clause);
+        lsr_err_satisfied_clause_hint(up_clause);
       default: // We have unit on a literal - extend alpha
         set_lit_for_alpha(up_res, gen);
     }
@@ -349,12 +348,12 @@ static void check_RAT_clause(srid_t i, srid_t **iter_ptr,
        * the expected clause ID, we must scan through all RAT hints to find
        * a matching hint.
        */
-      if (hints_iter < hints_end && -((*hints_iter) + 1) == i) {
+      if (hints_iter < hints_end && FROM_RAT_HINT(*hints_iter) == i) {
         up_iter = hints_iter;
       } else {
         // Scan all the RAT hints for a negative ID matching this clause
         for (up_iter = hints_start; up_iter < hints_end; up_iter++) {
-          if (-((*up_iter) + 1) == i) {
+          if (FROM_RAT_HINT(*up_iter) == i) {
             hints_iter = MAX(hints_iter, up_iter);
             break;
           }
@@ -390,10 +389,10 @@ static void check_RAT_clause(srid_t i, srid_t **iter_ptr,
       break;
     case CONTRADICTION:
       log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
-        current_line + 1, TO_DIMACS_CLAUSE(i));
+        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(i));
     default:
       log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
-        current_line + 1, TO_DIMACS_CLAUSE(i),
+        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(i),
         reduce_clause_under_subst(i)); 
   }
 
@@ -440,7 +439,10 @@ static void check_line(void) {
   // Double-check that the proposed clause is not the empty clause
   // (The empty clause cannot have a witness, and must have a UP contradiction)
   FATAL_ERR_IF(new_clause_size == 0,
-    "UP didn't derive contradiction for empty clause.");
+    "[line %lld | id %lld] No UP contradiction for the empty clause.",
+      get_line_id_for_line_num(current_line),
+      LINE_ID_FROM_LINE_NUM(current_line));
+
   assume_subst(current_line);
 
   // If the witness is a single literal, then we can check only the RAT clauses

@@ -46,6 +46,9 @@ void log_msg(vlevel_t level, const char *format, ...);
 // Alias for `log_msg(VL_NORMAL, ...)`.
 void logc(const char *format, ...);
 
+// Alias for `log_msg(VL_VERBOSE, ...)`.
+void logv(const char *format, ...);
+
 // Logs a message to `stderr`.
 // Begins the message with `"Error: "` and end the message with a newline `'\n'`.
 void log_err(const char *format, ...);
