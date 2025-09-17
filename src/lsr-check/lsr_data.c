@@ -30,6 +30,8 @@ uint *lits_occurrences = NULL;
 FILE *lsr_file = NULL;
 sr_timer_t timer;
 
+static srid_t num_parsed_lines = 0;
+
 ////////////////////////////////////////////////////////////////////////////////
 
 srid_t get_line_id_for_clause(srid_t clause_id) {
@@ -189,9 +191,8 @@ static void insert_hint(srid_t clause_id) {
   id = FROM_DIMACS_CLAUSE(id);
   srid_t current_line_id = LINE_ID_FROM_LINE_NUM(current_line);
   FATAL_ERR_IF(id > current_line_id || is_clause_deleted(id),
-    "[line %lld (id %lld)] Clause %lld is out of bounds or is deleted.",
-    TO_DIMACS_CLAUSE(current_line), LINE_ID_FROM_LINE_NUM(current_line),
-    TO_DIMACS_CLAUSE(id));
+    "[line %lld | id %lld] Clause %lld is out of bounds or is deleted.",
+    num_parsed_lines, current_line_id, TO_DIMACS_CLAUSE(id));
 
   ra_insert_srid_elt(&hints, clause_id);
 
@@ -314,10 +315,6 @@ line_type_t prepare_next_lsr_line(void) {
  * This way, we reduce our memory overhead and benefit from caching.
  */
 line_type_t parse_lsr_line(void) {
-  // Track the number of parsed lines across calls to this function
-  // We don't need this variable outside this function, so we mark it `static`
-  static srid_t num_parsed_lines = 0;
-
   num_parsed_lines++;
   srid_t line_id, clause_id;
   line_type_t line_type = read_lsr_line_start(lsr_file, &line_id);

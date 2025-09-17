@@ -92,7 +92,7 @@ uint get_num_RAT_hints(void);
  * pointer to the end of the hints, not merely a size.
  */
 #define get_hints_end()    ((srid_t *) \
-    ra_get_range_start(&hints, (p_strategy == PS_EAGER) ? current_line + 1 : 1))
+    ra_get_range_end(&hints, (p_strategy == PS_EAGER) ? current_line : 0))
 
 void mark_clause_as_checked(srid_t clause_id);
 
@@ -105,7 +105,7 @@ void mark_clause_as_checked(srid_t clause_id);
 // Returns a pointer to the end of the current line's deletions, if any.
 // Implemented as a macro.
 #define get_deletions_end()    \
-    ((srid_t *) ra_get_range_start(&deletions, current_line + 1))
+    ((srid_t *) ra_get_range_end(&deletions, current_line))
 
 void prepare_lsr_check_data(void);
 int has_another_lsr_line(void);
