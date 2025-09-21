@@ -20,23 +20,36 @@
  * the directory and file strings are separate, and so to cap the length of
  * a string buffer, we use this macro.
  */
-#define MAX_FILE_PATH_LEN       (256)
+#define MAX_FILE_PATH_LEN     (256)
 
-#define HELP_MSG_OPT            ('h')
-#define QUIET_MODE_OPT          ('q')
-#define VERBOSE_MODE_OPT        ('v')
-#define VERBOSE_ERRORS_OPT      ('V')
-#define DIR_OPT                 ('d')
-#define NAME_OPT                ('n')
-#define EAGER_OPT               ('e')
-#define STREAMING_OPT           ('s')
+#define HELP_MSG_OPT          ('h')
+#define LONG_HELP_MSG_OPT     (130)
+#define QUIET_MODE_OPT        ('q')
+#define VERBOSE_MODE_OPT      ('v')
+#define VERBOSE_ERRORS_OPT    ('V')
+#define DIR_OPT               ('d')
+#define NAME_OPT              ('n')
+#define EAGER_OPT             ('e')
+#define STREAMING_OPT         ('s')
 
-#define BASE_CLI_OPT_STR        "d:ehn:qsvV"
+// The base option string used by `getopt_long()`.
+// Not wrapped in parentheses to allow for C string-literal concatenation.
+#define BASE_CLI_OPT_STR      "d:ehn:qsvV"
+
+#define BASE_LONG_OPTS_ARRAY       \
+  { "help",      no_argument,       NULL, LONG_HELP_MSG_OPT }, \
+  { "dir",       required_argument, NULL, DIR_OPT },           \
+  { "name",      required_argument, NULL, NAME_OPT },          \
+  { "eager",     no_argument,       NULL, EAGER_OPT },         \
+  { "streaming", no_argument,       NULL, STREAMING_OPT },     \
+  { NULL, 0, NULL, 0 }  // The array of structs must be NULL/0-terminated
 
 typedef enum cli_handling_result {
   CLI_SUCCESS,
   CLI_UNRECOGNIZED,
-  CLI_HELP_MESSAGE
+  CLI_HELP_MESSAGE,
+  CLI_LONG_HELP_MESSAGE,
+  CLI_HELP_MESSAGE_TO_STDERR,
 } cli_res_t;
 
 typedef struct common_cli_opts {
@@ -51,7 +64,8 @@ typedef struct common_cli_opts {
 } cli_opts_t;
 
 void cli_init(cli_opts_t *cli);
-cli_res_t cli_handle_opt(cli_opts_t *cli, int option, int optopt, char *optarg);
+cli_res_t cli_handle_opt(cli_opts_t *cli, int option, int optopt,
+                         char *optstr, char *optarg);
 
 int cli_is_name_opt_set(cli_opts_t *cli);
 int cli_is_dir_opt_set(cli_opts_t *cli);

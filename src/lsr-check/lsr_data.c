@@ -207,6 +207,17 @@ static void insert_hint(srid_t clause_id) {
   }
 }
 
+void dbg_print_lsr_hints(void) {
+  srid_t *hints_iter = get_hints_start();
+  srid_t *hints_end = get_hints_end();
+  log_raw(VL_NORMAL, "c Hints for line %lld: ", TO_DIMACS_LINE(current_line));
+  for (; hints_iter < hints_end; hints_iter++) {
+    srid_t hint = *hints_iter;
+    log_raw(VL_NORMAL, "%lld ", hint);
+  }
+  log_raw(VL_NORMAL, "0\n");
+}
+
 /**
  * @brief Allocates memory for LSR-specific data structures. If the parsing
  *        strategy is `EAGER`, this function also parses the entire file.

@@ -107,6 +107,7 @@ void mark_clause_as_checked(srid_t clause_id);
 #define get_deletions_end()    \
     ((srid_t *) ra_get_range_end(&deletions, current_line))
 
+void dbg_print_lsr_hints(void);
 void prepare_lsr_check_data(void);
 int has_another_lsr_line(void);
 line_type_t prepare_next_lsr_line(void);

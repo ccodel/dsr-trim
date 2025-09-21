@@ -50,7 +50,8 @@ int cli_is_dir_opt_set(cli_opts_t *cli) {
 // may wish to handle their own options).
 static int get_mask_from_opt(int opt) { 
   switch (opt) {
-    case HELP_MSG_OPT: return HELP_MSG_MASK;
+    case HELP_MSG_OPT: // waterfall
+    case LONG_HELP_MSG_OPT: return HELP_MSG_MASK;
     case QUIET_MODE_OPT: // waterfall
     case VERBOSE_MODE_OPT: return QUIET_VERBOSE_MASK;
     case VERBOSE_ERRORS_OPT: return VERBOSE_ERRORS_MASK;
@@ -86,13 +87,15 @@ static void copy_and_update_bufs(cli_opts_t *cli, size_t len) {
 }
 
 // Handles the common CLI options.
-cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
+cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt,
+                         char *optstr, char *optarg) {
   set_opt_flag_or_err_if_already_set(cli, opt);
   int len; // Used for string options
 
   // Now actually process the option
   switch (opt) {
   case HELP_MSG_OPT:        return CLI_HELP_MESSAGE;
+  case LONG_HELP_MSG_OPT:   return CLI_LONG_HELP_MESSAGE;
   case QUIET_MODE_OPT:      verbosity_level = VL_QUIET; break;
   case VERBOSE_MODE_OPT:
     verbosity_level = VL_VERBOSE;
@@ -123,11 +126,7 @@ cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt, char *optarg) {
     copy_and_update_bufs(cli, len);
     break;
   case '?':
-    log_err("Unknown option provided.");
-    return CLI_HELP_MESSAGE;
-  case ':':
-    log_err("Argument missing for option \"-%c\".", (char) opt);
-    return CLI_HELP_MESSAGE;
+    return CLI_HELP_MESSAGE_TO_STDERR;
   default:
     return CLI_UNRECOGNIZED;
   }

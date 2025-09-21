@@ -102,17 +102,9 @@
 // Specifies the (short) command line options and whether they take arguments.
 #define OPT_STR  BASE_CLI_OPT_STR
 
-// A flag that is set when the CLI arguments request the longer help message.
-static int long_help_msg_flag = 0;
-
 // The set of "long options" for CLI argument parsing. Used by `getopt_long()`.
 static struct option const longopts[] = {
-  { "help",      no_argument,       &long_help_msg_flag, 1 },
-  { "dir",       required_argument, NULL, DIR_OPT },
-  { "name",      required_argument, NULL, NAME_OPT },
-  { "eager",     no_argument,       NULL, EAGER_OPT },
-  { "streaming", no_argument,       NULL, STREAMING_OPT },
-  { NULL, 0, NULL, 0 }  // The array of structs must be NULL/0-terminated
+  BASE_LONG_OPTS_ARRAY
 };
 
 // Prints a shorter help message to the provided `FILE` stream.
@@ -254,8 +246,9 @@ static int unit_prop(srid_t **hint_ptr, srid_t *hints_end, ullong gen) {
   srid_t *hints_iter = *hint_ptr;
   while (hints_iter < hints_end && (up_clause = *hints_iter) > 0) {
     hints_iter++;
+    up_clause = FROM_DIMACS_CLAUSE(up_clause);
     // Perform unit propagation against alpha on `up_clause`
-    up_res = reduce(FROM_DIMACS_CLAUSE(up_clause));
+    up_res = reduce(up_clause);
     switch (up_res) {
       case CONTRADICTION: // The line checks out, and we can add the clause
         // Scan the hint_index forward until a negative hint is found
@@ -532,22 +525,24 @@ int main(int argc, char *argv[]) {
   while ((ch = getopt_long(argc, argv, OPT_STR, longopts, NULL)) != -1) {
     switch (ch) {
       case 0: // Defined long options without a corresponding short option
-        if (long_help_msg_flag) {
-          print_long_help_msg(stdout);
-          return 0;
-        } else {
-          log_fatal_err("Unimplemented long option.");
-        }
+        log_fatal_err("Unimplemented long option.");
+        break;
       default:
-        cli_res = cli_handle_opt(&cli, ch, optopt, optarg);
+        cli_res = cli_handle_opt(&cli, ch, optopt, argv[optind - 1], optarg);
         switch (cli_res) {
           case CLI_UNRECOGNIZED:
-            log_err("Unimplemented option.");
+            log_err("Unimplemented option: %s", argv[optind - 1]);
             print_short_help_msg(stderr);
             return 1;
           case CLI_HELP_MESSAGE:
-            print_short_help_msg(stderr);
+            print_short_help_msg(stdout);
             return 0;
+          case CLI_LONG_HELP_MESSAGE:
+            print_long_help_msg(stdout);
+            return 0;
+          case CLI_HELP_MESSAGE_TO_STDERR:
+            print_short_help_msg(stderr);
+            return 1;
           case CLI_SUCCESS: break;
           default: log_fatal_err("Corrupted CLI result.");
         }
