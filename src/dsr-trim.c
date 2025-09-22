@@ -3304,46 +3304,13 @@ int main(int argc, char **argv) {
     }
   }
 
-  switch (argc - optind) {
-    case 0:
-      FATAL_ERR_IF(!cli_is_name_opt_set(&cli), "No file prefix provided.");
-      cli_concat_path_extensions(&cli, ".cnf", ".sr", ".lsr");
-      break;
-    case 1:
-      FATAL_ERR_IF(cli_is_dir_opt_set(&cli),
-        "Cannot provide a directory without a DSR file path.");
-
-      if (cli_is_name_opt_set(&cli)) {
-        cli_concat_path_extensions(&cli, ".cnf", argv[optind], ".lsr");
-      } else {
-        cli.cnf_file_path = argv[optind];
-        cli.dsr_file_path = NULL;
-        cli.lsr_file_path = NULL;
-      }
-      break;
-    case 2:
-      if (cli_is_dir_opt_set(&cli) || cli_is_name_opt_set(&cli)) {
-        cli_concat_path_extensions(&cli, argv[optind], argv[optind+1], ".lsr");
-      } else {
-        cli.cnf_file_path = argv[optind];
-        cli.dsr_file_path = argv[optind + 1];
-        cli.lsr_file_path = NULL;
-      }
-      break;
-    case 3:
-      if (cli_is_dir_opt_set(&cli) || cli_is_name_opt_set(&cli)) {
-        cli_concat_path_extensions(&cli,
-          argv[optind], argv[optind + 1], argv[optind + 2]);
-      } else {
-        cli.cnf_file_path = argv[optind];
-        cli.dsr_file_path = argv[optind + 1];
-        cli.lsr_file_path = argv[optind + 2];
-      }
-      break;
-    default:
-      log_err("Invalid number of non-option arguments: %d.", argc - optind);
+  cli_res_t pres = cli_parse_file_paths_for_dsr_trim(&cli, argv, argc, optind);
+  switch (pres) {
+    case CLI_HELP_MESSAGE_TO_STDERR:
       print_short_help_msg(stderr);
       return 1;
+    case CLI_SUCCESS: break;
+    default: log_fatal_err("Corrupted CLI result: %d", pres);
   }
 
   // Open the files first, to ensure we don't do work unless they exist

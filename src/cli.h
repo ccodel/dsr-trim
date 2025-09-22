@@ -67,10 +67,10 @@ void cli_init(cli_opts_t *cli);
 cli_res_t cli_handle_opt(cli_opts_t *cli, int option, int optopt,
                          char *optstr, char *optarg);
 
-int cli_is_name_opt_set(cli_opts_t *cli);
-int cli_is_dir_opt_set(cli_opts_t *cli);
+cli_res_t cli_parse_file_paths_for_dsr_trim(
+  cli_opts_t *cli, char *argv[], int argc, int optind);
 
-void cli_concat_path_extensions(cli_opts_t *cli,
-                                char *cnf_ext, char *dsr_ext, char *lsr_ext);
+cli_res_t cli_parse_file_paths_for_lsr_check(
+  cli_opts_t *cli, char *argv[], int argc, int optind);
 
 #endif /* _DSR_TRIM_CLI_H_ */
