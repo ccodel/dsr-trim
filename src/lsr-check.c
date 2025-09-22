@@ -552,36 +552,13 @@ int main(int argc, char *argv[]) {
   // `getopt_long()` sets `optind` to the index of the first non-option argument
   // It also shuffles all of the non-option arguments to the end of `argv`
   // Thus, we expect the CNF and LSR file paths to be at the end now
-  //   (modulo some behavior changes due to `-n` and `-d` flags)
-  switch (argc - optind) {
-    case 0:
-      FATAL_ERR_IF(!cli_is_name_opt_set(&cli), "No file prefix provided.");
-      cli_concat_path_extensions(&cli, ".cnf", ".dsr", ".lsr");
-      break;
-    case 1:
-      FATAL_ERR_IF(cli_is_dir_opt_set(&cli),
-        "Cannot provide a directory without an LSR file path.");
-
-      if (cli_is_name_opt_set(&cli)) {
-        cli_concat_path_extensions(&cli, ".cnf", "", argv[optind]);
-      } else {
-        // The CNF file is provided as a normal file path
-        cli.cnf_file_path = argv[optind];
-        cli.lsr_file_path = NULL;
-      }
-      break;
-    case 2:
-      if (cli_is_name_opt_set(&cli) || cli_is_dir_opt_set(&cli)) {
-        cli_concat_path_extensions(&cli, argv[optind], "", argv[optind + 1]);
-      } else {
-        cli.cnf_file_path = argv[optind];
-        cli.lsr_file_path = argv[optind + 1];
-      }
-      break;
-    default:
-      log_err("Invalid number of non-option arguments.");
+  cli_res_t pres = cli_parse_file_paths_for_lsr_check(&cli, argv, argc, optind);
+  switch (pres) {
+    case CLI_HELP_MESSAGE_TO_STDERR:
       print_short_help_msg(stderr);
       return 1;
+    case CLI_SUCCESS: break;
+    default: log_fatal_err("Corrupted CLI result: %d", pres);
   }
 
   // Open the files first, to ensure we don't do work unless they exist

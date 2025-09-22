@@ -319,31 +319,25 @@ static sr_timer_t timer;
 
 // Help messages and command line options
 
-#define FORWARD_OPT         ('f')
-#define BACKWARD_OPT        ('b')
-#define COMPRESS_PROOF_OPT  ('c')
+#define FORWARD_OPT          ('f')
+#define BACKWARD_OPT         ('b')
+#define COMPRESS_PROOF_OPT   ('c')
+#define EMIT_VALID_FORM_OPT  (LONG_HELP_MSG_OPT + 1)
+#define DEL_IMPL_UNITS_OPT   (LONG_HELP_MSG_OPT + 2)
 
 #define OPT_STR             ("bcf" BASE_CLI_OPT_STR)
 
-// A flag set by `getopt_long()` when the user requests a longer help message.
-static int long_help_msg_flag = 0;
-
-// A flag set by `getopt_long()` when the user wants to emit a valid formula.
-static int emit_valid_formula = 0;
-static FILE *emit_valid_formula_file = NULL;
+static FILE *valid_formula_file = NULL;
+static int should_delete_implied_units = 0;
 
 // The set of "long options" for CLI argument parsing. Used by `getopt_long()`.
 static struct option const longopts[] = {
-  { "help", no_argument, &long_help_msg_flag, 1 },
-  { "dir", required_argument, NULL, DIR_OPT },
-  { "name", required_argument, NULL, NAME_OPT },
-  { "eager", no_argument, NULL, EAGER_OPT },
-  { "streaming", no_argument, NULL, STREAMING_OPT },
-  { "forward", no_argument, NULL, FORWARD_OPT },
-  { "backward", no_argument, NULL, BACKWARD_OPT },
-  { "compress", no_argument, NULL, COMPRESS_PROOF_OPT },
-  { "emit-valid-formula-to", required_argument, &emit_valid_formula, 1 },
-  { NULL, 0, NULL, 0 }  // The array of structs must be NULL/0-terminated
+  { "forward",                     no_argument, NULL, FORWARD_OPT },
+  { "backward",                    no_argument, NULL, BACKWARD_OPT },
+  { "compress",                    no_argument, NULL, COMPRESS_PROOF_OPT },
+  { "emit-valid-formula-to", required_argument, NULL, EMIT_VALID_FORM_OPT },
+  { "delete-implied-units",        no_argument, NULL, DEL_IMPL_UNITS_OPT },
+  BASE_LONG_OPTS_ARRAY
 };
 
 // Prints a shorter help message to the provided `FILE` stream.
@@ -940,47 +934,50 @@ static void print_lsr_line(srid_t line_num, srid_t printed_line_id) {
 }
 
 static void print_valid_formula_if_requested(void) {
-  if (!derived_empty_clause && emit_valid_formula_file != NULL) {
-    // Count how many non-deleted clauses there are, for the problem header
-    srid_t num_present_clauses = 0;
-    for (srid_t c = 0; c < formula_size; c++) {
-      if (!is_clause_deleted(c)) num_present_clauses++;
-    }
- 
-    // Save the value of writing to binary
-    int write_binary_before = write_binary;
-    write_binary = 0;
+  if (valid_formula_file == NULL) return;
 
-    // Write the `cnf p <num_vars> <num_clauses>` problem header
-    fputc(DIMACS_PROBLEM_LINE, emit_valid_formula_file);
-    fprintf(emit_valid_formula_file,
-      CNF_HEADER_STR, max_var + 1, num_present_clauses);
-
-    for (srid_t c = 0; c < formula_size; c++) {
-      if (is_clause_deleted(c)) continue;
-      
-      int *iter = get_clause_start_unsafe(c);
-      int *end = get_clause_end(c);
-
-      // Re-sort the original CNF clauses
-      // Printing the LSR proof sorts all other clauses wrt pivots
-      if (c < num_cnf_clauses) {
-        qsort(iter, end - iter, sizeof(int), absintcmp);
-      } else if (c == num_cnf_clauses) {
-        fprintf(emit_valid_formula_file,
-            "c >>> Redundant clauses start below this point <<<\n");
-      }
-
-      for (; iter < end; iter++) {
-        int lit = *iter;
-        write_lit(emit_valid_formula_file, TO_DIMACS_LIT(lit));
-      }
-      write_sr_line_end(emit_valid_formula_file);
-    }
-
-    write_binary = write_binary_before; // Restore the old value
-    fclose(emit_valid_formula_file);
+  if (derived_empty_clause) {
+    logc("The emitted \"valid\" formula contains the empty clause.");
   }
+
+  // Count how many non-deleted clauses there are, for the problem header
+  srid_t num_present_clauses = 0;
+  for (srid_t c = 0; c < formula_size; c++) {
+    if (!is_clause_deleted(c)) num_present_clauses++;
+  }
+
+  // Save the value of writing to binary
+  int write_binary_before = write_binary;
+  write_binary = 0;
+
+  // Write the `cnf p <num_vars> <num_clauses>` problem header
+  fputc(DIMACS_PROBLEM_LINE, valid_formula_file);
+  fprintf(valid_formula_file, CNF_HEADER_STR, max_var + 1, num_present_clauses);
+
+  for (srid_t c = 0; c < formula_size; c++) {
+    if (is_clause_deleted(c)) continue;
+    
+    int *iter = get_clause_start(c);
+    int *end = get_clause_end(c);
+
+    // Re-sort the original CNF clauses
+    // Printing the LSR proof sorts all other clauses wrt pivots
+    if (c < num_cnf_clauses) {
+      qsort(iter, end - iter, sizeof(int), absintcmp);
+    } else if (c == num_cnf_clauses) {
+      fprintf(valid_formula_file,
+          "c >>> Redundant clauses start below this point <<<\n");
+    }
+
+    for (; iter < end; iter++) {
+      int lit = *iter;
+      write_lit(valid_formula_file, TO_DIMACS_LIT(lit));
+    }
+    write_sr_line_end(valid_formula_file);
+  }
+
+  write_binary = write_binary_before; // Restore the old value
+  fclose(valid_formula_file);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -3245,14 +3242,14 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  int forward_set = 0, backward_set = 0, compress_opt_set = 0;
+  int forward_set = 0, backward_set = 0, compress_set = 0, del_units_set = 0;
   cli_opts_t cli;
   cli_init(&cli);
   
-  // For emitting VALID formulas to a file, upon request
-  int emit_valid_formula_opt_set = 0;
-  char emit_valid_formula_file_path[MAX_FILE_PATH_LEN];
-  emit_valid_formula_file_path[MAX_FILE_PATH_LEN - 1] = '\0';
+  // Emit VALID formulas to a file, upon request
+  int emit_set = 0;
+  char valid_formula_file_path[MAX_FILE_PATH_LEN];
+  valid_formula_file_path[MAX_FILE_PATH_LEN - 1] = '\0';
 
   // Parse CLI arguments
   int ch;
@@ -3273,33 +3270,38 @@ int main(int argc, char **argv) {
       ch_mode = BACKWARDS_CHECKING_MODE;
       break;
     case COMPRESS_PROOF_OPT:
-      compress_opt_set = 1;
+      FATAL_ERR_IF(compress_set, "Cannot set `-c`/`--compress` twice.");
+      compress_set = 1;
       break;
-    case 0: // Defined long options without a corresponding short option
-      if (long_help_msg_flag) {
-        print_long_help_msg(stdout);
-        return 0;
-      } else if (emit_valid_formula) {
-        FATAL_ERR_IF(emit_valid_formula_opt_set,
-          "Cannot set the emit-valid-formula option twice.");
-        emit_valid_formula_opt_set = 1;
-        strncpy(emit_valid_formula_file_path, optarg, MAX_FILE_PATH_LEN - 1);
-      } else {
-        log_fatal_err("Unimplemented long option.");
-      }
+    case EMIT_VALID_FORM_OPT:
+      FATAL_ERR_IF(emit_set, "Cannot set `--emit-valid-formula-to` twice.");
+      emit_set = 1;
+      strncpy(valid_formula_file_path, argv[optind - 1], MAX_FILE_PATH_LEN - 1);
+      break;
+    case DEL_IMPL_UNITS_OPT:
+      FATAL_ERR_IF(del_units_set, "Cannot set `--delete-implied-units` twice.");
+      del_units_set = 1;
       break;
     default:
-      cli_res = cli_handle_opt(&cli, ch, optopt, optarg);
+      cli_res = cli_handle_opt(&cli, ch, optopt, argv[optind - 1], optarg);
       switch (cli_res) {
         case CLI_UNRECOGNIZED:
-          log_err("Unimplemented option.");
+          log_err("Unimplemented option: %s.", argv[optind - 1]);
           print_short_help_msg(stderr);
           return 1;
         case CLI_HELP_MESSAGE:
-          print_short_help_msg(stderr);
+          print_short_help_msg(stdout);
           return 0;
-        case CLI_SUCCESS: break;
-        default: log_fatal_err("Corrupted CLI result: %d", cli_res);
+        case CLI_LONG_HELP_MESSAGE:
+          print_long_help_msg(stdout);
+          return 0;
+        case CLI_HELP_MESSAGE_TO_STDERR:
+          print_short_help_msg(stderr);
+          return 1;
+        case CLI_SUCCESS:
+          break;
+        default:
+          log_fatal_err("Corrupted CLI result: %d", cli_res);
       }
     }
   }
@@ -3335,12 +3337,6 @@ int main(int argc, char **argv) {
     lsr_file = xfopen(cli.lsr_file_path, "w");
   }
 
-  if (emit_valid_formula_opt_set) {
-    logc("Emitting a VALID formula to: %s",
-      emit_valid_formula_file_path);
-    emit_valid_formula_file = xfopen(emit_valid_formula_file_path, "w");
-  }
-
   if (p_strategy == PS_EAGER) {
     logc("Using an EAGER parsing strategy.");
   } else {
@@ -3353,13 +3349,23 @@ int main(int argc, char **argv) {
     logc("Doing BACKWARDS proof checking.");
   }
 
-  if (compress_opt_set) {
+  if (ch_mode == FORWARDS_CHECKING_MODE && p_strategy == PS_EAGER) {
+    log_fatal_err("Forwards checking and eager parsing not implemented.");
+  }
+
+  if (compress_set) {
     write_binary = 1;
     logc("The emitted LSR proof will be in binary format (`-c` specified).");
   }
 
-  if (ch_mode == FORWARDS_CHECKING_MODE && p_strategy == PS_EAGER) {
-    log_fatal_err("Forwards checking and eager parsing not implemented.");
+  if (emit_set) {
+    logc("Emitting a VALID formula to: %s", valid_formula_file_path);
+    valid_formula_file = xfopen(valid_formula_file_path, "w");
+  }
+
+  if (del_units_set) {
+    should_delete_implied_units = 1;
+    logc("DSR clause deletions that are implied units will be deleted.");
   }
 
   timer_init(&timer);
