@@ -111,6 +111,26 @@ Potential optimizations:
 #define IS_UNUSED_LUI(x)           ((x) & SRID_MSB)
 #define IS_USED_LUI(x)             (!IS_UNUSED_LUI(x))
 
+#define NO_UP_REASON                  SRID_NEG_ONE
+#define IS_UP_DERIVED_REASON_RAW(x)   ((x) >= 0)
+#define IS_UP_DERIVED_VAR(x)          IS_UP_DERIVED_REASON_RAW(up_reasons[(x)])
+#define IS_ASSUMED_REASON_RAW(x)      ((x) < 0)
+#define IS_ASSUMED_VAR(x)             IS_ASSUMED_REASON_RAW(up_reasons[(x)])
+#define IS_UP_ASSUMED_REASON_RAW(x)   ((x) < NO_UP_REASON)
+#define IS_UP_ASSUMED_VAR(x)          IS_UP_ASSUMED_REASON_RAW(up_reasons[(x)])
+#define CLAUSE_REASON(x)              ((x) ^ SRID_MSB)
+#define MARK_AS_UP_ASSUMED_VAR(x)     (up_reasons[(x)] |= SRID_MSB)
+
+/**
+ * @brief Clears the effect of `MARK_AS_UP_ASSUMED_VAR`. If the variable
+ *        was not marked as assumed, then this function has no effect.
+ * 
+ * Callers should ensure that `up_reasons[x] != NO_UP_REASON`.
+ * 
+ * @param x The variable to clear the assumed marking for.
+ */
+#define CLEAR_UP_ASSUMPTION_FOR_VAR(x)  (up_reasons[(x)] &= (~SRID_MSB))
+
 /**
  * @brief Returns the index into the `hints` structure corresponding to the
  *        block of unit propagation hints for the given `line_num`.
@@ -218,9 +238,20 @@ static uint RAT_unit_literals_index = 0;
 static ullong *dependency_markings = NULL;
 static srid_t dependencies_alloc_size = 0;
 
-// When assuming the RAT clause under the substitution, we record specially
-// marked variables here for tautology checking. Cleared when a trivial
-// UP derivation is not found, or if one is found not based on a RAT-marked var.
+/**
+ * @brief Stores the variables added as unit literals when assuming the
+ *        negation of a mapped RAT clause that were originally derived
+ *        via global or candidate-clause UP.
+ * 
+ * When we assume the negation of a RAT clause (under a substitution),
+ * we want to keep track of which new unit literals/clauses we added.
+ * In particular, we want to mark which variables were already units,
+ * so that we may mark their assumption bit with `MARK_AS_UP_ASSUMED_VAR`.
+ * That way, when we unassume the RAT clause, we can differentiate between
+ * new unit literals and clearing the assumption bit of "old" ones.
+ * 
+ * See `assume_RAT_clause_under_subst()` and `unassume_RAT_clause()`.
+ */
 static int *RAT_marked_vars = NULL;
 static uint RAT_marked_vars_alloc_size = 0;
 static uint RAT_marked_vars_size = 0;
@@ -262,8 +293,10 @@ static clause_mult_t *clause_mults;
 static uint clause_mults_alloc_size = 0;
 static uint clause_mults_size = 0;
 
-// Forward declare, since deletion needs it
+// Forward declare these functions, since deletion needs them
 static void remove_wp_for_lit(int lit, srid_t clause);
+static srid_t perform_up_for_backwards_checking(ullong gen);
+static srid_t perform_up_for_forwards_checking(ullong gen);
 
 /*
  * Backwards checking:
@@ -317,7 +350,7 @@ static sr_timer_t timer;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Help messages and command line options
+// Command-line options and the printing of help messages
 
 #define FORWARD_OPT          ('f')
 #define BACKWARD_OPT         ('b')
@@ -478,12 +511,12 @@ static uint get_num_deletions(srid_t line_num) {
 }
 
 /**
- * @brief Returns the start of the backwards checking user (BCU) deleted
+ * @brief Returns the start of the backwards-checking user (BCU) deleted
  *        clauses for a given `line_num`. Only used during backwards checking.
  * 
- * Note: no check is made here to ensure that the `ch_mode` is
- * backwards checking. It is the caller's responsibility.
- * 
+ * Note: it is the caller's responsibility that `ch_mode` must be set for
+ * backwards checking.
+ *
  * @param line_num The 0-indexed line number.
  * @return A pointer to the start of the deletions.
  */
@@ -492,7 +525,34 @@ static srid_t *get_bcu_deletions_start(srid_t line_num) {
 }
 
 static srid_t *get_bcu_deletions_end(srid_t line_num) {
-  return ra_get_range_start(&bcu_deletions, line_num + 1);
+  return ra_get_range_end(&bcu_deletions, line_num);
+}
+
+/**
+ * @brief Discards (i.e. erases, deletes) the stored backwards-checking
+ *        user (BCU) deletions for and after the given `line_num`.
+ * 
+ * Whenever we are about to check a new line during backwards checking,
+ * we must restore the watch pointers of the clauses deleted by the user
+ * in the parsed DSR proof. This restoration also applies to clauses
+ * deleted before we derive the empty clause.
+ * 
+ * However, if we derive the empty clause sooner than the DSR proof claims
+ * we can, then any deletions after the "new" empty clause should
+ * be discarded, since otherwise we will try to restore watch pointers
+ * for clauses that never actually ended up being deleted. To accomplish
+ * this, we clear those user deletions.
+ * 
+ * TODO: This problem can probably be avoided if the restoration of
+ * user deletions is done after checking a line and not before checking
+ * a line, but I think a single call to this function is an okay price
+ * to pay to keep the restoration functionality in `prepare_dsr_line()`.
+ * 
+ * @param line_num The 0-indexed line number to clear deletions after.
+ *                 Deletions are discarded for `line_num` as well.
+ */
+static void discard_bcu_deletions_after_empty_clause(srid_t line_num) {
+  ra_clear_data_after_range(&bcu_deletions, line_num);
 }
 
 // Assumes only called during backwards checking.
@@ -574,6 +634,110 @@ static inline void resize_last_used_ids(void) {
     clauses_lui_alloc_size, formula_size, sizeof(srid_t), 0xff);
 }
 
+/**
+ * @brief Undoes the effects of making the literals in `unit_literals` unit,
+ *        starting from `from_index` (inclusive).
+ * 
+ * Only undoes the effect of the units being made global. The global variables
+ * `unit_literals_size` and `unit_clauses_size` are not changed.
+ * 
+ * This function sets each variables `alpha` generation to 0
+ * and its UP reason to `NO_UP_REASON`. In other words, the variable is
+ * unset in the truth assignment, and no clause causes it to be unit.
+ * 
+ * @param from_index The index to start clearing from.
+ *                   Proceeds up to `unit_literals_size` (exclusive).
+ */
+static void unassign_global_units(srid_t from_index) {
+  for (uint i = from_index; i < unit_literals_size; i++) {
+    int lit = unit_literals[i];
+    int var = VAR_FROM_LIT(lit);
+    up_reasons[var] = NO_UP_REASON;
+    alpha[var] = 0;
+  }
+}
+
+/**
+ * @brief Undoes the effects of global unit propagation due to the implied unit
+ *        clause at `from_index` being unit, in preparation for its deletion
+ *        from the formula.
+ * 
+ * When deleting an implied unit clause `C`, we need to do two things:
+ * 
+ *   1. Unassign unit literals dependent on `C` being unit.
+ *   2. Re-run unit propagation after deleting `C`.
+ * 
+ * This function does (1) but does NOT do (2), i.e., it does not re-run
+ * unit propagation.
+ * 
+ * Ideally, we would unassign only those unit clauses dependent on `C`,
+ * but that analysis involves maintaining a list of dependencies. For
+ * example, suppose implied unit clause `C1` depends on `C`. Then for
+ * all later implied unit clauses, we need to check if that clause depends
+ * on `C` OR `C1`, and this problem gets worse with each implied unit clause
+ * that we unassign.
+ * 
+ * Thus, we do a coarse analysis: if the clause is a true unit, it is kept
+ * in `unit_literals`/`unit_clauses`. Otherwise, it is unassigned by setting
+ * it `alpha` timestamp to `0` and its `up_reasons` to `NO_UP_REASON`.
+ * 
+ * To save on time when re-running UP, we calculate and store the minimum
+ * starting index for `global_up_literals_index`. In the worst case,
+ * we must re-run UP from the beginning of the unit literals/clauses.
+ * But since UP proceeds in rounds, then if `from_index` was derived
+ * due to the `i`th round of UP, then we only need to re-run UP
+ * from this `i`th round.
+ * 
+ * The value of `global_up_literals_index`, `unit_literals_size`, and
+ * `unit_clauses_size` is updated appropriately.
+ *
+ * @param from_index The 0-indexed clause ID into `unit_clauses` of the
+ *                   implied unit clause that is about to get deleted.
+ */
+static void unassign_global_units_due_to_deletion(srid_t from_index) {
+  srid_t unit_clause = unit_clauses[from_index];
+  uint min_unit_index = from_index - 1;
+
+  // Find the minimum unit literal causing this one to be unit
+  // If the minimum index is greater than 0, we can save time in UP
+  int *clause_iter = get_clause_start_unsafe(unit_clause) + 1;
+  int *clause_end = get_clause_end(unit_clause);
+  for (; clause_iter < clause_end; clause_iter++) {
+    int lit = *clause_iter;
+    int var = VAR_FROM_LIT(lit);
+    srid_t reason = up_reasons[var];
+    for (int i = (int) min_unit_index - 1; i >= 0; i--) {
+      if (unit_clauses[i] == reason) {
+        min_unit_index = i;
+        break;
+      }
+    }
+  }
+
+  global_up_literals_index = min_unit_index;
+
+  // Now keep unit literals/clauses that are true units
+  srid_t write_idx = from_index;
+  for (uint i = from_index; i < unit_literals_size; i++) {
+    int lit = unit_literals[i];
+    unit_clause = unit_clauses[i];
+
+    if (get_clause_size(unit_clause) == 1) {
+      unit_literals[write_idx] = lit;
+      unit_clauses[write_idx] = unit_clause;
+      write_idx++;
+    } else {
+      // Unassign this unit literal/clause
+      int var = VAR_FROM_LIT(lit);
+      up_reasons[var] = NO_UP_REASON;
+      alpha[var] = 0;
+    }
+  }
+
+  unit_literals_size = write_idx;
+  unit_clauses_size = write_idx;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 
 static void print_wps(void) {
@@ -623,19 +787,40 @@ static void print_active_formula(void) {
 static void print_assignment(void) {
   log_raw(VL_NORMAL, "Assignment: ");
   for (int i = 0; i <= max_var; i++) {
-    switch (peval_lit_under_alpha(i * 2)) {
+    int lit = POS_LIT_FROM_VAR(i);
+    int nlit = NEGATE_LIT(lit);
+    switch (peval_lit_under_alpha(lit)) {
       case TT:
-        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT(i * 2),
-        up_reasons[i]);
+        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT(lit), up_reasons[i]);
         break;
       case FF:
-        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT((i * 2) + 1),
-      up_reasons[i]);
+        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT(nlit), up_reasons[i]);
         break;
       default: break;
     }
   }
   log_raw(VL_NORMAL, "\n");
+}
+
+static void dbg_print_unit_literals(void) {
+  logc("Unit literals (total %d):", unit_literals_size);
+  for (uint i = 0; i < unit_literals_size; i++) {
+    int lit = unit_literals[i];
+    log_raw(VL_NORMAL, "c [idx %d] %d  ", i, TO_DIMACS_LIT(lit));
+
+    srid_t reason = up_reasons[VAR_FROM_LIT(lit)];
+    if (reason == NO_UP_REASON) {
+      log_raw(VL_NORMAL, "negated candidate or RAT clause\n");
+    } else if (IS_UP_ASSUMED_REASON_RAW(reason)) {
+      srid_t clause = CLAUSE_REASON(reason);
+      log_raw(VL_NORMAL, "clause %lld, and negated candidate or RAT clause:",
+        TO_DIMACS_CLAUSE(clause));
+      dbg_print_clause(clause);
+    } else {
+      log_raw(VL_NORMAL, "clause %lld: ", TO_DIMACS_CLAUSE(reason));
+      dbg_print_clause(reason);
+    }
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -665,7 +850,7 @@ static void print_initial_clause_deletions(void) {
 // Prints the specified clause from the formula to the LSR proof file.
 // The caller must ensure the clause is not deleted from the formula.
 static void print_clause(srid_t clause_id) {
-  int *clause = get_clause_start_unsafe(clause_id);
+  int *clause = get_clause_start(clause_id);
   uint size = get_clause_size(clause_id);
 
   // Don't print anything if it's the empty clause
@@ -1093,7 +1278,7 @@ static void inc_clause_mult(srid_t clause_index) {
   clause_mults_size++;
 }
 
-// Returns the number of remaining copies (after the decrease).
+// Returns the number of remaining copies in the formula (after the decrease).
 // Returns 0 if the clause is not found (meaning it has multiplicity of 1).
 static uint dec_clause_mult(srid_t clause_index) {
   for (int i = 0; i < clause_mults_size; i++) {
@@ -1135,22 +1320,43 @@ static void delete_parsed_clause(void) {
   srid_t clause_match = find_hashed_clause(formula_size, NULL, &b, &b_idx);
 
   if (clause_match == -1) {
-    log_raw(VL_QUIET, "The clause requested to be deleted: ");
+    log_raw(VL_NORMAL, "The clause requested to be deleted: ");
     dbg_print_clause(formula_size);
     log_fatal_err("[line %lld] No matching clause found for deletion.",
-      current_line + 1);
+      TO_DIMACS_LINE(current_line));
   }
 
-  // Check that the matching clause isn't a global unit
-  // If it is, error, since we don't want to unroll and re-run UP
-  for (int i = 0; i < unit_clauses_size; i++) {
-    FATAL_ERR_IF(unit_clauses[i] == clause_match,
-      "[line %lld] Cannot delete clause %d, as it is a global unit.",
-      current_line + 1, TO_DIMACS_CLAUSE(clause_match));
-  }
+  /* Throw an error if we are trying to delete a true unit clause.
+   *
+   * CC (9/17/2025): After staring at a whiteboard for an hour, I convinced
+   * myself that, while it is sometimes advantageous to delete an implied unit
+   * clause, it is never advantageous to delete a true unit. This is because
+   * true units force any witness/substitution to avoid mapping the true
+   * unit literal to false. This property is not the case for implied units.
+   */
+  FATAL_ERR_IF(get_clause_size(clause_match) == 1,
+    "[line %lld] Cannot delete true unit clause %d.",
+    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_match));
 
   // If we still have copies of the clause, leave the hash table alone
   if (dec_clause_mult(clause_match) > 0) return;
+
+  // Otherwise, we are deleting the last copy of this clause
+
+  // See if the clause is an implied unit
+  uint unit_clause_idx = UINT_MAX;
+  for (uint i = 0; i < unit_clauses_size; i++) {
+    if (unit_clauses[i] == clause_match) {
+      unit_clause_idx = i;
+      break;
+    }
+  }
+
+  // Ignore deletion of implied units if not specifically requested
+  if (unit_clause_idx != UINT_MAX && ch_mode == FORWARDS_CHECKING_MODE
+        && !should_delete_implied_units) {
+    return;
+  }
 
   ht_remove_at_index(b, b_idx);
   store_user_deletion(clause_match);
@@ -1158,10 +1364,22 @@ static void delete_parsed_clause(void) {
   // How we delete the clause from the formula depends on the checking mode
   switch (ch_mode) {
     case FORWARDS_CHECKING_MODE:;
+      // If the clause is an implied unit, unassign later units
+      // We must do this before the clause is deleted from the formula
+      if (unit_clause_idx != UINT_MAX) {
+        unassign_global_units_due_to_deletion(unit_clause_idx);
+      }
+
+      // Now actually delete the clause from the formula
       int *clause_match_ptr = get_clause_start_unsafe(clause_match);
       remove_wp_for_lit(clause_match_ptr[0], clause_match);
       remove_wp_for_lit(clause_match_ptr[1], clause_match);
       delete_clause(clause_match); // Deletes from the formula
+
+      // If the clause was an implied unit, we must re-run unit propagation
+      if (unit_clause_idx != UINT_MAX) {
+        perform_up_for_forwards_checking(GLOBAL_GEN);
+      }
       break;
     case BACKWARDS_CHECKING_MODE:
       resize_last_used_ids();
@@ -1226,7 +1444,7 @@ static int parse_dsr_line(void) {
       int is_tautology = parse_clause(dsr_file);
       FATAL_ERR_IF(is_tautology || new_clause_size <= 1, 
         "[line %lld] Clause to delete was a tautology, empty, or unit.",
-          num_parsed_add_lines + 1);
+          num_parsed_lines + 1);
       delete_parsed_clause();
       
       // Remove the parsed literals from the formula
@@ -1590,13 +1808,13 @@ static void minimize_RAT_hints(void) {
  * @param gen The generation value to mark the dependencies with.
  */
 static void mark_clause(srid_t clause, int offset, ullong gen) {
-  int *clause_iter = get_clause_start_unsafe(clause) + offset; 
+  int *clause_iter = get_clause_start_unsafe(clause) + offset;
   int *clause_end = get_clause_end(clause);
   for (; clause_iter < clause_end; clause_iter++) {
     int lit = *clause_iter;
     int var = VAR_FROM_LIT(lit);
     srid_t clause_reason = up_reasons[var];
-    if (clause_reason >= 0) {
+    if (IS_UP_DERIVED_REASON_RAW(clause_reason)) {
       dependency_markings[clause_reason] = gen; 
     }
   }
@@ -2115,9 +2333,6 @@ static void set_unit_clause(int lit, srid_t clause, ullong gen) {
   set_lit_for_alpha(lit, gen);
   up_reasons[VAR_FROM_LIT(lit)] = clause;
 
-  // log_msg(VL_VERBOSE, "[line %lld] Setting clause %d to unit on literal %d",
-  //  current_line, TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
-
   resize_units();
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
@@ -2175,11 +2390,13 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
 
 // Returns the clause ID that becomes falsified, or -1 if not found.
 static srid_t perform_up_for_backwards_checking(ullong gen) {
-  // When performing UP for backwards checking, we do the same thing
-  // Except we skip unmarked clauses as possible units, in favor of
-  // marked clauses, to reduce the number of "dependent" clauses in the formula
-
   /*
+
+    When performing UP for backwards checking, we do a very similar thing
+    to UP for forwards checking, except we skip unmarked clauses as possible
+    unit clauses in favor of marked clauses (i.e., clauses that were involved
+    in another UP derivation) in order to reduce the number of clauses we
+    need in the formula to derive the empty clause.
 
     In the inner loop (j), any watch pointer with (j' < j) is either:
       - A satisfied clause, via its first watch pointer
@@ -2313,7 +2530,7 @@ restart_up:
             // it won't affect `wp_list = wps[lit]`.
             add_wp_for_lit(new_wp, clause_id);
 
-            // Instead of calling `remove_wp_for_lit()`, we can swap from the back
+            // Instead of calling `remove_wp_for_lit()`, we swap from the back
             wp_list[j] = wp_list[wp_size - 1];
             wp_size--;
             found_new_wp = 1;
@@ -2394,17 +2611,17 @@ restart_up:
 // up_falsified_clause. -1 if not found.
 // Any literals found are set to the provided generation value.
 static srid_t perform_up_for_forwards_checking(ullong gen) {
-  /* The unit propagation algorithm is quite involved and immersed in invariants.
-   * Buckle up, cowboys.
+  /* 
+   * The unit propagation algorithm is complicated and immersed in invariants.
    *
-   * First, we assume that the literals that have been found to be unit have been
-   * set to true in the global partial assignment `alpha`. Those literals
-   * have been added to the unit_lits array. These are the literals whose 
-   * negations can cause additional clauses to become unit.
+   * First, we assume that the unit literals in `unit_literals` have been
+   * set to true in the global partial assignment `alpha`. These are the
+   * literals whose negations can cause additional clauses to become unit.
    * 
-   * We take each false literal l and loop through its watch pointers. For any
-   * clause with a pair of watch pointers, the watch pointers are two previously-unset 
-   * literals (under alpha) in the first two positions of the clause.
+   * We take each negated literal `l` and loop through its watch pointers.
+   * For any clause with a pair of watch pointers, the watch pointers are
+   * two previously-unset literals (under alpha) in the first two positions
+   * of the clause.
    * 
    * We move the other watch pointer p to the first position and check if it is
    * set to true. If so, then we continue to the next clause. Otherwise, we
@@ -2439,10 +2656,11 @@ static srid_t perform_up_for_forwards_checking(ullong gen) {
     uint wp_size = wp_sizes[lit]; // Store and edit this value in a variable
     for (uint j = 0; j < wp_size; j++) {
       srid_t clause_id = wp_list[j];
+
       int *clause = get_clause_start_unsafe(clause_id);
       uint clause_size = get_clause_size(clause_id);
       
-      // Lemma: the clause is not a unit clause (yet), and its wpointers are 
+      // Lemma: the clause is not a unit clause (yet), and its w-pointers are 
       // the first two literals in the clause (we may reorder literals here).
 
       // Place the other watch pointer first
@@ -2471,10 +2689,6 @@ static srid_t perform_up_for_forwards_checking(ullong gen) {
           // `clause[1] != lit`, and so even if `wps[lit]` gets reallocated,
           // it won't affect `wp_list`.
           add_wp_for_lit(clause[1], clause_id);
-
-          // Adding a watch pointer could potentially re-allocate the `wp_list`
-          // underneath us, so we refresh the pointer
-          wp_list = wps[lit];
 
           // Instead of calling remove_wp_for_lit, we can swap from the back
           wp_list[j] = wp_list[wp_size - 1];
@@ -2536,7 +2750,9 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
   int *clause = get_clause_start_unsafe(clause_index);
   uint clause_size = get_clause_size(clause_index);
 
-  FATAL_ERR_IF(clause_size == 0, "Cannot add wps and UP on the empty clause");
+  FATAL_ERR_IF(clause_size == 0,
+    "[line %lld] Cannot add wps and UP on the empty clause, %lld",
+    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
 
   // If the clause is unit, set it to be true, do UP later
   // Otherwise, add watch pointers
@@ -2573,44 +2789,59 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
         set_unit_clause(lit, clause_index, GLOBAL_GEN);
     }
   } else {
-    // The clause has at least two literals - add watch pointers
-
     /*
+      The clause has at least two literals - add watch pointers.
+
       Watch pointers must be non-FF literals (when eval'ed under alpha).
-      Typically, if a unit clause `(l)` is present in the formula,
-      other clauses won't contain `-l`. But this need not be the case
-      (perhaps the formula hasn't undergone pre-processing yet),
-      and some tools, such as `sr2drat`, add clauses with these kinds of
-      "useless" literals. So to maintain the invariant that watch pointers
-      must be non-FF literals, we scan the clause for two such literals.
-      Along the way, we might discover that the clause is unit or falsified.
+      Typically, if a(n implied) unit clause `(l)` is present in the formula,
+      other clauses won't contain `l` or `-l`, since in the former case,
+      the clause can be removed, and in the latter case, the `-l` literal
+      can be removed. But this need not be the case (perhaps the formula
+      hasn't undergone pre-processing yet), and some tools, such as `sr2drat`,
+      add clauses with these kinds of "useless" literals/clauses.
+      So to maintain the invariant that watch pointers must be non-FF literals,
+      we scan the clause for two such literals.  Along the way, we might
+      discover that the clause is unit or falsified.
     */
-    uint non_ff_lit_counter = 0;
-    for (uint i = 0; i < clause_size && non_ff_lit_counter < 2; i++) {
+    uint non_ff_lits = 0;
+    uint unassigned_lits = 0;
+    for (uint i = 0; i < clause_size && non_ff_lits < 2; i++) {
       int lit = clause[i];
-      if (peval_lit_under_alpha(lit) != FF) {
+      peval_t peval = peval_lit_under_alpha(lit);
+      if (peval != FF) {
         // Swap the non-FF literal to be a watch pointer
-        if (i != non_ff_lit_counter) {
-          clause[i] = clause[non_ff_lit_counter];
-          clause[non_ff_lit_counter] = lit;
+        if (i != non_ff_lits) {
+          clause[i] = clause[non_ff_lits];
+          clause[non_ff_lits] = lit;
         }
 
-        non_ff_lit_counter++;
+        non_ff_lits++;
+        unassigned_lits += (peval == UNASSIGNED);
       }
     }
 
-    switch (non_ff_lit_counter) {
+    switch (non_ff_lits) {
       case 0:
         mark_and_store_empty_clause_refutation(clause_index, gen);
         break;
       case 1:
-        set_unit_clause(clause[0], clause_index, GLOBAL_GEN);
+        /* This clause is unit only if it has an unassigned literal.
+         * 
+         * Since the formula need not have been pre-processed, we might
+         * encounter a clause which has one non-FF literal that happens
+         * to be satisfied by the current truth assignment. Since the
+         * state must be `GLOBAL_UP`, this means that the clause cannot
+         * become a global unit clause. In other words, the clause only
+         * becomes a unit if its non-FF literal is unassigned.
+         */
+        if (unassigned_lits == 1) {
+          set_unit_clause(clause[0], clause_index, GLOBAL_GEN);
+        }
         break;
-      case 2:
+      default:
         add_wp_for_lit(clause[0], clause_index);
         add_wp_for_lit(clause[1], clause_index);
         break;
-      default: log_fatal_err("Bad unassigned counter: %d", non_ff_lit_counter);
     }
   }
 
@@ -2621,59 +2852,84 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
   }
 }
 
-// A clone of of assume_negated_clause() from global_data, but with added bookkeeping. 
-// Returns 0 if assumption succeeded, -1 if contradiction found and LSR line emitted.
-// Must be called when global up_state == GLOBAL_UP.
-// Even when -1 is returned, the candidate clause is still "assumed".
+/**
+ * @brief Assumes the negation of the candidate redundant clause into the
+ *        current truth assignment, and then performs unit propagation.
+ * 
+ * This function performs a similar function to `assume_negated_clause()`
+ * from `global_data.c`, but with extra bookkeeping.
+ * 
+ * The value of `up_state` must be `GLOBAL_UP` when calling this function.
+ * On return, `up_state == CANDIDATE_UP`. Call `unassume_candidate_clause()`
+ * to decrement the state and undo the effects of calling this function.
+ * 
+ * When we assume the negation of `clause_index`, we check how each literal
+ * `l` evaluates under the truth assignment `alpha`. If `l` is unassigned,
+ * then we assume it as a unit literal. If `l` evaluates to true, then
+ * we have a trivial unit-propagation refutation, and we can compute the
+ * refutation from the unit clause causing `l` to be true.
+ * 
+ * The tricky case is when `l` evaluates to false. Typically, we would ignore
+ * `l`, since adding `-l` to `alpha` would have no effect. However, we also
+ * want to minimize the number of unit-propagation hints in the LSR proof line
+ * that we generate for this clause. One method of reducing the number of hints
+ * is to treat `l` as a freshly-assumed literal, rather than the final literal
+ * from a chain of unit-propagation-derived unit clauses. See
+ * `mark_and_store_up_refutation()` for more information on how "assumed"
+ * literals reduce the number of hints.
+ * 
+ * Thus, when `l` evaluates to false, we mark it as an "assumed" literal.
+ * See the `MARK_AS_UP_ASSUMED_VAR()` macro for more information.
+ * 
+ * Note that no matter the returned result, the caller must call
+ * `unassume_candidate_clause()`, since some or all of the clause's literals
+ * may still be assumed in `alpha`.
+ * 
+ * TODO: Store which literal that causes `refuting_clause` to be set
+ *       in order to find the shortest possible trivial UP refutation.
+ * 
+ * @param clause_index The candidate clause to assume.
+ * @return `-1` if a contradiction was found and the UP refutation was emitted
+ *         or stored, and `0` otherwise (meaning the assumption succeeded).
+ */
 static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
   FATAL_ERR_IF(up_state != GLOBAL_UP, "up_state not GLOBAL_UP.");
   increment_state();
 
-  int satisfied_lit = -1;
   int *clause_iter = get_clause_start_unsafe(clause_index);
-  int *end = get_clause_end(clause_index);
+  int *clause_end = get_clause_end(clause_index);
 
-  srid_t falsified_clause = -1;
-  for (; clause_iter < end; clause_iter++) {
+  srid_t refuting_clause = -1;
+  for (; clause_iter < clause_end; clause_iter++) {
     int lit = *clause_iter;
     int var = VAR_FROM_LIT(lit);
-
-    // Check if the literal is satisfied by prior UP
-    // If so, then we have a contradiction
-    int peval = peval_lit_under_alpha(lit);
+    peval_t peval = peval_lit_under_alpha(lit);
     switch (peval) {
       case FF:
-        // Mark the reason for an already-satisfied literal as assumed
-        // This shortens UP derivations
-        up_reasons[var] |= SRID_MSB;
+        MARK_AS_UP_ASSUMED_VAR(var);
         break;
       case UNASSIGNED:
-        // Always set (the negations of) unassigned literals to true
-        // unassume_candidate_clause() will unassign these
         assume_unit_literal(NEGATE_LIT(lit));
         break;
       case TT:
-        // `lit` has been derived as true in the global partial assignment
-        // Thus, if we assume the negation of `lit`, we would ultimately
-        // end up with a UP refutation for whatever caused `lit` to be true
-        // TODO: Find the shortest literal to use here later
-        if (satisfied_lit == -1) {
-          satisfied_lit = lit;
-          falsified_clause = up_reasons[var];
-        }
-        break;
+        // We are allowed to jump to `mark_and_store()` immediately because
+        // there's no "better" option than a trivial UP refutation.
+        // (Aside from a shorter refutation: see the TODO.)
+        refuting_clause = up_reasons[var];
+        goto we_found_a_refuting_clause;
       default: log_fatal_err("Invalid peval_t value: %d", peval);
     }
   }
 
   // If we haven't satisfied the clause, we perform unit propagation
-  if (falsified_clause == -1) {
-    falsified_clause = perform_up(ASSUMED_GEN);
+  if (refuting_clause == -1) {
+    refuting_clause = perform_up(ASSUMED_GEN);
   }
 
-  // If we have either satisfied the clause, or found a UP derivation, emit it
-  if (falsified_clause != -1) {
-    mark_and_store_up_refutation(falsified_clause, alpha_generation - GEN_INC);
+  // If we have satisfied the clause or found a UP refutation, emit it
+  if (refuting_clause != -1) {
+    we_found_a_refuting_clause:
+    mark_and_store_up_refutation(refuting_clause, alpha_generation - GEN_INC);
     return -1;
   }
 
@@ -2687,29 +2943,21 @@ static void unassume_candidate_clause(srid_t clause_index) {
   FATAL_ERR_IF(up_state != CANDIDATE_UP, "up_state not CANDIDATE_UP.");
 
   // Undo the changes we made to the data structures
-  // First, address the unit literals set during new UP
-  for (int i = candidate_unit_literals_index; i < unit_literals_size; i++) {
-    int lit = unit_literals[i];
-    int var = VAR_FROM_LIT(lit);
+  // First, unassign the UP units derived after assuming the candidate clause
+  unassign_global_units(candidate_unit_literals_index);
 
-    // Clear the var's reason and generation (since they were derived during candidate UP)
-    up_reasons[var] = -1;
-    alpha[var] = 0;
-  }
-
-  // Now iterate through the clause and undo its changes
-  int *clause_iter = get_clause_start(clause_index);
-  int *end = get_clause_start(clause_index + 1);
-  for (; clause_iter < end; clause_iter++) {
+  // Now iterate through the candidate clause itself and unassume its literals
+  int *clause_iter = get_clause_start_unsafe(clause_index);
+  int *clause_end = get_clause_end(clause_index);
+  for (; clause_iter < clause_end; clause_iter++) {
     int lit = *clause_iter;
     int var = VAR_FROM_LIT(lit);
 
-    if (up_reasons[var] == -1) {
-      // If the literal was originally unassigned, set its gen back to 0
+    // If the literal was originally unassigned, set its gen back to 0
+    if (up_reasons[var] == NO_UP_REASON) {
       alpha[var] = 0;
-    } else if (up_reasons[var] < 0) {
-      // The literal was assumed, but not unassigned - undo its assumption bit
-      up_reasons[var] ^= SRID_MSB;
+    } else {
+      CLEAR_UP_ASSUMPTION_FOR_VAR(var);
     }
   }
 
@@ -2722,73 +2970,87 @@ static inline void add_RAT_marked_var(int marked_var) {
 
 static inline void clear_RAT_marked_vars(void) {
   for (uint i = 0; i < RAT_marked_vars_size; i++) {
-    up_reasons[RAT_marked_vars[i]] ^= SRID_MSB;
+    CLEAR_UP_ASSUMPTION_FOR_VAR(RAT_marked_vars[i]);
   }
 
   RAT_marked_vars_size = 0;
 }
 
-// This is clone of assume_negated_clause_under_subst(), but with extra bookkeeping.
-// In particular, we add any set literals to the unit_literals array, for UP purposes.
-// Returns the same values as assume_negated_clause_under_subst().
-// Sets the indexes values appropriately.
-// Call when global up_state == CANDIDATE_UP.
-// Sets the global up_state to RAT_UP.
+/**
+ * @brief Assumes into the current truth assignment the negation of
+ *        the RAT clause when mapped under the substitution.
+ * 
+ * This function acts similarly to `assume_negated_clause_under_subst()`
+ * from `global_data.c`, but with extra bookkeeping. See its documentation
+ * for motivation/implementation details.
+ * 
+ * The extra bookkeeping tries to minimize the number of RAT hints in
+ * this clause's RAT hint group. Specifically, for any literal `l` that
+ * maps to a literal `m` under the substitution such that `m` evaluates
+ * to false under the current substitution, `m` is marked as "assumed."
+ * When the RAT hint group is calculated, the dependency chain stops
+ * at these assumed literals.
+ * 
+ * When we encounter one of these literals `m`, we check if `m` was
+ * assumed. If it was, then we return immediately. Otherwise, we store
+ * the unit clause `C` causing `m` to be false. If no trivial refutations
+ * are found, then we use `C` in `mark_up_derivation()`.
+ * 
+ * If a nontrivial UP refutation is needed to show that the RAT clause
+ * is okay, then this function calls `mark_up_derivation()`, but it does
+ * NOT call `store_RAT_dependencies()`, and in fact, that function does
+ * not need to be called at all, since `mark_up_derivation()` marks
+ * the needed literals from the candidate clause and its UP units.
+ * 
+ * It is the caller's responsibility to ensure that `clause_index` is not
+ * a deleted clause and is in bounds.
+ * 
+ * The `up_state` must be `CANDIDATE_UP` when calling this function.
+ * On return, `up_state == RAT_UP`.
+ * 
+ * TODO: When storing `refuting_clause`, try to find the shortest trivial
+ *       UP refutation possible.
+ * 
+ * @param clause_index The RAT clause to assume.
+ * @return `SATISFIED_OR_MUL` if the clause is satisfied or has a trivial
+ *         UP refutation, `0` otherwise. If `0` is returned, then the RAT
+ *         clause has been assumed into the current truth assignment.
+ */
 static int assume_RAT_clause_under_subst(srid_t clause_index) {
   FATAL_ERR_IF(up_state != CANDIDATE_UP, "up_state not RAT_UP.");
   increment_state();
-
-  /* If we encounter false literals under alpha, we mark their reasons as assumed
-   * in the typical way, but we record which have been marked as assumed only for
-   * the RAT clause. This allows us to shorten/detect tautology derivations.
-   * However, these markings must be cleared before returning on any code path
-   * and before doing normal UP derivation, since we want to record global and
-   * candidate UP dependencies accurately.
-   * 
-   * We might want to do this work in unassume_RAT_clause(), but then UP would
-   * have to case on an additional MSB32 bit or pass the dependency index to
-   * detect when an assumed variable is a "stopping variable" (global or candidate)
-   * or a "non-stopping variable" (RAT). To simplify matters, we clear the
-   * RAT_marked_vars array before returning on any code path here. */
   RAT_marked_vars_size = 0;
 
-  int *clause_ptr = get_clause_start(clause_index);
-  int *end = get_clause_end(clause_index);
-  for (; clause_ptr < end; clause_ptr++) {
+  int *clause_ptr = get_clause_start_unsafe(clause_index);
+  int *clause_end = get_clause_end(clause_index);
+  srid_t refuting_clause = -1;
+
+  for (; clause_ptr < clause_end; clause_ptr++) {
     int lit = *clause_ptr;
     int mapped_lit = map_lit_under_subst(lit);
     switch (mapped_lit) {
-      case SUBST_TT:
-        clear_RAT_marked_vars();
-        return SATISFIED_OR_MUL;
       case SUBST_FF: break; // Ignore the literal
+      case SUBST_TT:
+        log_fatal_err("[line %lld] RAT clause %lld cannot eval to SUBST_TT",
+            TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
+        break;
       default:;
-        // If the mapped literal is unassigned under `alpha`, set it
         int mapped_var = VAR_FROM_LIT(mapped_lit);
         int mapped_peval = peval_lit_under_alpha(mapped_lit);
         switch (mapped_peval) {
           case FF:
-            // We can shorten tautology derivations by marking the reason as assumed.
-            // However, we ignore this assumption when doing RAT UP derivations.
-            // Only mark literals whose reasons are not already marked
-            if (up_reasons[mapped_var] >= 0) {
-              up_reasons[mapped_var] |= SRID_MSB;
+            if (IS_UP_DERIVED_VAR(mapped_var)) {
+              MARK_AS_UP_ASSUMED_VAR(mapped_var);
               add_RAT_marked_var(mapped_var);
             }
             break;
-          case TT:;
-            // To satisfy the clause, we needed to have derived the truth value of
-            // the mapped_lit. Mark the derivation, but do no further checking.
-            int reason = up_reasons[mapped_var];
-            clear_RAT_marked_vars();
-            if (reason >= 0) {
-              // Don't store anything in the LSR line because the derivation only
-              // includes things in the global and candidate UPs.
-              // The RAT check (the caller) will store the (-clause) in the line.
-              // TODO????
-              mark_up_derivation(reason, alpha_generation);
+          case TT:
+            if (IS_ASSUMED_VAR(mapped_var)) {
+              return SATISFIED_OR_MUL;
+            } else if (refuting_clause == -1) {
+              refuting_clause = up_reasons[mapped_var];
             }
-            return SATISFIED_OR_MUL;
+            break;
           case UNASSIGNED:
             assume_unit_literal(NEGATE_LIT(mapped_lit));
             break;
@@ -2797,7 +3059,11 @@ static int assume_RAT_clause_under_subst(srid_t clause_index) {
     }
   }
 
-  clear_RAT_marked_vars();
+  if (refuting_clause != -1) {
+    mark_up_derivation(refuting_clause, alpha_generation);
+    return SATISFIED_OR_MUL;
+  }
+
   return 0;
 }
 
@@ -2810,36 +3076,58 @@ static void unassume_RAT_clause(srid_t clause_index) {
   for (int i = RAT_unit_literals_index; i < unit_literals_size; i++) {
     int lit = unit_literals[i];
     int var = VAR_FROM_LIT(lit);
-    up_reasons[var] = -1; // Clear the reason (gen will clear via bumping)
+    up_reasons[var] = NO_UP_REASON;
   }
 
+  clear_RAT_marked_vars();
   decrement_state();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-static void uncommit_clause_and_set_as_candidate(void) {
-  // Examine the current clause and see if it is
-  //   - Empty; ignore
-  //   - A unit clause: unassign its unit and all units derived from this one
-  srid_t cc_id = CLAUSE_ID_FROM_LINE_NUM(current_line);
+/**
+ * @brief Undoes the effect of adding a clause to the formula.
+ *        Only called during backwards checking.
+ * 
+ * During backwards checking, we add all clause additions to the formula in
+ * an attempt to derive the empty clause. We then work backwards by only
+ * checking those clauses that were used to derive the empty clause
+ * or a later clause addition.
+ * 
+ * Normally, adding (i.e. "committing") a redundant clause to the formula
+ * causes us to perform global UP. So during backwards checking, we need
+ * to undo the effect of "committing" this clause to the formula. This means
+ * seeing if the clause was unit. If it was, we erase this unit and all
+ * unit literals/clauses derived from this one. Since `unit_literals`
+ * and `unit_clauses` are stored in order of derivation, we simply
+ * loop from the back until we find this clause.
+ * 
+ * @param clause_id The 0-indexed clause ID to un-commit. In almost all cases,
+ *                  this ID is `CLAUSE_ID_FROM_LINE_NUM(current_line)`.
+ */
+static void uncommit_clause_and_set_as_candidate(srid_t clause_id) {
+  FATAL_ERR_IF(ch_mode != BACKWARDS_CHECKING_MODE,
+    "uncommit_clause_and_set_as_candidate() only for backwards checking.");
+  FATAL_ERR_IF(up_state != GLOBAL_UP,
+    "up_state not GLOBAL_UP in uncommit_clause_and_set_as_candidate().");
 
-  int *clause_ptr = get_clause_start(cc_id);
-  int *clause_end = get_clause_end(cc_id);
-  new_clause_size = (int) (clause_end - clause_ptr);
+  int *clause_ptr = get_clause_start_unsafe(clause_id);
+  int *clause_end = get_clause_end(clause_id);
 
-  if (new_clause_size == 0) return;
+  // Ignore the empty clause
+  if (clause_ptr == clause_end) return;
 
-  // Unassign the units
+  // Unassign any derived units
+  // The watch-pointer invariant places the (potential) unit literal first
   int lit = clause_ptr[0];
   int var = VAR_FROM_LIT(lit);
 
   // The variable is unit because of this clause, undo its UP changes
-  if (up_reasons[var] == cc_id) {
-    // log_msg(VL_NORMAL, "c Unassigning unit literal %d\n", TO_DIMACS_LIT(lit));
-    // Scan backwards for the matching unit literal
+  if (up_reasons[var] == clause_id) {
+    // Scan backwards until we hit the matching unit literal
+    // We use an `int` here so we can stop once we go negative
     int unit_idx;
-    for (unit_idx = unit_literals_size - 1; unit_idx >= 0; unit_idx--) {
+    for (unit_idx = (int) unit_literals_size - 1; unit_idx >= 0; unit_idx--) {
       int unit_lit = unit_literals[unit_idx];
       int unit_var = VAR_FROM_LIT(unit_lit);
       alpha[unit_var] = 0;
@@ -2856,9 +3144,10 @@ static void uncommit_clause_and_set_as_candidate(void) {
   }
 
   // Since we won't consider this clause again, remove its watch pointers
-  if (new_clause_size > 1) {
-    remove_wp_for_lit(lit, cc_id);
-    remove_wp_for_lit(clause_ptr[1], cc_id);
+  // But only remove watch pointers if the clause is not a true unit
+  if (clause_ptr + 1 != clause_end) {
+    remove_wp_for_lit(lit, clause_id);
+    remove_wp_for_lit(clause_ptr[1], clause_id);
   }
 }
 
@@ -2891,9 +3180,17 @@ static void alloc_min_max_clauses_to_check(void) {
     num_parsed_add_lines * sizeof(min_max_clause_t));
 }
 
-static void store_clause_check_range(srid_t line_num) {
+/**
+ * @brief Stores the current line's min/max clause range to check.
+ *        We store it now before we officially update the min/max range
+ *        during the forwards part of backwards checking.
+ * 
+ * @param clause_id
+ */
+static void store_clause_check_range(srid_t clause_id) {
+  srid_t line_num = LINE_NUM_FROM_CLAUSE_ID(clause_id);
   compute_min_max_clause_to_check(line_num);
-  perform_clause_first_last_update(CLAUSE_ID_FROM_LINE_NUM(line_num)); 
+  perform_clause_first_last_update(clause_id); 
 
   min_max_clause_t *mm = &lines_min_max_clauses_to_check[line_num];
   mm->min_clause = min_clause_to_check;
@@ -2914,7 +3211,7 @@ static void set_min_max_clause_to_check(void) {
 
 static void emit_RAT_UP_failure_error(srid_t clause_index) {
   log_err("[line %lld] No UP contradiction for RAT clause %lld.",
-    current_line + 1, TO_DIMACS_CLAUSE(clause_index));
+    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
 
   // Print tons of information if verbosity is high enough
   if (verbosity_level > VL_NORMAL) {
@@ -2949,23 +3246,7 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
     if (err_verbosity_level > VL_QUIET) {
       log_raw(VL_VERBOSE, "\nc The unit literals and why they are unit\n");
       log_raw(VL_VERBOSE, "c Printed in order of their derivations\n");
-      for (uint i = 0; i < unit_literals_size; i++) {
-        int lit = unit_literals[i];
-        log_raw(VL_VERBOSE, "c Literal %d is unit due to ", TO_DIMACS_LIT(lit));
-
-        srid_t reason = up_reasons[VAR_FROM_LIT(lit)];
-        if (reason == -1) {
-          log_raw(VL_VERBOSE, "being assumed in the negation of the candidate or RAT clause.\n");
-        } else if (reason < 0) {
-          srid_t clause = reason ^ SRID_MSB;
-          log_raw(VL_VERBOSE, "clause %lld, but is currently assumed in the negation of the candidate or RAT clause: ",
-            TO_DIMACS_CLAUSE(clause));
-          dbg_print_clause(clause);
-        } else {
-          log_raw(VL_VERBOSE, "clause %lld: ", TO_DIMACS_CLAUSE(reason));
-          dbg_print_clause(reason);
-        }
-      }
+      dbg_print_unit_literals();
     }
   }
 
@@ -3016,13 +3297,11 @@ static void check_dsr_line(void) {
   // Find implied candidate unit clauses
   // If a UP refutation is found, it is stored, and we may finish the line
   if (assume_candidate_clause_and_perform_up(cc_index) == -1) {
-    log_msg(VL_VERBOSE, "[line %lld] Clause %lld was RUP, moving to next line",
-      TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(cc_index));
     goto candidate_valid;
   }
 
   // Since we didn't derive UP contradiction, the clause should be nonempty
-  FATAL_ERR_IF(new_clause_size == 0, "Didn't derive empty clause.");
+  FATAL_ERR_IF(new_clause_size == 0, "Didn't UP refute the empty clause.");
 
   // Now we turn to RAT checking - minimize and assume the witness
   max_RAT_line = MAX(max_RAT_line, current_line);
@@ -3032,9 +3311,10 @@ static void check_dsr_line(void) {
   set_min_max_clause_to_check();
 
   // Now do RAT checking between min and max clauses to check (inclusive)
-  log_msg(VL_VERBOSE, "[line %lld] Not RUP, checking clauses %lld to %lld", 
-    current_line + 1, TO_DIMACS_CLAUSE(min_clause_to_check),
+  logv("[line %lld] Not RUP, checking clauses %lld to %lld", 
+    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(min_clause_to_check),
     TO_DIMACS_CLAUSE(max_clause_to_check));
+
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
   int clause_size;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
@@ -3067,9 +3347,9 @@ candidate_valid:
   unassume_candidate_clause(cc_index);
 
   if (ch_mode == FORWARDS_CHECKING_MODE) {
-    perform_clause_first_last_update(CLAUSE_ID_FROM_LINE_NUM(current_line));
-    add_wps_and_perform_up(get_effective_formula_size(), old_alpha_gen);
     current_line++;
+    perform_clause_first_last_update(cc_index);
+    add_wps_and_perform_up(cc_index, old_alpha_gen);
   }
 }
 
@@ -3081,6 +3361,20 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
   for (; dels < del_end; dels++) {
     srid_t del_id = *dels;
     int *del_clause = get_clause_start(del_id);
+
+    // Ignore deletion of the clause if it is an implied unit
+    // Watch pointer invariant: the true literal is the first in the clause
+    // TODO: Make `--delete-implied-units` work for backwards checking
+    srid_t reason = up_reasons[VAR_FROM_LIT(del_clause[0])];
+    if (reason == del_id) {
+      if (err_verbosity_level > VL_QUIET) {
+        log_err("[line %lld] Ignoring deletion of implied unit clause %lld.",
+          TO_DIMACS_LINE(line), TO_DIMACS_CLAUSE(del_id));
+      }
+      clauses_lui[del_id] = -1;
+      continue;
+    }
+
     remove_wp_for_lit(del_clause[0], del_id);
     remove_wp_for_lit(del_clause[1], del_id);
     soft_delete_clause(del_id);
@@ -3094,10 +3388,14 @@ static void restore_wps_for_user_deleted_clauses(srid_t clause_id) {
 
   for (; dels < del_end; dels++) {
     srid_t del_id = *dels;
-    soft_undelete_clause(del_id);
-    int *del_clause = get_clause_start(del_id);
-    add_wp_for_lit(del_clause[0], del_id);
-    add_wp_for_lit(del_clause[1], del_id);
+
+    // Only undelete clauses that were soft deleted
+    if (is_clause_deleted(del_id)) {
+      soft_undelete_clause(del_id);
+      int *del_clause = get_clause_start_unsafe(del_id);
+      add_wp_for_lit(del_clause[0], del_id);
+      add_wp_for_lit(del_clause[1], del_id);
+    }
   }
 }
 
@@ -3106,13 +3404,14 @@ static void prepare_next_line_for_backwards_checking(void) {
   do {
     restore_wps_for_user_deleted_clauses(cc_id);
     current_line--;
-    uncommit_clause_and_set_as_candidate();
-    ra_commit_range(&deletions);
     cc_id = CLAUSE_ID_FROM_LINE_NUM(current_line);
-  } while (IS_UNUSED_LUI(clauses_lui[cc_id]));
+    uncommit_clause_and_set_as_candidate(cc_id);
+    ra_commit_range(&deletions);
+  } while (IS_UNUSED_LUI(clauses_lui[cc_id]) && current_line > 0);
 
   srid_t cc_rat_hints_index = RAT_HINTS_IDX_FROM_LINE_NUM(current_line);
   ra_commit_empty_ranges_until(&hints, cc_rat_hints_index);
+  new_clause_size = get_clause_size(cc_id);
 }
 
 static line_type_t prepare_next_line(void) {
@@ -3131,7 +3430,7 @@ static line_type_t prepare_next_line(void) {
 
 static void add_wps_and_up_initial_clauses(void) {
   srid_t c;
-  for (c = 0; c < num_cnf_clauses; c++) {
+  for (c = 0; c < num_cnf_clauses && !derived_empty_clause; c++) {
     add_wps_and_perform_up(c, 0);
   }
 
@@ -3139,49 +3438,63 @@ static void add_wps_and_up_initial_clauses(void) {
   
   if (!parsed_empty_clause) {
     logc("No empty clause detected. Attempting to derive it now.");
+  } else {
+    logc("Empty clause detected on proof line %lld.", num_parsed_lines);
   }
 
   // TODO: Encapsulate better
   // TODO: No need to RESIZE from formula_size when this is the largest it'll be
-  current_line = num_parsed_add_lines - 1; // Subtract 1 to 0-index it
   resize_sr_trim_data();
   resize_last_used_ids();
   alloc_min_max_clauses_to_check();
-  uncommit_clause_and_set_as_candidate();
-
-  current_line = 0;
 
   // Add implied unit clauses, clause by clause
   // Stop when we finally derive the empty clause
-  for (; c < formula_size && !derived_empty_clause; c++) {
-    store_clause_check_range(current_line);
-    current_line++;
+  current_line = 0;
+  srid_t end_of_formula = formula_size - parsed_empty_clause;
+  for (; c < end_of_formula && !derived_empty_clause; c++) {
+    // Store the min/max clause range to check, given the current formula state
+    // If we end up SR-checking this clause later, we use this range
+    store_clause_check_range(c);
+
+    // Now process any user deletions by removing their watch pointers
+    // This also "soft deletes" the clauses from the formula,
+    // which means we keep their literals while treating the clause as deleted
     remove_wps_from_user_deleted_clauses(c);
+
+    // Now perform UP on the "newly-added" clause
     add_wps_and_perform_up(c, 0);
+    current_line++;
   }
 
   if (!derived_empty_clause) {
-    log_err("Could not derive the empty clause during backwards checking.");
-    log_err_raw("If the proof is instead a proof of equisatisfiability, or a ");
+    log_err("Could not derive the empty clause during backwards checking.\n");
+    log_err_raw("If the proof is instead a proof of equisatisfiability or a ");
     log_err_raw("proof of symmetry breaking, use forwards checking (-f).\n");
     exit(1);
   }
 
-  remove_wps_from_user_deleted_clauses(c); // TODO: Fix this
-  c--; // `c` stored one more than the ID of the clause that derived empty
+  /*
+   * We need to do a bit of cleanup from the above for-loop.
+   * Since `c` gets incremented before checking if we derived the empty clause,
+   * we need to decrement it to correctly store the clause ID of the final
+   * non-empty clause that, when added to F, implies the empty clause via UP.
+   */
+  c--;
 
-  if (!parsed_empty_clause) {
-    logc("The empty clause was derived after adding clause %lld on line %lld.",
-        TO_DIMACS_CLAUSE(c), TO_DIMACS_LINE(current_line - 1));
-  } else if (c < formula_size - 1) {
-    logc("The empty clause was derived sooner, after clause %lld on line %lld.",
-        TO_DIMACS_CLAUSE(c), TO_DIMACS_LINE(current_line - 1));
-  }
+  logc("The empty clause was derived after clause %lld (add'n line %lld).",
+      TO_DIMACS_CLAUSE(c), TO_DIMACS_LINE(LINE_NUM_FROM_CLAUSE_ID(c)));
 
-  // Discard the rest of the formula, if necessary
-  if (c < formula_size - 1) {
+  // If we derived the empty clause before the last addition clause,
+  // we can discard the rest of the formula
+  if (c < end_of_formula - 1) {
     discard_formula_after_clause(c);
-    num_parsed_add_lines = current_line + 1;
+
+    // Because `UP_HINTS_IDX` is based on `num_parsed_add_lines`,
+    // we need to manually adjust this value to be as if we parsed up
+    // to `c` and then the empty clause. Since `c` is 0-indexed, we add 2
+    // TODO: Base it on `formula_size` instead
+    num_parsed_add_lines = LINE_NUM_FROM_CLAUSE_ID(c) + 2;
   } else if (!parsed_empty_clause) {
     /*
      * We derived the empty clause, but we didn't originally parse it.
@@ -3192,6 +3505,22 @@ static void add_wps_and_up_initial_clauses(void) {
     num_parsed_lines++;
     num_parsed_add_lines++;
   }
+
+  /* Set the value of `current_line` to the line of the empty clause.
+   * 
+   * This value is extremely brittle, i.e., it depends on many different
+   * data structure invariants. If these invariants or certain helper functions
+   * change, then this value also needs to change.
+   * 
+   * Since derived deletions are stored "in reverse order," and since there
+   * are no derived deletions for the empty clause, we need to ensure that
+   * backwards checking proceeds directly to the clause immediately before
+   * the empty clause. Since `prepare_current_line()` subtracts 1 from
+   * `current_line`, we need to set `current_line` equal to the empty
+   * clause, rather than the clause before it.
+   */
+  current_line = num_parsed_add_lines - 1;
+  discard_bcu_deletions_after_empty_clause(current_line);
 }
 
 static void check_proof(void) {
@@ -3200,6 +3529,8 @@ static void check_proof(void) {
   timer_record(&timer, TIMER_LOCAL);
 
   add_wps_and_up_initial_clauses();
+
+  logc("Checking proof...");
 
   // TODO encapsulate better later
   // TODO fix with resize_sr_trim_data()

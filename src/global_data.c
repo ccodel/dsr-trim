@@ -170,6 +170,30 @@ inline peval_t peval_lit_under_alpha(int lit) {
   }
 }
 
+// Returns the number of unassigned literals if not satisfied, -1 if satisfied.
+int peval_clause_under_alpha(srid_t clause_index) {
+  FATAL_ERR_IF(is_clause_deleted(clause_index),
+    "Trying to evaluate a deleted clause %lld.",
+    TO_DIMACS_CLAUSE(clause_index));
+
+  int *clause_iter = get_clause_start_unsafe(clause_index);
+  int *clause_end = get_clause_end(clause_index);
+  int num_unassigned = 0;
+  for (; clause_iter < clause_end; clause_iter++) {
+    int lit = *clause_iter;
+    peval_t peval_lit = peval_lit_under_alpha(lit);
+    switch (peval_lit) {
+      case TT: return -1;
+      case UNASSIGNED: num_unassigned++; break;
+      case FF: break;
+      default: log_fatal_err("Corrupted peval for lit %d and clause %lld.",
+          TO_DIMACS_LIT(lit), TO_DIMACS_CLAUSE(clause_index));
+    }
+  }
+
+  return num_unassigned;
+}
+
 static void set_mapping_for_subst(int lit, int lit_mapping) {
   FATAL_ERR_IF(lit < 0 || lit_mapping < SUBST_FF,
     "set_mapping_for_subst(): tried to map %d to %d", lit, lit_mapping);
@@ -305,7 +329,7 @@ void uncommit_clause_with_first_last_update(void) {
   formula_size--;
 }
 
-inline int is_clause_deleted(srid_t clause_index) {
+int is_clause_deleted(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
     "is_clause_deleted(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
@@ -327,46 +351,47 @@ static inline void memshift(void *restrict dst, const void *restrict src, size_t
 }
 
 static inline void gc_lits_db(void) {
+  // Don't garbage collect unless we've deleted enough literals
   if (lits_db_deleted_size * DELETION_GC_DENOM
-        > lits_db_size * DELETION_GC_NUMER) {
-    srid_t insert_index = 0;
-    srid_t clause_idx;
-    srid_t next_clause_idx = formula[0]; // First loop takes value of next_clause_ptr
-    for (srid_t i = 0; i < formula_size; i++) {
-      clause_idx = next_clause_idx;
-      next_clause_idx = formula[i + 1]; // Lemma: allowed, b/c one past is allocated
+        <= lits_db_size * DELETION_GC_NUMER) return;
 
-      if (IS_DELETED_CLAUSE(clause_idx)) {
-        // Put the deleted clause's pointer at the insert index, but keep it deleted
-        // That way, the previous clause still knows its size
-        formula[i] = DELETE_CLAUSE(insert_index);
+  srid_t insert_index = 0;
+  srid_t clause_idx;
+  srid_t next_clause_idx = formula[0]; // First loop takes value of next_clause_ptr
+  for (srid_t i = 0; i < formula_size; i++) {
+    clause_idx = next_clause_idx;
+    next_clause_idx = formula[i + 1]; // Lemma: allowed, b/c one past is allocated
+
+    if (IS_DELETED_CLAUSE(clause_idx)) {
+      // Put the deleted clause's pointer at the insert index, but keep it deleted
+      // That way, the previous clause still knows its size
+      formula[i] = DELETE_CLAUSE(insert_index);
+    } else {
+      if (insert_index == clause_idx) {
+        insert_index = CLAUSE_IDX(next_clause_idx); // No moving, bump up insert index
       } else {
-        if (insert_index == clause_idx) {
-          insert_index = CLAUSE_IDX(next_clause_idx); // No moving, bump up insert index
-        } else {
-          // Move the literals down and update formula clause pointer
-          formula[i] = insert_index;
-          srid_t size = CLAUSE_IDX(next_clause_idx) - clause_idx;
-          memshift(lits_db + insert_index, lits_db + clause_idx, size * sizeof(int));
-          insert_index += size;
-        }
+        // Move the literals down and update formula clause pointer
+        formula[i] = insert_index;
+        srid_t size = CLAUSE_IDX(next_clause_idx) - clause_idx;
+        memshift(lits_db + insert_index, lits_db + clause_idx, size * sizeof(int));
+        insert_index += size;
       }
     }
-
-    // Finally, update the place to put a new clause, moving "pending" literals if any
-    // Lemma: the final clause is not deleted
-    clause_idx = next_clause_idx;
-    formula[formula_size] = insert_index;
-    srid_t size = lits_db_size - clause_idx;
-    memshift(lits_db + insert_index, lits_db + clause_idx, size * sizeof(int));
-    lits_db_size = insert_index + size;
-    lits_db_deleted_size = 0;
   }
+
+  // Finally, update the place to put a new clause, moving "pending" literals if any
+  // Lemma: the final clause is not deleted
+  clause_idx = next_clause_idx;
+  formula[formula_size] = insert_index;
+  srid_t size = lits_db_size - clause_idx;
+  memshift(lits_db + insert_index, lits_db + clause_idx, size * sizeof(int));
+  lits_db_size = insert_index + size;
+  lits_db_deleted_size = 0;
 }
 
 void soft_delete_clause(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "delete_clause(): Clause index %lld was out of bounds (%lld).",
+    "soft_delete_clause(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
 
   srid_t clause_ptr = formula[clause_index];
@@ -379,13 +404,13 @@ void soft_delete_clause(srid_t clause_index) {
 
 void soft_undelete_clause(srid_t clause_index) {
   FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "delete_clause(): Clause index %lld was out of bounds (%lld).",
+    "soft_undelete_clause(): Clause index %lld was out of bounds (%lld).",
     clause_index, formula_size);
 
   srid_t clause_ptr = formula[clause_index];
 
   FATAL_ERR_IF(!IS_DELETED_CLAUSE(clause_ptr),
-    "Clause %lld was not deleted (soft_undelete()).",
+    "soft_undelete_clause(): Clause %lld was not deleted.",
     TO_DIMACS_CLAUSE(clause_index)); 
 
   formula[clause_index] = CLAUSE_IDX(clause_ptr); 

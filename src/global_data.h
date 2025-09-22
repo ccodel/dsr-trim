@@ -34,6 +34,7 @@
 #endif
 
 #define VAR_FROM_LIT(x)         ((x) >> 1)
+#define POS_LIT_FROM_VAR(x)     ((x) << 1)
 #define IS_POS_LIT(x)           (!((x) & 0x1))
 #define IS_NEG_LIT(x)           ((x) & 0x1)
 #define NEGATE_LIT(x)           ((x) ^ 0x1)
@@ -246,6 +247,7 @@ void print_proof_checking_result(void);
 
 void set_lit_for_alpha(int lit, ullong gen);
 peval_t peval_lit_under_alpha(int lit);
+int peval_clause_under_alpha(srid_t clause_index);
 
 int map_lit_under_subst(int lit);
 
@@ -255,7 +257,7 @@ void perform_clause_first_last_update(srid_t clause_index);
 void commit_clause(void);
 void commit_clause_with_first_last_update(void);
 void uncommit_clause_with_first_last_update(void);
-int  is_clause_deleted(srid_t clause_index);
+int is_clause_deleted(srid_t clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
 void delete_clause(srid_t clause_index);

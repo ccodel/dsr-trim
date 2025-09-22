@@ -51,4 +51,6 @@ void *ra_get_range_start(range_array_t *ra, ullong range_index);
 void *ra_get_range_end(range_array_t *ra, ullong range_index);
 ullong ra_get_range_size(range_array_t *ra, ullong range_index);
 
+void ra_clear_data_after_range(range_array_t *ra, ullong range_index);
+
 #endif /* _RANGE_ARRAY_H_ */

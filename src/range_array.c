@@ -160,3 +160,14 @@ ullong ra_get_range_size(range_array_t *ra, ullong range_index) {
     return ra->indexes[range_index + 1] - ra->indexes[range_index];
   }
 }
+
+/**
+ * @brief Clears all data (ranges) after and including the `range_index`.
+ * 
+ * @param ra 
+ * @param range_index 
+ */
+void ra_clear_data_after_range(range_array_t *ra, ullong range_index) {
+  ra->data_size = ra->indexes[range_index];
+  ra->indexes_size = range_index;
+}
