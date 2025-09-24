@@ -3468,7 +3468,7 @@ static void add_wps_and_up_initial_clauses(void) {
   }
 
   if (!derived_empty_clause) {
-    log_err("Could not derive the empty clause during backwards checking.\n");
+    log_err("Could not derive the empty clause during backwards checking.");
     log_err_raw("If the proof is instead a proof of equisatisfiability or a ");
     log_err_raw("proof of symmetry breaking, use forwards checking (-f).\n");
     exit(1);

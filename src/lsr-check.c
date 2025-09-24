@@ -438,8 +438,8 @@ static void check_line(void) {
 
   assume_subst(current_line);
 
-  // If the witness is a single literal, then we can check only the RAT clauses
-  if (get_witness_start(current_line) + 1 >= get_witness_end(current_line)) {
+  // If the witness is a single literal, then we may check only the RAT clauses
+  if (get_witness_size(current_line) <= 1) {
     if (check_only_hints(hints_iter, hints_end, pivot)) {
       goto finish_line;
     }
