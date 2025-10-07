@@ -3253,8 +3253,17 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
   exit(1);
 }
 
-static void check_RAT_clause(srid_t clause_index) {
-  switch (reduce_clause_under_subst(clause_index)) {
+// If `pivot != -1`, then we treat the witness as a DRAT witness.
+// This lets us reduce clauses faster.
+static void check_RAT_clause(srid_t clause_index, int pivot) {
+  int reduce_res;
+  if (pivot != -1) {
+    reduce_res = reduce_clause_under_RAT_witness(clause_index, pivot);
+  } else {
+    reduce_res = reduce_clause_under_subst(clause_index);
+  }
+
+  switch (reduce_res) {
     case NOT_REDUCED:
     case SATISFIED_OR_MUL:
       return;
@@ -3307,7 +3316,17 @@ static void check_dsr_line(void) {
   max_RAT_line = MAX(max_RAT_line, current_line);
   int must_find_new_pivot = minimize_witness();
   assume_subst(current_line);
-  if (must_find_new_pivot) find_new_pivot_for_witness(cc_index);
+  if (must_find_new_pivot) {
+    find_new_pivot_for_witness(cc_index);
+  }
+
+  // If the witness has only a single literal, we can reduce clauses faster
+  int pivot = -1;
+  if (get_witness_size(current_line) <= 1) {
+    pivot = *get_witness_start(current_line);
+  }
+
+  // Determine the range of clauses the witnesses affects
   set_min_max_clause_to_check();
 
   // Now do RAT checking between min and max clauses to check (inclusive)
@@ -3319,7 +3338,7 @@ static void check_dsr_line(void) {
   int clause_size;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
     if (can_skip_clause(i)) continue;
-    check_RAT_clause(i);
+    check_RAT_clause(i, pivot);
   }
 
   /*
@@ -3338,7 +3357,7 @@ static void check_dsr_line(void) {
     satisfy C, we treat it like any other RAT clause and subject it
     to a RAT check. The recorded hint ID is the ID of the candidate itself.
   */
-  check_RAT_clause(cc_index);
+  check_RAT_clause(cc_index, pivot);
 
   print_or_store_lsr_line(old_alpha_gen);
 
