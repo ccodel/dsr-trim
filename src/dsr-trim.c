@@ -260,13 +260,12 @@ static FILE *dsr_file = NULL;
 static FILE *lsr_file = NULL;
 
 // The total number of addition lines parsed. Incremented by `parse_dsr_line()`.
-// Note that during backwards checking, if the empty clause is derived
-static srid_t num_parsed_add_lines = 0;
-static srid_t num_parsed_lines = 0;
+static usrid_t num_parsed_add_lines = 0;
+static usrid_t num_parsed_lines = 0;
 static uint parsed_empty_clause = 0;
 
 // 0-indexed current line ID.
-static srid_t current_line = 0;
+static usrid_t current_line = 0;
 
 // Records the 0-indexed line number of the maximum line with RAT hint groups.
 // This is used to reduce unhelpful deletions when the rest of the proof is
@@ -338,9 +337,15 @@ static range_array_t deletions;
 // stored during forward checking.)
 static range_array_t bcu_deletions;
 
-static uint *line_num_RAT_hints = NULL;
-static uint line_num_RAT_hints_alloc_size = 0;
-static uint num_RAT_hints = 0;
+typedef struct line_RAT_hint_information {
+  usrid_t num_RAT_clauses;
+  usrid_t num_reduced_clauses;
+} line_RAT_info_t;
+
+static line_RAT_info_t *lines_RAT_hint_info = NULL;
+static uint lines_RAT_hint_info_alloc_size = 0;
+static uint num_RAT_clauses = 0;
+static uint num_reduced_clauses = 0;
 
 // Indexed by the 0-indexed `current_line`.
 // Used only during backwards checking, and allocated by `add_initial_wps()`.
@@ -467,11 +472,27 @@ static inline srid_t get_effective_formula_size(void) {
   }
 }
 
-static inline uint get_num_RAT_hint_groups(srid_t line_num) {
+static inline usrid_t get_num_RAT_clauses(srid_t line_num) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    return line_num_RAT_hints[line_num];
+    return lines_RAT_hint_info[line_num].num_RAT_clauses;
   } else {
-    return num_RAT_hints;
+    return num_RAT_clauses;
+  }
+}
+
+static inline usrid_t get_num_reduced_clauses(srid_t line_num) {
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    return lines_RAT_hint_info[line_num].num_reduced_clauses;
+  } else {
+    return num_reduced_clauses;
+  }
+}
+
+static inline void increment_num_reduced_clauses(srid_t line_num) {
+  if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    lines_RAT_hint_info[line_num].num_reduced_clauses++;
+  } else {
+    num_reduced_clauses++;
   }
 }
 
@@ -586,9 +607,9 @@ static inline void add_up_hint(srid_t clause_id) {
 static void add_RAT_clause_hint(srid_t clause_id) {
   ra_insert_srid_elt(&hints, TO_RAT_HINT(clause_id));
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    line_num_RAT_hints[current_line]++;
+    lines_RAT_hint_info[current_line].num_RAT_clauses++;
   } else {
-    num_RAT_hints++;
+    num_RAT_clauses++;
   }
 }
 
@@ -754,21 +775,21 @@ static void print_wps(void) {
 }
 
 static void print_nrhs(void) {
-  uint sum = 0;
-  uint size = MIN(num_parsed_add_lines, line_num_RAT_hints_alloc_size);
-  for (int i = 0; i < size; i++) {
-    sum += get_num_RAT_hint_groups(i);
+  usrid_t sum = 0;
+  usrid_t size = MIN(num_parsed_add_lines, lines_RAT_hint_info_alloc_size);
+  for (usrid_t i = 0; i < size; i++) {
+    sum += get_num_RAT_clauses(i);
   }
 
   if (sum == 0) return;
 
   log_raw(VL_NORMAL, "Num RAT hints: ");
 
-  for (int i = 0; i < size; i++) {
+  for (usrid_t i = 0; i < size; i++) {
     if (i % 5 == 4) {
-      log_raw(VL_NORMAL, "[%d] ", i + 1);
+      log_raw(VL_NORMAL, "[%lld] ", i + 1);
     }
-    log_raw(VL_NORMAL, "%d ", get_num_RAT_hint_groups(i));
+    log_raw(VL_NORMAL, "%lld ", get_num_RAT_clauses(i));
   }
   log_raw(VL_NORMAL, "\n\n");
 }
@@ -1109,7 +1130,7 @@ static void print_lsr_line(srid_t line_num, srid_t printed_line_id) {
   print_clause(CLAUSE_ID_FROM_LINE_NUM(line_num));
 
   // Only print a witness if there are RAT/reduced clauses
-  if (get_num_RAT_hint_groups(line_num) > 0) {
+  if (get_num_reduced_clauses(line_num) > 0) {
     print_witness(line_num);
   }
 
@@ -1557,10 +1578,10 @@ static void prepare_dsr_trim_data(void) {
     clauses_lui_alloc_size = formula_size * 2;
     clauses_lui = xmalloc_memset(clauses_lui_alloc_size * sizeof(srid_t), 0xff);
 
-    line_num_RAT_hints_alloc_size = formula_size * 2;
-    line_num_RAT_hints = xcalloc(line_num_RAT_hints_alloc_size, sizeof(uint));
+    lines_RAT_hint_info_alloc_size = formula_size * 2;
+    lines_RAT_hint_info = xcalloc(lines_RAT_hint_info_alloc_size, sizeof(line_RAT_info_t));
 
-    unit_literals_wp_up_indexes = xcalloc(units_alloc_size, sizeof(int));
+    unit_literals_wp_up_indexes = xcalloc(units_alloc_size, sizeof(uint));
   }
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
@@ -1630,7 +1651,7 @@ static void minimize_RAT_hints(void) {
   static uint skipped_RAT_indexes_size = 0;
 
   // Iterate over the RAT hint groups and mark last used IDs
-  uint nrhg = get_num_RAT_hint_groups(current_line);
+  usrid_t nrhg = get_num_RAT_clauses(current_line);
   if (nrhg == 0) return;
 
   // Reset the skipped-indexes array, and malloc() if not yet allocated
@@ -1641,11 +1662,11 @@ static void minimize_RAT_hints(void) {
   }
 
   // First pass: mark "active" clauses
-  uint num_marked = 0;
+  usrid_t num_marked = 0;
   srid_t *hints_start = get_RAT_hints_start(current_line);
   srid_t *hints_end = get_RAT_hints_end(current_line);
   srid_t *hints_iter = hints_start;
-  for (uint i = 0; i < nrhg; i++) {
+  for (usrid_t i = 0; i < nrhg; i++) {
     srid_t RAT_clause = FROM_RAT_HINT(*hints_iter);
     hints_iter++;
     srid_t RAT_lui = clauses_lui[RAT_clause];
@@ -1749,7 +1770,7 @@ static void minimize_RAT_hints(void) {
 
   ullong hints_dropped = (ullong) (hints_end - write_iter);
   ra_uncommit_data_by(&hints, hints_dropped);
-  line_num_RAT_hints[current_line] -= skipped_RAT_indexes_size;
+  lines_RAT_hint_info[current_line].num_RAT_clauses -= skipped_RAT_indexes_size;
 }
 
 /**
@@ -3255,11 +3276,13 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
 
 static void check_RAT_clause(srid_t clause_index) {
   switch (reduce_clause_under_subst(clause_index)) {
-    case NOT_REDUCED:
     case SATISFIED_OR_MUL:
+      increment_num_reduced_clauses(current_line);
+    case NOT_REDUCED: // fallthrough
       return;
     case REDUCED:
       add_RAT_clause_hint(clause_index);
+      increment_num_reduced_clauses(current_line);
 
       // If the RAT clause is not satisfied by alpha, do UP
       if (assume_RAT_clause_under_subst(clause_index) != SATISFIED_OR_MUL) {
@@ -3277,12 +3300,12 @@ static void check_RAT_clause(srid_t clause_index) {
       break;
     case CONTRADICTION:
       log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
-        current_line + 1, TO_DIMACS_CLAUSE(clause_index));
+        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
     default:
       log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
-        current_line + 1, TO_DIMACS_CLAUSE(clause_index),
-        reduce_clause_under_subst(clause_index)); 
-  }  
+        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index),
+        reduce_clause_under_subst(clause_index));
+  }
 }
 
 static void check_dsr_line(void) {
@@ -3421,7 +3444,8 @@ static line_type_t prepare_next_line(void) {
     // For forwards checking, we clear the stored hints
     ra_reset(&hints);
     ra_reset(&deletions);
-    num_RAT_hints = 0;
+    num_RAT_clauses = 0;
+    num_reduced_clauses = 0;
   }
 
   if (p_strategy == PS_EAGER) return ADDITION_LINE;
@@ -3537,11 +3561,11 @@ static void check_proof(void) {
   // TODO the (+1) is a little too much?
   // TODO Go off line num and not formula size?
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    if (formula_size > line_num_RAT_hints_alloc_size) {
-      line_num_RAT_hints = xrecalloc(line_num_RAT_hints,
-        line_num_RAT_hints_alloc_size * sizeof(uint),
-        (formula_size + 1) * sizeof(uint));
-      line_num_RAT_hints_alloc_size = formula_size + 1;
+    if (formula_size > lines_RAT_hint_info_alloc_size) {
+      lines_RAT_hint_info = xrecalloc(lines_RAT_hint_info,
+        lines_RAT_hint_info_alloc_size * sizeof(line_RAT_info_t),
+        (formula_size + 1) * sizeof(line_RAT_info_t));
+      lines_RAT_hint_info_alloc_size = formula_size + 1;
     }
   }
 
