@@ -3455,6 +3455,7 @@ static line_type_t prepare_next_line(void) {
 static void add_wps_and_up_initial_clauses(void) {
   srid_t c;
   for (c = 0; c < num_cnf_clauses && !derived_empty_clause; c++) {
+    if (is_clause_deleted(c)) continue;
     add_wps_and_perform_up(c, 0);
   }
 
