@@ -48,6 +48,7 @@ clean:
 	$(RM) $(SRCDIR)/lsr-check/*.o
 	$(RM) $(EXECSWITHBINDIR)
 	$(RM) $(EXECS)
+	$(RM) decompress $(BINDIR)/decompress
 
 # Make the `bin/` directory, ignoring it if it already exists
 $(BINDIR):
