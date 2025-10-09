@@ -570,8 +570,7 @@ static int sort_and_dedup_new_clause(int is_sr) {
 
     if (prev_lit == lit) {
       skipped_lits++;
-    } else if (prev_lit == NEGATE_LIT(lit)
-                || (is_sr && lit == negated_pivot)) {
+    } else if (prev_lit == NEGATE_LIT(lit) || (is_sr && lit == negated_pivot)) {
       return 1;
     } else {
       // Only write a literal if the write pointer has lagged behind
@@ -1001,6 +1000,7 @@ void dbg_print_formula(void) {
 }
 
 void dbg_print_assignment(void) {
+  log_raw(VL_NORMAL, "[DBG] Current assignment: ");
   for (int i = 0; i <= max_var; i++) {
     switch (peval_lit_under_alpha(i * 2)) {
       case TT:
@@ -1016,6 +1016,7 @@ void dbg_print_assignment(void) {
 }
 
 void dbg_print_subst(void) {
+  log_raw(VL_NORMAL, "[DBG] Current substitution: ");
   // Do two passes to print the TT/FF first, then the mapped ones
   for (int i = 0; i <= max_var; i++) {
     int lit = i * 2;

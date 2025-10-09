@@ -910,24 +910,10 @@ static void print_clause(srid_t clause_id) {
 
 /** @brief Prints the current SR witness to the LSR proof file.
  * 
- * TODO update docs
- * 
- * During forward proof checking, the current witness gets parsed into
- * the global data pointer `witness`, with corresponding size `witness_size`.
- * Before parsing a new line, this witness gets cleared by setting
- * `witness_size` to 0.
- * 
- * During backwards proof checking, the witness is stored in the `witnesses`
- * pointer. The checker must then manually set the `witness` and `witness_size`
- * data to point at the correct section of `witnesses`. While this is quite
- * manual, this ensures that
- * 
- * (1) the API for forward and backward proof checking is the same, and
- * (2) that forward proof checking can save memory by re-using `witness`.
+ *  TODO update docs. 
  */
 static void print_witness(srid_t line_num) {
   int *witness_start = get_witness_start(line_num);
-  int *iter = witness_start;
   int *witness_end = get_witness_end(line_num);
   int witness_size = (int) (witness_end - witness_start);
 
@@ -946,6 +932,7 @@ static void print_witness(srid_t line_num) {
   int seen_pivot_divider = 0;
   int num_skipped_mapped_lits = 0;
 
+  int *iter = witness_start;
   int pivot = *iter;
   write_lit(lsr_file, TO_DIMACS_LIT(pivot));
   iter++;
@@ -970,11 +957,16 @@ static void print_witness(srid_t line_num) {
       iter++;
       int mapped_lit = *iter;
       switch (mapped_lit) {
-        case SUBST_TT:
-          write_lit(lsr_file, TO_DIMACS_LIT(lit));
-          break;
         case SUBST_FF:
-          write_lit(lsr_file, TO_DIMACS_LIT(NEGATE_LIT(lit)));
+          lit = NEGATE_LIT(lit);
+        case SUBST_TT: // fallthrough
+          /* If we encounter the pivot at this point, it must be mapped to TT.
+           * (See `find_new_pivot_for_witness()`.)
+           * Since we have already printed the pivot, we must skip it here.
+           */
+          if (lit != pivot) {
+            write_lit(lsr_file, TO_DIMACS_LIT(lit));
+          }
           break;
         default: num_skipped_mapped_lits++;
       }
@@ -2040,7 +2032,7 @@ static void print_stored_lsr_proof(void) {
  * This is because any clause satisfied by l will then generate contradiction
  * with alpha (alpha satisfies it), and any clause containing -l will, when
  * its negation is assumed for RAT checking, have no effect on alpha,
- * now that it contains -l after the smaller witness.
+ * now that it contains -l after omitting l from the witness.
  * 
  * In addition, any literal l -> m in the substitution portion, with m set to
  * either true or false in alpha, can instead be mapped to m's truth value.
@@ -2051,12 +2043,12 @@ static void print_stored_lsr_proof(void) {
  * 
  * Minimization is done by a single loop over the witness. Unnecessary literals
  * l -> T/F are removed, and any l -> m in the substitution portion with
- * m -> T/F in alpha are set to l -> T/F. If l -> m is set to l -> T/F, it
- * then checks whether l can be removed using the same logic as before.
+ * m -> T/F in alpha are set to l -> T/F. If l -> m is set to l -> T/F, we 
+ * then check whether l can be removed using the same logic as before.
  * Removals are handled with an increasing "write pointer" that allows the
  * rest of the substitution to be shifted to fill in the holes.
  * 
- * At the end, the `witness_size` is decreased appropriately.
+ * Before returning, the global variable `witness_size` is set appropriately.
  * 
  * Note that l -> m set to l -> T/F stays in the substitution portion.
  * Printing must handle this case with a two-pass over the substitution portion.
@@ -3330,10 +3322,12 @@ static void check_dsr_line(void) {
   max_RAT_line = MAX(max_RAT_line, current_line);
   int must_find_new_pivot = minimize_witness();
   assume_subst(current_line);
-  if (must_find_new_pivot) find_new_pivot_for_witness(cc_index);
-  set_min_max_clause_to_check();
+  if (must_find_new_pivot) {
+    find_new_pivot_for_witness(cc_index);
+  }
 
   // Now do RAT checking between min and max clauses to check (inclusive)
+  set_min_max_clause_to_check();
   logv("[line %lld] Not RUP, checking clauses %lld to %lld", 
     TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(min_clause_to_check),
     TO_DIMACS_CLAUSE(max_clause_to_check));
