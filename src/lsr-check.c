@@ -567,8 +567,6 @@ int main(int argc, char *argv[]) {
   FILE *cnf_file = xfopen(cli.cnf_file_path, "r");
 
   if (cli.lsr_file_path == NULL) {
-    FATAL_ERR_IF(p_strategy == PS_EAGER,
-      "Cannot use eager strategy with `stdin` as the LSR file.");
     logc("No LSR file path provided, using stdin.");
     lsr_file = stdin;
   } else {

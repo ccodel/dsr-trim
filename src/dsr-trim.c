@@ -1511,7 +1511,9 @@ static void parse_entire_dsr_file(void) {
     parsed_empty_clause = (new_clause_size == 0);
   }
 
-  fclose(dsr_file);
+  if (dsr_file != stdin) {
+    fclose(dsr_file);
+  }
 
   if (parsed_empty_clause) {
     logc("Parsed the empty clause after %lld proof lines (%lld additions).",
@@ -3670,8 +3672,6 @@ int main(int argc, char **argv) {
   FILE *cnf_file = xfopen(cli.cnf_file_path, "r");
   
   if (cli.dsr_file_path == NULL) {
-    FATAL_ERR_IF(p_strategy == PS_EAGER,
-      "Cannot use eager strategy with `stdin` as the DSR file.");
     logc("No DSR file path provided, using stdin.");
     dsr_file = stdin;
   } else {
