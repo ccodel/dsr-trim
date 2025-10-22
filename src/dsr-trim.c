@@ -360,18 +360,35 @@ static sr_timer_t timer;
 #define FORWARD_OPT          ('f')
 #define COMPRESS_PROOF_OPT   ('c')
 #define EMIT_VALID_FORM_OPT  (LONG_HELP_MSG_OPT + 1)
-#define DEL_IMPL_UNITS_OPT   (LONG_HELP_MSG_OPT + 2)
+#define DEL_UNITS_OPT        (LONG_HELP_MSG_OPT + 2)
+#define DEL_IMPL_UNITS_OPT   (LONG_HELP_MSG_OPT + 3)
 
 #define OPT_STR             ("cf" BASE_CLI_OPT_STR)
 
+// The file where we emit a VALID formula, if `--emit-valid-formula-to` is set.
 static FILE *valid_formula_file = NULL;
-static int should_delete_implied_units = 0;
+
+/*
+ * CC (9/17/2025): After staring at a whiteboard for an hour, I convinced
+ * myself that, while it is sometimes advantageous to delete an implied unit
+ * clause, it is never advantageous to delete a true unit. This is because
+ * true units force any witness/substitution to avoid mapping the true
+ * unit literal to false. This property is not the case for implied units.
+ * 
+ * However, perhaps a proof really does need to delete true units.
+ * Thus, we define both a `--delete-implied-units` option and a
+ * `--delete-units` option. By default, both kinds of deletions are ignored.
+ */
+
+static int ignore_unit_deletions = 1;
+static int ignore_implied_unit_deletions = 1;
 
 // The set of "long options" for CLI argument parsing. Used by `getopt_long()`.
 static struct option const longopts[] = {
   { "forward",                     no_argument, NULL, FORWARD_OPT },
   { "compress",                    no_argument, NULL, COMPRESS_PROOF_OPT },
   { "emit-valid-formula-to", required_argument, NULL, EMIT_VALID_FORM_OPT },
+  { "delete-units",                no_argument, NULL, DEL_UNITS_OPT },
   { "delete-implied-units",        no_argument, NULL, DEL_IMPL_UNITS_OPT },
   BASE_LONG_OPTS_ARRAY
 };
@@ -1180,9 +1197,15 @@ static void print_valid_formula_if_requested(void) {
 
 // Hashing logic for clauses, used for deletions
 
-// Hashes the provided clause ID.
-// The hash function is commutative, meaning that no matter how the clause is
-// permuted, the clause will return the same hash value.
+/**
+ * @brief Returns the hash of the literals in the clause.
+ * 
+ * The hash function is commutative, meaning that no matter how the literals
+ * in the clause are ordered, the clause has the same hash value.
+ * 
+ * @param clause_index The clause to be hashed.
+ * @return The `uint` hash of the clause's literals.
+ */
 static uint hash_clause(srid_t clause_index) {
   uint sum = 0, prod = 1, xor = 0;
   int *clause_iter = get_clause_start(clause_index);
@@ -1196,7 +1219,7 @@ static uint hash_clause(srid_t clause_index) {
   }
 
   // Hash function borrowed from dpr-trim
-  return (1023 * sum + prod ^ (31 * xor));
+  return 1023 * sum + prod ^ (31 * xor);
 }
 
 /**
@@ -1224,15 +1247,16 @@ static srid_t find_hashed_clause(srid_t ci, uint *hp, htb_t **bp, uint *bi) {
   for (int i = 0; i < bucket_size; i++) {
     srid_t possible_match = entries[i].data;
 
-    // First approximation: see if the sizes and hashes match
+    // First approximation: see if the clause sizes match
+    uint clause_size = get_clause_size(ci);
     uint match_size = get_clause_size(possible_match);
-    if (match_size == new_clause_size) {
+    if (clause_size == match_size) {
       // Second approximation: see if the hashes match
       uint match_hash = hash_clause(possible_match);
       if (match_hash == hash) {
         // Most clauses are small, so O(n^2) search is good enough
         // Note that the literals aren't necessarily sorted due to wps
-        matching_clause = get_clause_start(possible_match);
+        matching_clause = get_clause_start_unsafe(possible_match);
         int found_match = 1; // We set this to 0 if a literal isn't found
         for (int i = 0; i < match_size; i++) {
           int lit = clause[i];
@@ -1260,15 +1284,6 @@ static srid_t find_hashed_clause(srid_t ci, uint *hp, htb_t **bp, uint *bi) {
   }
 
   return -1;
-}
-
-static inline void add_hashed_clause_to_ht(srid_t clause_index, uint hash) {
-  ht_insert(&clause_id_ht, hash, clause_index);
-}
-
-static inline void add_clause_to_ht(srid_t clause_index) {
-  uint hash = hash_clause(clause_index);
-  add_hashed_clause_to_ht(clause_index, hash);
 }
 
 // Adds one to the mult counter, or if one isn't there for `clause_index`,
@@ -1337,36 +1352,33 @@ static void delete_parsed_clause(void) {
       TO_DIMACS_LINE(current_line));
   }
 
-  /* Throw an error if we are trying to delete a true unit clause.
-   *
-   * CC (9/17/2025): After staring at a whiteboard for an hour, I convinced
-   * myself that, while it is sometimes advantageous to delete an implied unit
-   * clause, it is never advantageous to delete a true unit. This is because
-   * true units force any witness/substitution to avoid mapping the true
-   * unit literal to false. This property is not the case for implied units.
-   */
-  FATAL_ERR_IF(get_clause_size(clause_match) == 1,
-    "[line %lld] Cannot delete true unit clause %d.",
-    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_match));
-
   // If we still have copies of the clause, leave the hash table alone
   if (dec_clause_mult(clause_match) > 0) return;
 
-  // Otherwise, we are deleting the last copy of this clause
+  // Otherwise, we are deleting the last copy of this clause 
 
-  // See if the clause is an implied unit
+  // Forwards checking only: Do not delete (implied) units unless requested.
   uint unit_clause_idx = UINT_MAX;
-  for (uint i = 0; i < unit_clauses_size; i++) {
-    if (unit_clauses[i] == clause_match) {
-      unit_clause_idx = i;
-      break;
+  uint clause_match_size = get_clause_size(clause_match);
+  if (ch_mode == FORWARDS_CHECKING_MODE) {
+    if (ignore_unit_deletions && clause_match_size == 1) {
+      return;
     }
-  }
 
-  // Ignore deletion of implied units if not specifically requested
-  if (unit_clause_idx != UINT_MAX && ch_mode == FORWARDS_CHECKING_MODE
-        && !should_delete_implied_units) {
-    return;
+    // Determine if the matching clause is a(n implied) unit
+    for (uint i = 0; i < unit_clauses_size; i++) {
+      if (unit_clauses[i] == clause_match) {
+        unit_clause_idx = i;
+        break;
+      }
+    }
+
+    // Ignore the deletion of the implied unit if we found it.
+    // Note: we don't need to check the clause size here because
+    // we never delete true units while ignoring implied units.
+    if (ignore_implied_unit_deletions && unit_clause_idx != UINT_MAX) {
+      return;
+    }
   }
 
   ht_remove_at_index(b, b_idx);
@@ -1374,20 +1386,24 @@ static void delete_parsed_clause(void) {
 
   // How we delete the clause from the formula depends on the checking mode
   switch (ch_mode) {
-    case FORWARDS_CHECKING_MODE:;
-      // If the clause is an implied unit, unassign later units
+    case FORWARDS_CHECKING_MODE:
+      // If the clause is a(n implied) unit, unassign later units
       // We must do this before the clause is deleted from the formula
       if (unit_clause_idx != UINT_MAX) {
         unassign_global_units_due_to_deletion(unit_clause_idx);
       }
 
-      // Now actually delete the clause from the formula
-      int *clause_match_ptr = get_clause_start_unsafe(clause_match);
-      remove_wp_for_lit(clause_match_ptr[0], clause_match);
-      remove_wp_for_lit(clause_match_ptr[1], clause_match);
-      delete_clause(clause_match); // Deletes from the formula
+      // Remove a non-true-unit's watch pointers
+      if (clause_match_size > 1) {
+        int *clause_match_ptr = get_clause_start_unsafe(clause_match);
+        remove_wp_for_lit(clause_match_ptr[0], clause_match);
+        remove_wp_for_lit(clause_match_ptr[1], clause_match);
+      }
 
-      // If the clause was an implied unit, we must re-run unit propagation
+      // Now actually delete the clause from the formula
+      delete_clause(clause_match);
+
+      // If the clause was a(n implied) unit, we must re-run unit propagation
       if (unit_clause_idx != UINT_MAX) {
         perform_up_for_forwards_checking(GLOBAL_GEN);
       }
@@ -1398,6 +1414,38 @@ static void delete_parsed_clause(void) {
       clauses_lui[clause_match] = lui;
       break;
     default: log_fatal_err("Invalid checking mode: %d", ch_mode);
+  }
+}
+
+static inline void add_hashed_clause_to_ht(srid_t clause_index, uint hash) {
+  ht_insert(&clause_id_ht, hash, clause_index);
+}
+
+/**
+ * @brief Adds a formula clause to the clause hash table.
+ *        Must be called after the CNF has been parsed
+ *        and after `deletions` has been initialized.
+ *
+ * If a formula's clause already exists in the hash table, then this function
+ * deletes the clause and adds to the multiplicity of the matching clause.
+ * This is to ensure that the formula's size remains the same and that the
+ * formula behaves the same under the same number of deletions, but also
+ * making sure there is one unique hash table entry per distinct clause.
+ * 
+ * @param clause_index The formula clause to be added to the hash table.
+ */
+static void add_formula_clause_to_ht(srid_t clause_index) {
+  uint hash;
+  srid_t clause_match = find_hashed_clause(clause_index, &hash, NULL, NULL);
+  if (clause_match == -1) {
+    add_hashed_clause_to_ht(clause_index, hash);
+  } else {
+    logv("[line %lld] Formula clause %lld is a duplicate of clause %lld.",
+      TO_DIMACS_LINE(current_line),
+      TO_DIMACS_CLAUSE(clause_index),
+      TO_DIMACS_CLAUSE(clause_match));
+    delete_clause(clause_index);
+    inc_clause_mult(clause_match);
   }
 }
 
@@ -1453,9 +1501,6 @@ static int parse_dsr_line(void) {
   switch (line_type) {
     case DELETION_LINE:;
       int is_tautology = parse_clause(dsr_file);
-      FATAL_ERR_IF(is_tautology || new_clause_size <= 1, 
-        "[line %lld] Clause to delete was a tautology, empty, or unit.",
-          num_parsed_lines + 1);
       delete_parsed_clause();
       
       // Remove the parsed literals from the formula
@@ -1554,12 +1599,6 @@ static void prepare_dsr_trim_data(void) {
   RAT_marked_vars_alloc_size = (max_var + 1);
   RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
 
-  // Hash all formula clauses
-  ht_init(&clause_id_ht, 4 * formula_size);
-  for (srid_t i = 0; i < formula_size; i++) {
-    add_clause_to_ht(i);
-  }
-
   // We track multiplicities of duplicate clauses
   clause_mults_alloc_size = INIT_CLAUSE_MULT_SIZE;
   clause_mults = xmalloc(clause_mults_alloc_size * sizeof(clause_mult_t));
@@ -1583,6 +1622,14 @@ static void prepare_dsr_trim_data(void) {
   } else {
     ra_init(&hints, num_cnf_vars * 10, 3, sizeof(srid_t));
     ra_init(&deletions, num_cnf_vars, 2, sizeof(srid_t));
+  }
+
+  // Add all formula clauses to the clause hash table
+  // Because this might add deletions to the formula, we must do this
+  // after we have called `ra_init()` on the `deletions` data structure.
+  ht_init(&clause_id_ht, 4 * formula_size);
+  for (srid_t i = 0; i < formula_size; i++) {
+    add_formula_clause_to_ht(i);
   }
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
@@ -2396,9 +2443,12 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
     }
   }
 
-  // Fatal error: watch pointer not in the list
-  log_fatal_err("Clause %lld not found in watch pointer list for literal %d",
-    TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
+  if (err_verbosity_level > VL_NORMAL) {
+    dbg_print_clause(clause);
+  }
+
+  log_fatal_err("[line %lld] Clause %lld not in watch pointers for literal %d",
+    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
 }
 
 // Returns the clause ID that becomes falsified, or -1 if not found.
@@ -2838,20 +2888,12 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
         mark_and_store_empty_clause_refutation(clause_index, gen);
         break;
       case 1:
-        /* This clause is unit only if it has an unassigned literal.
-         * 
-         * Since the formula need not have been pre-processed, we might
-         * encounter a clause which has one non-FF literal that happens
-         * to be satisfied by the current truth assignment. Since the
-         * state must be `GLOBAL_UP`, this means that the clause cannot
-         * become a global unit clause. In other words, the clause only
-         * becomes a unit if its non-FF literal is unassigned.
-         */
+        // We can set this clause as a unit if it has one unassigned literal.
+        // Regardless of being unit or not, add watch pointers
         if (unassigned_lits == 1) {
           set_unit_clause(clause[0], clause_index, GLOBAL_GEN);
         }
-        break;
-      default:
+      default: // fallthrough
         add_wp_for_lit(clause[0], clause_index);
         add_wp_for_lit(clause[1], clause_index);
         break;
@@ -3208,9 +3250,6 @@ static void store_clause_check_range(srid_t clause_id) {
   min_max_clause_t *mm = &lines_min_max_clauses_to_check[line_num];
   mm->min_clause = min_clause_to_check;
   mm->max_clause = max_clause_to_check;
-  logv("[line %lld] Storing clause range %lld to %lld",
-    TO_DIMACS_LINE(line_num), TO_DIMACS_CLAUSE(min_clause_to_check),
-    TO_DIMACS_CLAUSE(max_clause_to_check));
 }
 
 static void set_min_max_clause_to_check(void) {
@@ -3378,22 +3417,27 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
   for (; dels < del_end; dels++) {
     srid_t del_id = *dels;
     int *del_clause = get_clause_start(del_id);
+    uint clause_size = get_clause_size(del_id);
 
-    // Ignore deletion of the clause if it is an implied unit
+    // Ignore deletion of the clause if it is a(n implied) unit.
     // Watch pointer invariant: the true literal is the first in the clause
-    // TODO: Make `--delete-implied-units` work for backwards checking
     srid_t reason = up_reasons[VAR_FROM_LIT(del_clause[0])];
-    if (reason == del_id) {
-      if (err_verbosity_level > VL_QUIET) {
-        log_err("[line %lld] Ignoring deletion of implied unit clause %lld.",
-          TO_DIMACS_LINE(line), TO_DIMACS_CLAUSE(del_id));
-      }
+    if (reason == del_id
+          && (ignore_implied_unit_deletions
+              || (ignore_unit_deletions && clause_size == 1))) {
+      logv("[line %lld] Ignoring deletion of (implied) unit clause %lld.",
+        TO_DIMACS_LINE(line), TO_DIMACS_CLAUSE(del_id));
       clauses_lui[del_id] = -1;
       continue;
     }
 
-    remove_wp_for_lit(del_clause[0], del_id);
-    remove_wp_for_lit(del_clause[1], del_id);
+    // Remove the watch pointers for the deleted (non-true-unit) clause.
+    // We restore these in `restore_wps_for_user_deleted_clauses()`.
+    if (clause_size > 1) {
+      remove_wp_for_lit(del_clause[0], del_id);
+      remove_wp_for_lit(del_clause[1], del_id);
+    }
+
     soft_delete_clause(del_id);
   }
 }
@@ -3410,8 +3454,11 @@ static void restore_wps_for_user_deleted_clauses(srid_t clause_id) {
     if (is_clause_deleted(del_id)) {
       soft_undelete_clause(del_id);
       int *del_clause = get_clause_start_unsafe(del_id);
-      add_wp_for_lit(del_clause[0], del_id);
-      add_wp_for_lit(del_clause[1], del_id);
+      uint clause_size = get_clause_size(del_id);
+      if (clause_size > 1) {
+        add_wp_for_lit(del_clause[0], del_id);
+        add_wp_for_lit(del_clause[1], del_id);
+      }
     }
   }
 }
@@ -3476,9 +3523,9 @@ static void add_wps_and_up_initial_clauses(void) {
     // If we end up SR-checking this clause later, we use this range
     store_clause_check_range(c);
 
-    // Now process any user deletions by removing their watch pointers
-    // This also "soft deletes" the clauses from the formula,
-    // which means we keep their literals while treating the clause as deleted
+    // Now process any user deletions by removing their watch pointers.
+    // This function "soft deletes" the clauses from the formula,
+    // which means we keep their literals while treating the clause as deleted.
     remove_wps_from_user_deleted_clauses(c);
 
     // Now perform UP on the "newly-added" clause
@@ -3592,7 +3639,8 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  int forward_set = 0, backward_set = 0, compress_set = 0, del_units_set = 0;
+  int forward_set = 0, compress_set = 0;
+  int del_units_set = 0, del_impl_units_set = 0;
   cli_opts_t cli;
   cli_init(&cli);
   
@@ -3621,9 +3669,13 @@ int main(int argc, char **argv) {
       emit_set = 1;
       strncpy(valid_formula_file_path, argv[optind - 1], MAX_FILE_PATH_LEN - 1);
       break;
-    case DEL_IMPL_UNITS_OPT:
-      FATAL_ERR_IF(del_units_set, "Cannot set `--delete-implied-units` twice.");
+    case DEL_UNITS_OPT:
+      FATAL_ERR_IF(del_units_set, "Cannot set `--delete-units` twice.");
       del_units_set = 1;
+      break;
+    case DEL_IMPL_UNITS_OPT:
+      FATAL_ERR_IF(del_impl_units_set, "Cannot set `--delete-implied-units` twice.");
+      del_impl_units_set = 1;
       break;
     default:
       cli_res = cli_handle_opt(&cli, ch, optopt, argv[optind - 1], optarg);
@@ -3705,8 +3757,14 @@ int main(int argc, char **argv) {
   }
 
   if (del_units_set) {
-    should_delete_implied_units = 1;
-    logc("DSR clause deletions that are implied units will be deleted.");
+    ignore_unit_deletions = 0;
+    ignore_implied_unit_deletions = 0;
+    logc("Will delete true and implied units from DSR deletions.");
+  }
+
+  if (del_impl_units_set && ignore_implied_unit_deletions) {
+    ignore_implied_unit_deletions = 0;
+    logc("Will delete implied units from DSR deletions.");
   }
 
   timer_init(&timer);
