@@ -358,12 +358,11 @@ static sr_timer_t timer;
 // Command-line options and the printing of help messages
 
 #define FORWARD_OPT          ('f')
-#define BACKWARD_OPT         ('b')
 #define COMPRESS_PROOF_OPT   ('c')
 #define EMIT_VALID_FORM_OPT  (LONG_HELP_MSG_OPT + 1)
 #define DEL_IMPL_UNITS_OPT   (LONG_HELP_MSG_OPT + 2)
 
-#define OPT_STR             ("bcf" BASE_CLI_OPT_STR)
+#define OPT_STR             ("cf" BASE_CLI_OPT_STR)
 
 static FILE *valid_formula_file = NULL;
 static int should_delete_implied_units = 0;
@@ -371,7 +370,6 @@ static int should_delete_implied_units = 0;
 // The set of "long options" for CLI argument parsing. Used by `getopt_long()`.
 static struct option const longopts[] = {
   { "forward",                     no_argument, NULL, FORWARD_OPT },
-  { "backward",                    no_argument, NULL, BACKWARD_OPT },
   { "compress",                    no_argument, NULL, COMPRESS_PROOF_OPT },
   { "emit-valid-formula-to", required_argument, NULL, EMIT_VALID_FORM_OPT },
   { "delete-implied-units",        no_argument, NULL, DEL_IMPL_UNITS_OPT },
@@ -3609,20 +3607,13 @@ int main(int argc, char **argv) {
   while ((ch = getopt_long(argc, argv, OPT_STR, longopts, NULL)) != -1) {
     switch (ch) {
     case FORWARD_OPT:
-      FATAL_ERR_IF(backward_set, "Cannot set both backward and forward checking.");
-      FATAL_ERR_IF(forward_set, "Forward checking was set twice.");
+      FATAL_ERR_IF(forward_set, "Cannot set `-f` or `--forward` twice.");
       forward_set = 1;
       p_strategy = PS_STREAMING; // TODO: Make eager possible
       ch_mode = FORWARDS_CHECKING_MODE;
       break;
-    case BACKWARD_OPT:
-      FATAL_ERR_IF(forward_set, "Cannot set both backward and forward checking.");
-      FATAL_ERR_IF(backward_set, "Backward checking was set twice.");
-      backward_set = 1;
-      ch_mode = BACKWARDS_CHECKING_MODE;
-      break;
     case COMPRESS_PROOF_OPT:
-      FATAL_ERR_IF(compress_set, "Cannot set `-c`/`--compress` twice.");
+      FATAL_ERR_IF(compress_set, "Cannot set `-c` or `--compress` twice.");
       compress_set = 1;
       break;
     case EMIT_VALID_FORM_OPT:
