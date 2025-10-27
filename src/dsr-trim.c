@@ -260,12 +260,12 @@ static FILE *dsr_file = NULL;
 static FILE *lsr_file = NULL;
 
 // The total number of addition lines parsed. Incremented by `parse_dsr_line()`.
-static usrid_t num_parsed_add_lines = 0;
-static usrid_t num_parsed_lines = 0;
+static srid_t num_parsed_add_lines = 0;
+static srid_t num_parsed_lines = 0;
 static uint parsed_empty_clause = 0;
 
 // 0-indexed current line ID.
-static usrid_t current_line = 0;
+static srid_t current_line = 0;
 
 // Records the 0-indexed line number of the maximum line with RAT hint groups.
 // This is used to reduce unhelpful deletions when the rest of the proof is
@@ -338,8 +338,8 @@ static range_array_t deletions;
 static range_array_t bcu_deletions;
 
 typedef struct line_RAT_hint_information {
-  usrid_t num_RAT_clauses;
-  usrid_t num_reduced_clauses;
+  srid_t num_RAT_clauses;
+  srid_t num_reduced_clauses;
 } line_RAT_info_t;
 
 static line_RAT_info_t *lines_RAT_hint_info = NULL;
@@ -487,7 +487,7 @@ static inline srid_t get_effective_formula_size(void) {
   }
 }
 
-static inline usrid_t get_num_RAT_clauses(srid_t line_num) {
+static inline srid_t get_num_RAT_clauses(srid_t line_num) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     return lines_RAT_hint_info[line_num].num_RAT_clauses;
   } else {
@@ -495,7 +495,7 @@ static inline usrid_t get_num_RAT_clauses(srid_t line_num) {
   }
 }
 
-static inline usrid_t get_num_reduced_clauses(srid_t line_num) {
+static inline srid_t get_num_reduced_clauses(srid_t line_num) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     return lines_RAT_hint_info[line_num].num_reduced_clauses;
   } else {
@@ -790,9 +790,9 @@ static void print_wps(void) {
 }
 
 static void print_nrhs(void) {
-  usrid_t sum = 0;
-  usrid_t size = MIN(num_parsed_add_lines, lines_RAT_hint_info_alloc_size);
-  for (usrid_t i = 0; i < size; i++) {
+  srid_t sum = 0;
+  srid_t size = MIN(num_parsed_add_lines, (srid_t) lines_RAT_hint_info_alloc_size);
+  for (srid_t i = 0; i < size; i++) {
     sum += get_num_RAT_clauses(i);
   }
 
@@ -800,7 +800,7 @@ static void print_nrhs(void) {
 
   log_raw(VL_NORMAL, "Num RAT hints: ");
 
-  for (usrid_t i = 0; i < size; i++) {
+  for (srid_t i = 0; i < size; i++) {
     if (i % 5 == 4) {
       log_raw(VL_NORMAL, "[%lld] ", i + 1);
     }
@@ -1690,7 +1690,7 @@ static void minimize_RAT_hints(void) {
   static uint skipped_RAT_indexes_size = 0;
 
   // Iterate over the RAT hint groups and mark last used IDs
-  usrid_t nrhg = get_num_RAT_clauses(current_line);
+  srid_t nrhg = get_num_RAT_clauses(current_line);
   if (nrhg == 0) return;
 
   // Reset the skipped-indexes array, and malloc() if not yet allocated
@@ -1701,11 +1701,11 @@ static void minimize_RAT_hints(void) {
   }
 
   // First pass: mark "active" clauses
-  usrid_t num_marked = 0;
+  srid_t num_marked = 0;
   srid_t *hints_start = get_RAT_hints_start(current_line);
   srid_t *hints_end = get_RAT_hints_end(current_line);
   srid_t *hints_iter = hints_start;
-  for (usrid_t i = 0; i < nrhg; i++) {
+  for (srid_t i = 0; i < nrhg; i++) {
     srid_t RAT_clause = FROM_RAT_HINT(*hints_iter);
     hints_iter++;
     srid_t RAT_lui = clauses_lui[RAT_clause];
