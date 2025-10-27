@@ -24,30 +24,36 @@ void log_raw(vlevel_t level, const char *format, ...) {
   }
 }
 
-static inline void log_args_with_c_and_newline(const char *format, ...) {
-  va_list ap;
-  va_start(ap, format);
+static inline void log_args_with_c_and_newline(const char *format, va_list ap) {
   fprintf(stdout, "c ");
   vfprintf(stdout, format, ap);
   fprintf(stdout, "\n");
-  va_end(ap);
 }
 
 void log_msg(vlevel_t level, const char *format, ...) {
   if (level <= verbosity_level) {
-    log_args_with_c_and_newline(format);
+    va_list ap;
+    va_start(ap, format);
+    log_args_with_c_and_newline(format, ap);
+    va_end(ap);
   }
 }
 
 void logc(const char *format, ...) {
   if (VL_NORMAL <= verbosity_level) {
-    log_args_with_c_and_newline(format);
+    va_list ap;
+    va_start(ap, format);
+    log_args_with_c_and_newline(format, ap);
+    va_end(ap);
   }
 }
 
 void logv(const char *format, ...) {
   if (VL_VERBOSE <= verbosity_level) {
-    log_args_with_c_and_newline(format);
+    va_list ap;
+    va_start(ap, format);
+    log_args_with_c_and_newline(format, ap);
+    va_end(ap);
   }
 }
 
