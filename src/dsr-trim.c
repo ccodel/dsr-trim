@@ -1410,8 +1410,7 @@ static void delete_parsed_clause(void) {
       break;
     case BACKWARDS_CHECKING_MODE:
       resize_last_used_ids();
-      srid_t lui = MARK_USER_DEL_LUI(num_parsed_add_lines);
-      clauses_lui[clause_match] = lui;
+      clauses_lui[clause_match] = MARK_USER_DEL_LUI(num_parsed_add_lines);
       break;
     default: log_fatal_err("Invalid checking mode: %d", ch_mode);
   }
@@ -1446,6 +1445,15 @@ static void add_formula_clause_to_ht(srid_t clause_index) {
       TO_DIMACS_CLAUSE(clause_match));
     delete_clause(clause_index);
     inc_clause_mult(clause_match);
+    if (ch_mode == FORWARDS_CHECKING_MODE) {
+      // Delete the duplicate in the printed LSR proof.
+      // However, the user is free to delete the clause later (which we ignore),
+      // since we simply subtract 1 from the multiplicity.
+      store_user_deletion(clause_index);
+    } else {
+      // Mark the clause as unused at this line
+      clauses_lui[clause_index] = MARK_USER_DEL_LUI(num_parsed_add_lines);
+    }
   }
 }
 
@@ -1487,7 +1495,7 @@ static void print_or_commit_user_deletions(void) {
     // TODO: Case on parsing strategy here
     FATAL_ERR_IF(p_strategy != PS_STREAMING,
       "User deletions must be committed in streaming mode.");
-    print_deletions_with_line_id(LINE_ID_FROM_LINE_NUM(num_parsed_add_lines));
+    print_deletions_with_line_id(CLAUSE_ID_FROM_LINE_NUM(num_parsed_add_lines));
     ra_reset(&deletions);
   }
 } 
@@ -1518,10 +1526,12 @@ static int parse_dsr_line(void) {
        * clause match in the hash table.
        */
       parse_sr_clause_and_witness(dsr_file, num_parsed_add_lines);
+
+      // Check if the new SR clause is already in the formula
       srid_t possible_match = add_clause_to_ht_or_inc_mult();
       if (possible_match != -1) {
-        // Remove the clause and the witness from the formula
-        // `parse_sr_clause()` commits the clause, so we adjust `formula_size`
+        // Remove the witness, and remove the parsed clause from the formula.
+        // `parse_sr_clause()` commits the clause, so we adjust `formula_size`.
         lits_db_size -= new_clause_size;
         formula_size -= 1;
         ra_uncommit_range(&witnesses);
@@ -1634,8 +1644,6 @@ static void prepare_dsr_trim_data(void) {
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     parse_entire_dsr_file();
-  } else {
-    current_line = 0;   
   }
 }
 
@@ -3209,6 +3217,9 @@ static void uncommit_clause_and_set_as_candidate(srid_t clause_id) {
 static int can_skip_clause(srid_t clause_index) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     srid_t lui = LUI_FROM_USER_DEL_LUI(clauses_lui[clause_index]);
+    logv("Checking if can skip clause %lld with LUI %d (%d) and current line %lld",
+      TO_DIMACS_CLAUSE(clause_index), lui, clauses_lui[clause_index],
+      TO_DIMACS_LINE(current_line));
     return lui <= current_line;
   } else {
     return is_clause_deleted(clause_index);
@@ -3374,6 +3385,8 @@ static void check_dsr_line(void) {
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
   int clause_size;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
+    logv("[line %lld] Checking clause %lld for RAT.",
+      TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(i));
     if (can_skip_clause(i)) continue;
     check_RAT_clause(i);
   }
@@ -3482,9 +3495,6 @@ static line_type_t prepare_next_line(void) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     prepare_next_line_for_backwards_checking();
   } else {
-    // For forwards checking, we clear the stored hints
-    ra_reset(&hints);
-    ra_reset(&deletions);
     num_RAT_clauses = 0;
     num_reduced_clauses = 0;
   }

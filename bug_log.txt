@@ -29,6 +29,8 @@ dsr-trim:
     - (2/26/25) Calling `add_wp_for_lit()` can re-allocate both the watch pointers array `wps` or the watch pointer list for any literal `wps[lit]`, so after calling it, aliases used in unit propagation need to be refreshed.
     - (9/9/25) Off-by-one error when calculating num_parsed_add_lines/indexes into `hints`. Mostly due to deriving the empty clause that isn't present in the SR proof, so we never incremenet num_parsed_add_lines appropriately.
     - (9/18/25) When implementing implied-unit-clause deletion for forwards checking, I didn't un-set the truth value for the clause we are deleting, which led to a "satisfied" UP hint in the generated LRAT file.
+    - (10/27/25) Deletions in backwards checking weren't being generated correctly because a signed srid_t was being compared to an unsigned usrid_t. Solution was to revert everything to using srid_t.
+    - (10/28/25) Wasn't emitting an intial deletion line to handle duplicate CNF clauses. Then, when the line was generated, the line ID was off by one. Then, the deletions were being cleared before parsing the first addition line due to an extra `ra_clear()` call.
 
 global_parsing.c:
     - Not taking the absolute value of a token, meaning that negative tokens get "mapped twice."
@@ -37,3 +39,6 @@ compress/decompress.c:
     - Writing a zero and then a newline character adds an extra space, which won't interfere with parsing, but makes the diff command line tool complain.
     - (4/9/24) Was expecting to read two zeros per addition line in DSR format. But these lines only have one zero per line.
     - (4/9/24) Was expecting text lines to start with solely numbers (isdigit()). Instead, lines can start with '-' or 'd'.
+
+logger.c:
+    - (10/27/25) Variadic arguments weren't being passed on to the helper function correctly. Funnily enough, this was only detected by using an Ubuntu Docker container. Using a Mac and the PSC clusters didn't cause any problems.
