@@ -31,6 +31,7 @@ dsr-trim:
     - (9/18/25) When implementing implied-unit-clause deletion for forwards checking, I didn't un-set the truth value for the clause we are deleting, which led to a "satisfied" UP hint in the generated LRAT file.
     - (10/27/25) Deletions in backwards checking weren't being generated correctly because a signed srid_t was being compared to an unsigned usrid_t. Solution was to revert everything to using srid_t.
     - (10/28/25) Wasn't emitting an intial deletion line to handle duplicate CNF clauses. Then, when the line was generated, the line ID was off by one. Then, the deletions were being cleared before parsing the first addition line due to an extra `ra_clear()` call.
+    - (10/29/25) In `uncommit_clause_and_set_as_candidate()`, we weren't re-running unit propagation after removing the uncommitted candidate clause from the list of global units. In the fix, we were able to reuse `unassign_global_units_due_to_deletion()`. Also, in the unassign function, make sure that global_index was in bounds (MIN of 0).
 
 global_parsing.c:
     - Not taking the absolute value of a token, meaning that negative tokens get "mapped twice."

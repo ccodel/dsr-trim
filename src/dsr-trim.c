@@ -701,6 +701,7 @@ static void unassign_global_units(srid_t from_index) {
  * When deleting an implied unit clause `C`, we need to do two things:
  * 
  *   1. Unassign unit literals dependent on `C` being unit.
+ * 
  *   2. Re-run unit propagation after deleting `C`.
  * 
  * This function does (1) but does NOT do (2), i.e., it does not re-run
@@ -724,33 +725,37 @@ static void unassign_global_units(srid_t from_index) {
  * due to the `i`th round of UP, then we only need to re-run UP
  * from this `i`th round.
  * 
- * The value of `global_up_literals_index`, `unit_literals_size`, and
- * `unit_clauses_size` is updated appropriately.
+ * The values of `global_up_literals_index`, `unit_literals_size`, and
+ * `unit_clauses_size` are updated appropriately.
  *
  * @param from_index The 0-indexed clause ID into `unit_clauses` of the
  *                   implied unit clause that is about to get deleted.
  */
 static void unassign_global_units_due_to_deletion(srid_t from_index) {
   srid_t unit_clause = unit_clauses[from_index];
-  uint min_unit_index = from_index - 1;
+  uint min_unit_index = MAX(0, from_index - 1);
 
   // Find the minimum unit literal causing this one to be unit
   // If the minimum index is greater than 0, we can save time in UP
-  int *clause_iter = get_clause_start_unsafe(unit_clause) + 1;
-  int *clause_end = get_clause_end(unit_clause);
-  for (; clause_iter < clause_end; clause_iter++) {
-    int lit = *clause_iter;
-    int var = VAR_FROM_LIT(lit);
-    srid_t reason = up_reasons[var];
-    for (int i = (int) min_unit_index - 1; i >= 0; i--) {
-      if (unit_clauses[i] == reason) {
-        min_unit_index = i;
-        break;
+  if (min_unit_index > 0) {
+    int *clause_iter = get_clause_start_unsafe(unit_clause) + 1;
+    int *clause_end = get_clause_end(unit_clause);
+    for (; clause_iter < clause_end; clause_iter++) {
+      int lit = *clause_iter;
+      int var = VAR_FROM_LIT(lit);
+      srid_t reason = up_reasons[var];
+      for (int i = (int) min_unit_index - 1; i >= 0; i--) {
+        if (unit_clauses[i] == reason) {
+          min_unit_index = i;
+          break;
+        }
       }
     }
+    
+    global_up_literals_index = min_unit_index;
   }
+  
 
-  global_up_literals_index = min_unit_index;
 
   // Now keep unit literals/clauses that are true units
   srid_t write_idx = from_index;
@@ -842,7 +847,7 @@ static void dbg_print_unit_literals(void) {
   logc("Unit literals (total %d):", unit_literals_size);
   for (uint i = 0; i < unit_literals_size; i++) {
     int lit = unit_literals[i];
-    log_raw(VL_NORMAL, "c [idx %d] %d  ", i, TO_DIMACS_LIT(lit));
+    log_raw(VL_NORMAL, "c [idx %d] %d   ", i, TO_DIMACS_LIT(lit));
 
     srid_t reason = up_reasons[VAR_FROM_LIT(lit)];
     if (reason == NO_UP_REASON) {
@@ -853,7 +858,7 @@ static void dbg_print_unit_literals(void) {
         TO_DIMACS_CLAUSE(clause));
       dbg_print_clause(clause);
     } else {
-      log_raw(VL_NORMAL, "clause %lld: ", TO_DIMACS_CLAUSE(reason));
+      log_raw(VL_NORMAL, "due to ", TO_DIMACS_CLAUSE(reason));
       dbg_print_clause(reason);
     }
   }
@@ -1359,8 +1364,10 @@ static void delete_parsed_clause(void) {
 
   // Forwards checking only: Do not delete (implied) units unless requested.
   uint unit_clause_idx = UINT_MAX;
+  int *clause_match_ptr = get_clause_start_unsafe(clause_match);
   uint clause_match_size = get_clause_size(clause_match);
-  if (ch_mode == FORWARDS_CHECKING_MODE) {
+  if (ch_mode == FORWARDS_CHECKING_MODE
+      && up_reasons[VAR_FROM_LIT(clause_match_ptr[0])] == clause_match) {
     if (ignore_unit_deletions && clause_match_size == 1) {
       return;
     }
@@ -1395,7 +1402,6 @@ static void delete_parsed_clause(void) {
 
       // Remove a non-true-unit's watch pointers
       if (clause_match_size > 1) {
-        int *clause_match_ptr = get_clause_start_unsafe(clause_match);
         remove_wp_for_lit(clause_match_ptr[0], clause_match);
         remove_wp_for_lit(clause_match_ptr[1], clause_match);
       }
@@ -1451,8 +1457,8 @@ static void add_formula_clause_to_ht(srid_t clause_index) {
       // since we simply subtract 1 from the multiplicity.
       store_user_deletion(clause_index);
     } else {
-      // Mark the clause as unused at this line
-      clauses_lui[clause_index] = MARK_USER_DEL_LUI(num_parsed_add_lines);
+      // Mark the clause as unused at the first line
+      clauses_lui[clause_index] = MARK_USER_DEL_LUI(0);
     }
   }
 }
@@ -2841,8 +2847,6 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
          * clauses in future UP derivations, we replace the clause reason
          * for `lit` with the current clause ID, and we replace the previous
          * clause's ID in `unit_clauses`. */
-
-        // TODO: What if the previous "unit" is a duplicate unit clause
         int var = VAR_FROM_LIT(lit);
         srid_t prev_up_unit_clause = up_reasons[var];
         up_reasons[var] = clause_index;
@@ -3165,6 +3169,9 @@ static void unassume_RAT_clause(srid_t clause_index) {
  * and `unit_clauses` are stored in order of derivation, we simply
  * loop from the back until we find this clause.
  * 
+ * However, because "later" unit clauses might NOT depend on this clause,
+ * we must re-run UP after removing this clause.
+ * 
  * @param clause_id The 0-indexed clause ID to un-commit. In almost all cases,
  *                  this ID is `CLAUSE_ID_FROM_LINE_NUM(current_line)`.
  */
@@ -3180,37 +3187,23 @@ static void uncommit_clause_and_set_as_candidate(srid_t clause_id) {
   // Ignore the empty clause
   if (clause_ptr == clause_end) return;
 
-  // Unassign any derived units
-  // The watch-pointer invariant places the (potential) unit literal first
-  int lit = clause_ptr[0];
-  int var = VAR_FROM_LIT(lit);
+  // Remove the clause's watch pointers if it isn't a true unit
+  if (clause_ptr + 1 != clause_end) {
+    remove_wp_for_lit(clause_ptr[0], clause_id);
+    remove_wp_for_lit(clause_ptr[1], clause_id);
+  }
 
-  // The variable is unit because of this clause, undo its UP changes
+  // If this clause is unit, remove it from unit_clauses and redo UP
+  // Note: The watch-pointer invariant places the (potential) unit literal first
+  int var = VAR_FROM_LIT(clause_ptr[0]);
   if (up_reasons[var] == clause_id) {
-    // Scan backwards until we hit the matching unit literal
-    // We use an `int` here so we can stop once we go negative
-    int unit_idx;
-    for (unit_idx = (int) unit_literals_size - 1; unit_idx >= 0; unit_idx--) {
-      int unit_lit = unit_literals[unit_idx];
-      int unit_var = VAR_FROM_LIT(unit_lit);
-      alpha[unit_var] = 0;
-      up_reasons[unit_var] = -1;
-      if (unit_lit == lit) {
+    for (int unit_idx = (int) unit_clauses_size - 1; unit_idx >= 0; unit_idx--) {
+      if (unit_clauses[unit_idx] == clause_id) {
+        unassign_global_units_due_to_deletion(unit_idx);
+        perform_up_for_backwards_checking(GLOBAL_GEN);
         break;
       }
     }
-
-    unit_idx = MAX(unit_idx, 0);
-    unit_clauses_size = unit_idx;
-    unit_literals_size = unit_idx;
-    global_up_literals_index = unit_idx;
-  }
-
-  // Since we won't consider this clause again, remove its watch pointers
-  // But only remove watch pointers if the clause is not a true unit
-  if (clause_ptr + 1 != clause_end) {
-    remove_wp_for_lit(lit, clause_id);
-    remove_wp_for_lit(clause_ptr[1], clause_id);
   }
 }
 
