@@ -754,8 +754,6 @@ static void unassign_global_units_due_to_deletion(srid_t from_index) {
     
     global_up_literals_index = min_unit_index;
   }
-  
-
 
   // Now keep unit literals/clauses that are true units
   srid_t write_idx = from_index;
@@ -763,7 +761,8 @@ static void unassign_global_units_due_to_deletion(srid_t from_index) {
     int lit = unit_literals[i];
     unit_clause = unit_clauses[i];
 
-    if (get_clause_size(unit_clause) == 1) {
+    // Keep the true unit, as long as it's not the one we are deleting
+    if (get_clause_size(unit_clause) == 1 && i > from_index) {
       unit_literals[write_idx] = lit;
       unit_clauses[write_idx] = unit_clause;
       write_idx++;
@@ -3187,20 +3186,19 @@ static void uncommit_clause_and_set_as_candidate(srid_t clause_id) {
   // Ignore the empty clause
   if (clause_ptr == clause_end) return;
 
-  // Remove the clause's watch pointers if it isn't a true unit
+  // // Remove the clause's watch pointers if it isn't a true unit
   if (clause_ptr + 1 != clause_end) {
     remove_wp_for_lit(clause_ptr[0], clause_id);
     remove_wp_for_lit(clause_ptr[1], clause_id);
   }
 
-  // If this clause is unit, remove it from unit_clauses and redo UP
-  // Note: The watch-pointer invariant places the (potential) unit literal first
+  // If this clause is unit, remove it from the set of unit clauses
+  // The `unassign()` function preserves true units derived after this one
   int var = VAR_FROM_LIT(clause_ptr[0]);
   if (up_reasons[var] == clause_id) {
     for (int unit_idx = (int) unit_clauses_size - 1; unit_idx >= 0; unit_idx--) {
       if (unit_clauses[unit_idx] == clause_id) {
         unassign_global_units_due_to_deletion(unit_idx);
-        perform_up_for_backwards_checking(GLOBAL_GEN);
         break;
       }
     }
