@@ -1,4 +1,4 @@
-CC = gcc
+CC ?= gcc
 CFLAGS = -DLONGTYPE -std=c99 -O3
 EXECS = php php-sr
 

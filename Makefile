@@ -1,4 +1,4 @@
-CC     = gcc
+CC    ?= gcc
 CFLAGS = -O3
 RM     = rm -f
 SRCDIR = src
