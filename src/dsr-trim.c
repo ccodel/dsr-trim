@@ -28,7 +28,7 @@
  *  This repository uses two distinct proof formats: DSR and LSR.
  *  DSR proofs only contain clauses and substitution witnesses, and so
  *  `dsr-trim` must perform unit propagation across the entire formula to
- *  derive hints. To that end, It maintains several data structures, such as
+ *  derive hints. To do so, it maintains several data structures, such as
  *  a stack of unit literals/clauses and a record of which clauses were used
  *  in which UP derivations so that the number of hints may be minimized.
  * 
@@ -632,7 +632,7 @@ static inline void add_RAT_up_hint(srid_t clause_id) {
   ra_insert_srid_elt(&hints, TO_DIMACS_CLAUSE(clause_id));
 }
 
-static void print_last_used_ids(void) {
+static void dbg_print_last_used_ids(void) {
   for (int i = 0; i < formula_size; i++) {
     if (i % 5 == 4) {
       log_raw(VL_NORMAL, "[%d] ", TO_DIMACS_CLAUSE(i));
@@ -1948,6 +1948,29 @@ static void mark_dependencies(int until_index, ullong gen) {
 }
 
 /**
+ * @brief Marks clause dependencies of global units and updates their
+ *        last-used indexes. Should only be called during backwards checking.
+ * 
+ * Called before `minimize_RAT_hints()` to address the rare case of
+ * a unit clause appearing in the global UP hints that is also a reduced
+ * clause under the witness. This case only occurs for true SR witnesses,
+ * since * RAT/PR witnesses are simplified with `minimize_witness()` to avoid
+ * this case.
+ * 
+ * @param gen The (inclusive) lowest timestamp for `dependency_markings`
+ *            with which to mark the clause.
+ */
+static void mark_dependencies_and_update_lui(ullong gen) {
+  for (int i = ((int) unit_clauses_size) - 1; i >= 0; i--) {
+    srid_t clause = unit_clauses[i];
+    if (dependency_markings[clause] >= gen) {
+      mark_unit_clause(clause, gen);
+      adjust_clause_lui(clause);
+    }
+  }
+}
+
+/**
  * @brief Marks the unit clauses needed to falsify `from_clause`.
  *        The dependency markings are updated with the timestamp `gen`.
  * 
@@ -2013,11 +2036,13 @@ static void store_RAT_dependencies(srid_t from_clause) {
  */
 static void print_or_store_lsr_line(ullong gen) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
+    mark_dependencies_and_update_lui(gen + GEN_INC);
     minimize_RAT_hints();
+  } else {
+    mark_dependencies(0, gen + GEN_INC);
   }
 
   ra_commit_range(&hints);
-  mark_dependencies(0, gen + GEN_INC);
   store_active_dependencies(gen);
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     ra_commit_range(&hints);
@@ -3208,9 +3233,6 @@ static void uncommit_clause_and_set_as_candidate(srid_t clause_id) {
 static int can_skip_clause(srid_t clause_index) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     srid_t lui = LUI_FROM_USER_DEL_LUI(clauses_lui[clause_index]);
-    logv("Checking if can skip clause %lld with LUI %d (%d) and current line %lld",
-      TO_DIMACS_CLAUSE(clause_index), lui, clauses_lui[clause_index],
-      TO_DIMACS_LINE(current_line));
     return lui <= current_line;
   } else {
     return is_clause_deleted(clause_index);
@@ -3376,8 +3398,6 @@ static void check_dsr_line(void) {
   int *clause, *next_clause = get_clause_start(min_clause_to_check);
   int clause_size;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
-    logv("[line %lld] Checking clause %lld for RAT.",
-      TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(i));
     if (can_skip_clause(i)) continue;
     check_RAT_clause(i);
   }
