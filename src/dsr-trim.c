@@ -3004,6 +3004,7 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
   int *clause_end = get_clause_end(clause_index);
 
   srid_t refuting_clause = -1;
+  int refuting_clause_index = (int) unit_literals_size;
   for (; clause_iter < clause_end; clause_iter++) {
     int lit = *clause_iter;
     int var = VAR_FROM_LIT(lit);
@@ -3017,6 +3018,23 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
         if (refuting_clause == -1) {
           // TODO(bug): Handle trivially tautological clauses
           refuting_clause = up_reasons[var];
+          
+          // Find the index of the refuting clause
+          for (; refuting_clause_index > 0; refuting_clause_index--) {
+            if (unit_clauses[refuting_clause_index] == refuting_clause) {
+              break;
+            }
+          }
+        } else {
+          // See if an earlier index can be used to shorten the UP derivation
+          srid_t new_refuting_clause = up_reasons[var];
+          for (int i = refuting_clause_index - 1; i >= 0; i--) {
+            if (unit_clauses[i] == new_refuting_clause) {
+              refuting_clause = new_refuting_clause;
+              refuting_clause_index = i;
+              break;
+            }
+          }
         }
       case FF: // fallthrough
         MARK_AS_UP_ASSUMED_VAR(var);

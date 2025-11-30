@@ -128,11 +128,7 @@ void lsr_err_satisfied_clause_hint(srid_t clause_id) {
     case VL_VERBOSE:
       log_err_raw("Candidate clause: ");
       dbg_print_clause(CLAUSE_ID_FROM_LINE_NUM(current_line));
-
-      log_err_raw("Current assignment: ");
       dbg_print_assignment();
-
-      log_err_raw("Current substitution: ");
       dbg_print_subst();
       dbg_print_lsr_hints();
 
