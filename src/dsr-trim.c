@@ -648,6 +648,19 @@ static void dbg_print_last_used_ids(void) {
   log_raw(VL_NORMAL, "\n");
 }
 
+static void dbg_print_up_reasons(void) {
+  for (int i = 0; i < max_var; i++) {
+    if (IS_UP_ASSUMED_VAR(i)) {
+      log_raw(VL_NORMAL, "[%d]a%d ",
+        i + 1, TO_DIMACS_CLAUSE(CLAUSE_REASON(up_reasons[i])));
+    } else if (IS_UP_DERIVED_VAR(i)) {
+      log_raw(VL_NORMAL, "[%d]%d ",
+        i + 1, TO_DIMACS_CLAUSE(up_reasons[i]));
+    } 
+  }
+  log_raw(VL_NORMAL, "\n");
+}
+
 /**
  * @brief Remaps clause IDs by ignored unused addition lines.
  * 
@@ -2996,18 +3009,21 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
     int var = VAR_FROM_LIT(lit);
     peval_t peval = peval_lit_under_alpha(lit);
     switch (peval) {
-      case FF:
+      case TT:
+        // Store which clause caused the direct UP refutation.
+        // Keep looping over the clause to mark assumed variables,
+        // which will help minimize the number of global UP hints we need.
+        // TODO: Store the refuting clause with the shortest UP derivation
+        if (refuting_clause == -1) {
+          // TODO(bug): Handle trivially tautological clauses
+          refuting_clause = up_reasons[var];
+        }
+      case FF: // fallthrough
         MARK_AS_UP_ASSUMED_VAR(var);
         break;
       case UNASSIGNED:
         assume_unit_literal(NEGATE_LIT(lit));
         break;
-      case TT:
-        // We are allowed to jump to `mark_and_store()` immediately because
-        // there's no "better" option than a trivial UP refutation.
-        // (Aside from a shorter refutation: see the TODO.)
-        refuting_clause = up_reasons[var];
-        goto we_found_a_refuting_clause;
       default: log_fatal_err("Invalid peval_t value: %d", peval);
     }
   }
@@ -3019,7 +3035,6 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
 
   // If we have satisfied the clause or found a UP refutation, emit it
   if (refuting_clause != -1) {
-    we_found_a_refuting_clause:
     mark_and_store_up_refutation(refuting_clause, alpha_generation - GEN_INC);
     return -1;
   }
