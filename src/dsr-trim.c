@@ -748,8 +748,8 @@ static void unassign_global_units_due_to_deletion(srid_t from_index) {
   srid_t unit_clause = unit_clauses[from_index];
   uint min_unit_index = MAX(0, from_index - 1);
 
-  // Find the minimum unit literal causing this one to be unit
-  // If the minimum index is greater than 0, we can save time in UP
+  // Find the minimum index of the unit literals causing this clause to be unit.
+  // We re-do UP from this minimum index (which might be > 0, saving time).
   if (min_unit_index > 0) {
     int *clause_iter = get_clause_start_unsafe(unit_clause) + 1;
     int *clause_end = get_clause_end(unit_clause);
@@ -764,9 +764,9 @@ static void unassign_global_units_due_to_deletion(srid_t from_index) {
         }
       }
     }
-    
-    global_up_literals_index = min_unit_index;
   }
+
+  global_up_literals_index = MIN(min_unit_index, global_up_literals_index);
 
   // Now keep unit literals/clauses that are true units
   srid_t write_idx = from_index;
@@ -3244,7 +3244,7 @@ static void uncommit_clause_and_set_as_candidate(srid_t clause_id) {
   // Ignore the empty clause
   if (clause_ptr == clause_end) return;
 
-  // // Remove the clause's watch pointers if it isn't a true unit
+  // Remove the clause's watch pointers if it isn't a true unit
   if (clause_ptr + 1 != clause_end) {
     remove_wp_for_lit(clause_ptr[0], clause_id);
     remove_wp_for_lit(clause_ptr[1], clause_id);
@@ -3323,40 +3323,38 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
     TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
 
   // Print tons of information if verbosity is high enough
-  if (verbosity_level > VL_NORMAL) {
-    log_raw(VL_VERBOSE, "\n//////////////////////////////////////////////\n\n");
-    log_raw(VL_VERBOSE, "c The current candidate clause: ");
+  if (err_verbosity_level > VL_NORMAL) {
+    log_err_raw("c The current candidate clause: ");
     dbg_print_clause(CLAUSE_ID_FROM_LINE_NUM(current_line));
 
-    log_raw(VL_VERBOSE, "c The failing RAT clause: ");
+    log_err_raw("c The failing RAT clause: ");
     dbg_print_clause(clause_index);
 
-    log_raw(VL_VERBOSE, "c The RAT clause, under the subst: ");
+    log_err_raw("c The RAT clause, under the subst: ");
     int *clause_iter = get_clause_start(clause_index);
     int *end = get_clause_end(clause_index);
     for (; clause_iter < end; clause_iter++) {
       int lit = *clause_iter;
       int mapped_lit = map_lit_under_subst(lit);
       switch (mapped_lit) {
-        case SUBST_TT: log_raw(VL_VERBOSE, "TT "); break;
-        case SUBST_FF: log_raw(VL_VERBOSE, "FF "); break;
+        case SUBST_TT: log_err_raw("TT "); break;
+        case SUBST_FF: log_err_raw("FF "); break;
         default: log_raw(VL_VERBOSE, "%d ", TO_DIMACS_LIT(mapped_lit));
       }
     }
-    log_raw(VL_VERBOSE, "0\n");
+    log_err_raw("0\n");
 
-    log_raw(VL_VERBOSE, "\nc The active partial assignment:\n");
     dbg_print_assignment();
-
-    log_raw(VL_VERBOSE, "\nc The active substitution:\n");
     dbg_print_subst();
 
     // Now scan through the unit literals and list how they became unit
     if (err_verbosity_level > VL_QUIET) {
-      log_raw(VL_VERBOSE, "\nc The unit literals and why they are unit\n");
-      log_raw(VL_VERBOSE, "c Printed in order of their derivations\n");
+      log_err_raw("\nc The unit literals and why they are unit\n");
+      log_err_raw("c Printed in order of their derivations\n");
       dbg_print_unit_literals();
     }
+  } else {
+    log_err_raw("c (For more information about this error, run with the `-V` option.)\n");
   }
 
   exit(1);
@@ -3428,8 +3426,6 @@ static void check_dsr_line(void) {
     TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(min_clause_to_check),
     TO_DIMACS_CLAUSE(max_clause_to_check));
 
-  int *clause, *next_clause = get_clause_start(min_clause_to_check);
-  int clause_size;
   for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
     if (can_skip_clause(i)) continue;
     check_RAT_clause(i);
@@ -3529,6 +3525,9 @@ static void prepare_next_line_for_backwards_checking(void) {
     uncommit_clause_and_set_as_candidate(cc_id);
     ra_commit_range(&deletions);
   } while (IS_UNUSED_LUI(clauses_lui[cc_id]) && current_line > 0);
+
+  // Do a fresh round of global UP after restoring wps and undoing units
+  perform_up_for_backwards_checking(GLOBAL_GEN);
 
   srid_t cc_rat_hints_index = RAT_HINTS_IDX_FROM_LINE_NUM(current_line);
   ra_commit_empty_ranges_until(&hints, cc_rat_hints_index);
