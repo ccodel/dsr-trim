@@ -3527,6 +3527,7 @@ static void prepare_next_line_for_backwards_checking(void) {
   } while (IS_UNUSED_LUI(clauses_lui[cc_id]) && current_line > 0);
 
   // Do a fresh round of global UP after restoring wps and undoing units
+  global_up_literals_index = 0;
   perform_up_for_backwards_checking(GLOBAL_GEN);
 
   srid_t cc_rat_hints_index = RAT_HINTS_IDX_FROM_LINE_NUM(current_line);
