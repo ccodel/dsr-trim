@@ -111,25 +111,10 @@ Potential optimizations:
 #define IS_UNUSED_LUI(x)           ((x) & SRID_MSB)
 #define IS_USED_LUI(x)             (!IS_UNUSED_LUI(x))
 
-#define NO_UP_REASON                  SRID_NEG_ONE
-#define IS_UP_DERIVED_REASON_RAW(x)   ((x) >= 0)
-#define IS_UP_DERIVED_VAR(x)          IS_UP_DERIVED_REASON_RAW(up_reasons[(x)])
-#define IS_ASSUMED_REASON_RAW(x)      ((x) < 0)
-#define IS_ASSUMED_VAR(x)             IS_ASSUMED_REASON_RAW(up_reasons[(x)])
-#define IS_UP_ASSUMED_REASON_RAW(x)   ((x) < NO_UP_REASON)
-#define IS_UP_ASSUMED_VAR(x)          IS_UP_ASSUMED_REASON_RAW(up_reasons[(x)])
-#define CLAUSE_REASON(x)              ((x) ^ SRID_MSB)
-#define MARK_AS_UP_ASSUMED_VAR(x)     (up_reasons[(x)] |= SRID_MSB)
-
-/**
- * @brief Clears the effect of `MARK_AS_UP_ASSUMED_VAR`. If the variable
- *        was not marked as assumed, then this function has no effect.
- * 
- * Callers should ensure that `up_reasons[x] != NO_UP_REASON`.
- * 
- * @param x The variable to clear the assumed marking for.
- */
-#define CLEAR_UP_ASSUMPTION_FOR_VAR(x)  (up_reasons[(x)] &= (~SRID_MSB))
+// The default value for `vars_unit_indexes` entries, indicating that
+// the variable is unset in the `alpha` assignment and that it is
+// not in the `unit_literals` array.
+#define NO_UNIT_INDEX        (-1)
 
 /**
  * @brief Returns the index into the `hints` structure corresponding to the
@@ -209,22 +194,22 @@ static uint *wp_alloc_sizes = NULL;
 // Invariant: if wps[i] == NULL, then wp_sizes[i] = 0.
 static uint *wp_sizes = NULL; // TODO: New name
 
-// Array containing the clause ID "reason" causing the variable to be set. Indexed by variable.
-// The MSB is set during RAT assumption to let global UP clauses be marked globally. (TODO: update docs later.)
-static srid_t *up_reasons = NULL;
-static uint up_reasons_alloc_size = 0; // TODO: use alpha_subst_alloc_size for this?
-
 // A list of literals, in order of when they become unit.
 static int *unit_literals = NULL;
 
 // A list of clauses, in order of when they became unit.
 static srid_t *unit_clauses = NULL;
 static uint units_alloc_size = 0;
-static uint unit_literals_size = 0;
-static uint unit_clauses_size = 0;
+static uint units_size = 0;
 
-static uint candidate_unit_clauses_index = 0;
-static uint RAT_unit_clauses_index = 0;
+// Indexed by variable.
+// Stores the index into `unit_literals` if that variable is set to true/false.
+// The MSB is set during candidate/RAT assumption to compute the minimal set of UP hints.
+static int *vars_unit_indexes = NULL;
+static int vars_unit_indexes_alloc_size = 0;
+
+static ullong *vars_dependency_markings = NULL;
+static int vars_dependency_markings_alloc_size = 0;
 
 // Index pointing at the "unprocessed" global UP literals
 static uint global_up_literals_index = 0;
@@ -233,10 +218,6 @@ static uint candidate_assumed_literals_index = 0;
 static uint candidate_unit_literals_index = 0;
 static uint RAT_assumed_literals_index = 0;
 static uint RAT_unit_literals_index = 0;
-
-// Generations for clauses involved in UP derivations. Indexed by clauses.
-static ullong *dependency_markings = NULL;
-static srid_t dependencies_alloc_size = 0;
 
 /**
  * @brief Stores the variables added as unit literals when assuming the
@@ -352,6 +333,12 @@ static uint num_reduced_clauses = 0;
 static min_max_clause_t *lines_min_max_clauses_to_check = NULL;
 
 static sr_timer_t timer;
+
+// Forward declare debug printing functions.
+static void dbg_print_hints(srid_t line_num);
+static void dbg_print_last_used_ids(void);
+static void dbg_print_up_reasons(void);
+static void dbg_print_unit_literals(void);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -632,6 +619,83 @@ static inline void add_RAT_up_hint(srid_t clause_id) {
   ra_insert_srid_elt(&hints, TO_DIMACS_CLAUSE(clause_id));
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
+static inline int is_var_set_due_to_up(int var) {
+  return vars_unit_indexes[var] >= 0;
+}
+
+static inline int is_lit_set_due_to_up(int lit) {
+  return is_var_set_due_to_up(VAR_FROM_LIT(lit));
+}
+
+static inline int is_var_assumed_and_set_due_to_up(int var) {
+  return vars_unit_indexes[var] < NO_UNIT_INDEX;
+}
+
+static inline int is_lit_assumed_and_set_due_to_up(int lit) {
+  return is_var_assumed_and_set_due_to_up(VAR_FROM_LIT(lit));
+}
+
+static inline int is_var_assumed_only_for_up(int var) {
+  return vars_unit_indexes[var] == NO_UNIT_INDEX;
+}
+
+static inline int is_lit_assumed_only_for_up(int lit) {
+  return is_var_assumed_only_for_up(VAR_FROM_LIT(lit));
+}
+
+static inline int is_var_assumed_for_up(int var) {
+  return vars_unit_indexes[var] <= NO_UNIT_INDEX;
+}
+
+static inline int is_lit_assumed_for_up(int lit) {
+  return is_var_assumed_for_up(VAR_FROM_LIT(lit));
+}
+
+static inline void clear_var_unit_index(int var) {
+  vars_unit_indexes[var] = NO_UNIT_INDEX;
+}
+
+static inline void clear_lit_unit_index(int lit) {
+  clear_var_unit_index(VAR_FROM_LIT(lit));
+}
+
+static inline void mark_var_unit_index_as_assumed(int var) {
+  vars_unit_indexes[var] |= MSB32;
+}
+
+static inline void mark_lit_unit_index_as_assumed(int lit) {
+  mark_var_unit_index_as_assumed(VAR_FROM_LIT(lit));
+}
+
+static inline void clear_assumption_from_var_unit_index(int var) {
+  vars_unit_indexes[var] &= (~MSB32);
+}
+
+static inline void clear_assumption_from_lit_unit_index(int lit) {
+  clear_assumption_from_var_unit_index(VAR_FROM_LIT(lit));
+}
+
+static inline int get_unit_index_for_var(int var) {
+  return vars_unit_indexes[var] & (~MSB32);
+}
+
+static inline int get_unit_index_for_lit(int lit) {
+  return get_unit_index_for_var(VAR_FROM_LIT(lit));
+}
+
+static inline srid_t get_unit_clause_for_var(int var) {
+  return unit_clauses[get_unit_index_for_var(var)];
+}
+
+static inline srid_t get_unit_clause_for_lit(int lit) {
+  return get_unit_clause_for_var(VAR_FROM_LIT(lit));
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+
 static void dbg_print_last_used_ids(void) {
   for (int i = 0; i < formula_size; i++) {
     if (i % 5 == 4) {
@@ -649,17 +713,19 @@ static void dbg_print_last_used_ids(void) {
 }
 
 static void dbg_print_up_reasons(void) {
-  for (int i = 0; i < max_var; i++) {
-    if (IS_UP_ASSUMED_VAR(i)) {
-      log_raw(VL_NORMAL, "[%d]a%d ",
-        i + 1, TO_DIMACS_CLAUSE(CLAUSE_REASON(up_reasons[i])));
-    } else if (IS_UP_DERIVED_VAR(i)) {
-      log_raw(VL_NORMAL, "[%d]%d ",
-        i + 1, TO_DIMACS_CLAUSE(up_reasons[i]));
-    } 
+  for (int v = 0; v <= max_var; v++) {
+    if (is_var_assumed_only_for_up(v)) {
+      logc_raw("[%d]a", v + 1);
+    } else if (is_var_assumed_and_set_due_to_up(v)) {
+      logc_raw("[%d]a%d ", v + 1, TO_DIMACS_CLAUSE(get_unit_clause_for_var(v)));
+    } else if (is_var_set_due_to_up(v)) {
+      logc_raw("[%d]%d ", v + 1, TO_DIMACS_CLAUSE(get_unit_clause_for_var(v)));
+    }
   }
-  log_raw(VL_NORMAL, "\n");
+  logc_raw("\n");
 }
+
+////////////////////////////////////////////////////////////////////////////////
 
 /**
  * @brief Remaps clause IDs by ignored unused addition lines.
@@ -683,26 +749,34 @@ static inline void resize_last_used_ids(void) {
     clauses_lui_alloc_size, formula_size, sizeof(srid_t), 0xff);
 }
 
+static inline void unassign_global_unit(int lit) {
+  int var = VAR_FROM_LIT(lit);
+  clear_var_unit_index(var);
+  alpha[var] = 0;
+}
+
+static inline void unassign_global_unit_at_index(int index) {
+  int lit = unit_literals[index];
+  unassign_global_unit(lit);
+}
+
 /**
  * @brief Undoes the effects of making the literals in `unit_literals` unit,
  *        starting from `from_index` (inclusive).
  * 
- * Only undoes the effect of the units being made global. The global variables
- * `unit_literals_size` and `unit_clauses_size` are not changed.
+ * Only undoes the effect of the units being made global.
+ * The global variable `units_size` is not changed.
  * 
- * This function sets each variables `alpha` generation to 0
- * and its UP reason to `NO_UP_REASON`. In other words, the variable is
+ * This function sets each variable's `alpha` generation to 0
+ * and clears its UP index. In other words, the variable is
  * unset in the truth assignment, and no clause causes it to be unit.
  * 
  * @param from_index The index to start clearing from.
- *                   Proceeds up to `unit_literals_size` (exclusive).
+ *                   Proceeds up to `units_size` (exclusive).
  */
 static void unassign_global_units(srid_t from_index) {
-  for (uint i = from_index; i < unit_literals_size; i++) {
-    int lit = unit_literals[i];
-    int var = VAR_FROM_LIT(lit);
-    up_reasons[var] = NO_UP_REASON;
-    alpha[var] = 0;
+  for (int i = from_index; i < units_size; i++) {
+    unassign_global_unit_at_index(i);
   }
 }
 
@@ -738,15 +812,14 @@ static void unassign_global_units(srid_t from_index) {
  * due to the `i`th round of UP, then we only need to re-run UP
  * from this `i`th round.
  * 
- * The values of `global_up_literals_index`, `unit_literals_size`, and
- * `unit_clauses_size` are updated appropriately.
+ * The values of `global_up_literals_index` and `units_size` are updated.
  *
  * @param from_index The 0-indexed clause ID into `unit_clauses` of the
  *                   implied unit clause that is about to get deleted.
  */
-static void unassign_global_units_due_to_deletion(srid_t from_index) {
+static void unassign_global_units_due_to_deletion(int from_index) {
   srid_t unit_clause = unit_clauses[from_index];
-  uint min_unit_index = MAX(0, from_index - 1);
+  int min_unit_index = MAX(0, from_index - 1);
 
   // Find the minimum index of the unit literals causing this clause to be unit.
   // We re-do UP from this minimum index (which might be > 0, saving time).
@@ -755,22 +828,16 @@ static void unassign_global_units_due_to_deletion(srid_t from_index) {
     int *clause_end = get_clause_end(unit_clause);
     for (; clause_iter < clause_end; clause_iter++) {
       int lit = *clause_iter;
-      int var = VAR_FROM_LIT(lit);
-      srid_t reason = up_reasons[var];
-      for (int i = (int) min_unit_index - 1; i >= 0; i--) {
-        if (unit_clauses[i] == reason) {
-          min_unit_index = i;
-          break;
-        }
-      }
+      int idx = get_unit_index_for_lit(lit);
+      min_unit_index = MIN(min_unit_index, idx);
     }
   }
 
   global_up_literals_index = MIN(min_unit_index, global_up_literals_index);
 
   // Now keep unit literals/clauses that are true units
-  srid_t write_idx = from_index;
-  for (uint i = from_index; i < unit_literals_size; i++) {
+  int write_idx = from_index;
+  for (int i = from_index; i < units_size; i++) {
     int lit = unit_literals[i];
     unit_clause = unit_clauses[i];
 
@@ -778,17 +845,14 @@ static void unassign_global_units_due_to_deletion(srid_t from_index) {
     if (get_clause_size(unit_clause) == 1 && i > from_index) {
       unit_literals[write_idx] = lit;
       unit_clauses[write_idx] = unit_clause;
+      vars_unit_indexes[VAR_FROM_LIT(lit)] = write_idx;
       write_idx++;
     } else {
-      // Unassign this unit literal/clause
-      int var = VAR_FROM_LIT(lit);
-      up_reasons[var] = NO_UP_REASON;
-      alpha[var] = 0;
+      unassign_global_unit(lit);
     }
   }
 
-  unit_literals_size = write_idx;
-  unit_clauses_size = write_idx;
+  units_size = write_idx;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -844,34 +908,34 @@ static void print_assignment(void) {
     int nlit = NEGATE_LIT(lit);
     switch (peval_lit_under_alpha(lit)) {
       case TT:
-        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT(lit), up_reasons[i]);
+        logc_raw("%d (%lld) ", TO_DIMACS_LIT(lit), get_unit_clause_for_lit(lit));
         break;
       case FF:
-        log_raw(VL_NORMAL, "%d (%lld) ", TO_DIMACS_LIT(nlit), up_reasons[i]);
+        logc_raw("%d (%lld) ", TO_DIMACS_LIT(nlit), get_unit_clause_for_lit(lit));
         break;
       default: break;
     }
   }
-  log_raw(VL_NORMAL, "\n");
+  logc_raw("\n");
 }
 
 static void dbg_print_unit_literals(void) {
-  logc("Unit literals (total %d):", unit_literals_size);
-  for (uint i = 0; i < unit_literals_size; i++) {
+  logc("Unit literals (total %d):", units_size);
+  for (int i = 0; i < units_size; i++) {
     int lit = unit_literals[i];
     log_raw(VL_NORMAL, "c [idx %d] %d   ", i, TO_DIMACS_LIT(lit));
 
-    srid_t reason = up_reasons[VAR_FROM_LIT(lit)];
-    if (reason == NO_UP_REASON) {
-      log_raw(VL_NORMAL, "negated candidate or RAT clause\n");
-    } else if (IS_UP_ASSUMED_REASON_RAW(reason)) {
-      srid_t clause = CLAUSE_REASON(reason);
-      log_raw(VL_NORMAL, "clause %lld, and negated candidate or RAT clause:",
+    if (is_lit_assumed_only_for_up(lit)) {
+      log_raw(VL_NORMAL, "negated from candidate or RAT clause\n");
+    } else if (is_lit_assumed_and_set_due_to_up(lit)) {
+      srid_t clause = get_unit_clause_for_lit(lit);
+      log_raw(VL_NORMAL, "negated and derived from clause %lld: ",
         TO_DIMACS_CLAUSE(clause));
       dbg_print_clause(clause);
     } else {
-      log_raw(VL_NORMAL, "due to ", TO_DIMACS_CLAUSE(reason));
-      dbg_print_clause(reason);
+      srid_t clause = get_unit_clause_for_lit(lit);
+      log_raw(VL_NORMAL, " due to clause: ");
+      dbg_print_clause(clause);
     }
   }
 }
@@ -1375,29 +1439,15 @@ static void delete_parsed_clause(void) {
   // Otherwise, we are deleting the last copy of this clause 
 
   // Forwards checking only: Do not delete (implied) units unless requested.
-  uint unit_clause_idx = UINT_MAX;
   int *clause_match_ptr = get_clause_start_unsafe(clause_match);
   uint clause_match_size = get_clause_size(clause_match);
+  int is_a_derived_unit = is_lit_set_due_to_up(clause_match_ptr[0]);
   if (ch_mode == FORWARDS_CHECKING_MODE
-      && up_reasons[VAR_FROM_LIT(clause_match_ptr[0])] == clause_match) {
-    if (ignore_unit_deletions && clause_match_size == 1) {
-      return;
-    }
-
-    // Determine if the matching clause is a(n implied) unit
-    for (uint i = 0; i < unit_clauses_size; i++) {
-      if (unit_clauses[i] == clause_match) {
-        unit_clause_idx = i;
-        break;
-      }
-    }
-
-    // Ignore the deletion of the implied unit if we found it.
-    // Note: we don't need to check the clause size here because
-    // we never delete true units while ignoring implied units.
-    if (ignore_implied_unit_deletions && unit_clause_idx != UINT_MAX) {
-      return;
-    }
+      && is_a_derived_unit
+      && get_unit_clause_for_lit(clause_match_ptr[0]) == clause_match
+      && ((ignore_unit_deletions && clause_match_size == 1)
+       || (ignore_implied_unit_deletions && clause_match_size > 1))) {
+    return;
   }
 
   ht_remove_at_index(b, b_idx);
@@ -1408,8 +1458,9 @@ static void delete_parsed_clause(void) {
     case FORWARDS_CHECKING_MODE:
       // If the clause is a(n implied) unit, unassign later units
       // We must do this before the clause is deleted from the formula
-      if (unit_clause_idx != UINT_MAX) {
-        unassign_global_units_due_to_deletion(unit_clause_idx);
+      if (is_a_derived_unit) {
+        int unit_index = get_unit_index_for_lit(clause_match_ptr[0]);
+        unassign_global_units_due_to_deletion(unit_index);
       }
 
       // Remove a non-true-unit's watch pointers
@@ -1422,7 +1473,7 @@ static void delete_parsed_clause(void) {
       delete_clause(clause_match);
 
       // If the clause was a(n implied) unit, we must re-run unit propagation
-      if (unit_clause_idx != UINT_MAX) {
+      if (is_a_derived_unit) {
         perform_up_for_forwards_checking(GLOBAL_GEN);
       }
       break;
@@ -1612,19 +1663,19 @@ static void prepare_dsr_trim_data(void) {
   }
 
   // Allocate empty reasons array for each variable, plus extra space
-  up_reasons_alloc_size = (max_var + 1);
-  up_reasons = xmalloc_memset(up_reasons_alloc_size * sizeof(srid_t), 0xff);
+  vars_unit_indexes_alloc_size = max_var + 1;
+  vars_unit_indexes = xmalloc_memset(vars_unit_indexes_alloc_size * sizeof(int), 0xff);
 
   // Allocate space for the unit lists. Probably won't be too large
-  units_alloc_size = (max_var + 1);
+  units_alloc_size = max_var + 1;
   unit_literals = xmalloc(units_alloc_size * sizeof(int));
   unit_clauses = xmalloc(units_alloc_size * sizeof(srid_t));
 
   // Allocate space for the dependency markings
-  dependencies_alloc_size = formula_size * 2;
-  dependency_markings = xcalloc(dependencies_alloc_size, sizeof(ullong));
+  vars_dependency_markings_alloc_size = max_var + 1;
+  vars_dependency_markings = xcalloc(vars_dependency_markings_alloc_size, sizeof(ullong));
 
-  RAT_marked_vars_alloc_size = (max_var + 1);
+  RAT_marked_vars_alloc_size = max_var + 1;
   RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
 
   // We track multiplicities of duplicate clauses
@@ -1681,16 +1732,16 @@ static void resize_wps(void) {
 static void resize_sr_trim_data(void) {
   // Resize arrays that depend on max_var and formula_size
   resize_wps();
-  RESIZE_MEMSET_ARR(up_reasons,
-    up_reasons_alloc_size, (max_var + 1), sizeof(srid_t), 0xff);
-  RECALLOC_ARR(dependency_markings,
-    dependencies_alloc_size, formula_size, sizeof(ullong));
+  RESIZE_MEMSET_ARR(vars_unit_indexes,
+    vars_unit_indexes_alloc_size, (max_var + 1), sizeof(int), 0xff);
+  RECALLOC_ARR(vars_dependency_markings,
+    vars_dependency_markings_alloc_size, (max_var + 1), sizeof(ullong));
 }
 
 static void resize_units(void) {
-  if (unit_literals_size >= units_alloc_size) {
+  if (units_size >= units_alloc_size) {
     int old_size = units_alloc_size;
-    units_alloc_size = RESIZE(unit_literals_size);
+    units_alloc_size = RESIZE(units_size);
     unit_literals = xrealloc(unit_literals, units_alloc_size * sizeof(int));
     unit_clauses = xrealloc(unit_clauses, units_alloc_size * sizeof(srid_t));
 
@@ -1857,10 +1908,10 @@ static void minimize_RAT_hints(void) {
  *            `gen` are added as UP hints.
  */
  static void store_active_dependencies(ullong gen) {
-  for (uint i = 0; i < unit_clauses_size; i++) {
-    srid_t c = unit_clauses[i];
-    if (dependency_markings[c] > gen) {
-      add_up_hint(c);
+  for (int i = 0; i < units_size; i++) {
+    int unit_lit = unit_literals[i];
+    if (vars_dependency_markings[VAR_FROM_LIT(unit_lit)] > gen) {
+      add_up_hint(unit_clauses[i]);
     }
   }
 }
@@ -1899,9 +1950,8 @@ static void mark_clause(srid_t clause, int offset, ullong gen) {
   for (; clause_iter < clause_end; clause_iter++) {
     int lit = *clause_iter;
     int var = VAR_FROM_LIT(lit);
-    srid_t clause_reason = up_reasons[var];
-    if (IS_UP_DERIVED_REASON_RAW(clause_reason)) {
-      dependency_markings[clause_reason] = gen; 
+    if (is_var_set_due_to_up(var)) {
+      vars_dependency_markings[var] = gen;
     }
   }
 }
@@ -1952,10 +2002,11 @@ static inline void mark_entire_clause(srid_t clause, ullong gen) {
  */
 static void mark_dependencies(int until_index, ullong gen) {
   // We use an int here because we scan backwards until the counter is negative
-  for (int i = ((int) unit_clauses_size) - 1; i >= until_index; i--) {
-    srid_t clause = unit_clauses[i];
-    if (dependency_markings[clause] >= gen) {
-      mark_unit_clause(clause, gen);
+  for (int i = ((int) units_size) - 1; i >= until_index; i--) {
+    int lit = unit_literals[i];
+    int var = VAR_FROM_LIT(lit);
+    if (vars_dependency_markings[var] >= gen) {
+      mark_unit_clause(unit_clauses[i], gen);
     }
   }
 }
@@ -1974,9 +2025,11 @@ static void mark_dependencies(int until_index, ullong gen) {
  *            with which to mark the clause.
  */
 static void mark_dependencies_and_update_lui(ullong gen) {
-  for (int i = ((int) unit_clauses_size) - 1; i >= 0; i--) {
-    srid_t clause = unit_clauses[i];
-    if (dependency_markings[clause] >= gen) {
+  for (int i = ((int) units_size) - 1; i >= 0; i--) {
+    int lit = unit_literals[i];
+    int var = VAR_FROM_LIT(lit);
+    if (vars_dependency_markings[var] >= gen) {
+      srid_t clause = unit_clauses[i];
       mark_unit_clause(clause, gen);
       adjust_clause_lui(clause);
     }
@@ -1997,7 +2050,7 @@ static inline void mark_up_derivation(srid_t from_clause, ullong gen) {
 
   // If RAT UP, then only scan until RAT unit clauses are done
   // Later, mark the UP clauses needed more "globally"
-  int index = (up_state == RAT_UP) ? RAT_unit_clauses_index : 0;
+  int index = (up_state == RAT_UP) ? RAT_unit_literals_index : 0;
   mark_dependencies(index, gen);
 }
 
@@ -2029,10 +2082,11 @@ static inline void mark_and_store_empty_clause_refutation(srid_t c, ullong g) {
 }
 
 static void store_RAT_dependencies(srid_t from_clause) {
-  for (int i = RAT_unit_clauses_index; i < unit_clauses_size; i++) {
-    srid_t unit_clause = unit_clauses[i];
-    if (dependency_markings[unit_clause] == alpha_generation) {
-      add_RAT_up_hint(unit_clause);
+  for (int i = RAT_unit_literals_index; i < units_size; i++) {
+    int lit = unit_literals[i];
+    int var = VAR_FROM_LIT(lit);
+    if (vars_dependency_markings[var] == alpha_generation) {
+      add_RAT_up_hint(unit_clauses[i]);
     }
   }
 
@@ -2379,56 +2433,51 @@ static void find_new_pivot_for_witness(srid_t cc_index) {
 
 // Moves state from `GLOBAL_UP` -> `CANDIDATE_UP` -> `RAT_UP`.
 // Sets the various indexes appropriately.
-// If incremented at `RAT_UP`, resets "back to" a RAT_UP state.
+// It is a fatal error to increment the state if `up_state` is `RAT_UP`.
 static void increment_state(void) {
   switch (up_state) {
     case GLOBAL_UP:
       up_state = CANDIDATE_UP;
-      candidate_assumed_literals_index = unit_literals_size;
-      candidate_unit_literals_index = unit_literals_size;
-      candidate_unit_clauses_index = unit_clauses_size;
+      candidate_assumed_literals_index = units_size;
+      candidate_unit_literals_index = units_size;
       break;
     case CANDIDATE_UP:
       up_state = RAT_UP;
-      RAT_assumed_literals_index = unit_literals_size;
-      RAT_unit_literals_index = unit_literals_size;
-      RAT_unit_clauses_index = unit_clauses_size;
+      RAT_assumed_literals_index = units_size;
+      RAT_unit_literals_index = units_size;
       break;
-    case RAT_UP:
-      unit_literals_size = RAT_assumed_literals_index;
-      RAT_unit_literals_index = RAT_assumed_literals_index;
-      unit_clauses_size = RAT_unit_clauses_index;
-      break;
+    case RAT_UP: log_fatal_err("Cannot increment up_state beyond RAT_UP");
     default: log_fatal_err("Corrupted up_state: %d", up_state);
   }
 }
 
 // Moves state from `RAT_UP` -> `CANDIDATE_UP` -> `GLOBAL_UP`.
 // Sets the various indexes appropriately.
+// It is a fatal error to decrement the state if `up_state` is `GLOBAL_UP`.
 static void decrement_state(void) {
   switch (up_state) {
-    case GLOBAL_UP: return;
+    case GLOBAL_UP: log_fatal_err("Cannot decrement up_state below GLOBAL_UP");
     case CANDIDATE_UP:
       up_state = GLOBAL_UP;
-      unit_literals_size = candidate_assumed_literals_index;
-      unit_clauses_size = candidate_unit_clauses_index;
+      units_size = candidate_assumed_literals_index;
       break;
     case RAT_UP:
       up_state = CANDIDATE_UP;
-      unit_literals_size = RAT_assumed_literals_index;
-      unit_clauses_size = RAT_unit_clauses_index;
+      units_size = RAT_assumed_literals_index;
       break;
     default: log_fatal_err("Corrupted up_state: %d", up_state);
   }
 }
 
-// Sets the literal to true, and adds it to the unit_literals array.
+// Assumes the literal as true, and adds it to the `unit_literals` array.
 // Infers the correct generation value from state.
 static inline void assume_unit_literal(int lit) {
   ullong gen = (up_state == CANDIDATE_UP) ? ASSUMED_GEN : alpha_generation;
   set_lit_for_alpha(lit, gen);
   resize_units();
-  unit_literals[unit_literals_size++] = lit;
+
+  unit_literals[units_size] = lit;
+  units_size++;
 
   if (up_state == CANDIDATE_UP) {
     candidate_unit_literals_index++;
@@ -2438,20 +2487,20 @@ static inline void assume_unit_literal(int lit) {
 }
 
 // Sets the literal in the clause to true, assuming it is unit in the clause.
-// Then adds the literal to the unit_literals array, to look for more unit clauses later.
-// NOTE: When doing unit propagation, take the negation of the literal in the unit_literals array.
+// Then adds the literal to the `unit_literals` array.
+// NOTE: When doing unit propagation, negate the literal in `unit_literals`.
 static void set_unit_clause(int lit, srid_t clause, ullong gen) {
   set_lit_for_alpha(lit, gen);
-  up_reasons[VAR_FROM_LIT(lit)] = clause;
-
   resize_units();
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    unit_literals_wp_up_indexes[unit_literals_size] = 0;
+    unit_literals_wp_up_indexes[units_size] = 0;
   }
 
-  unit_literals[unit_literals_size++] = lit;
-  unit_clauses[unit_clauses_size++] = clause;
+  unit_literals[units_size] = lit;
+  unit_clauses[units_size] = clause;
+  vars_unit_indexes[VAR_FROM_LIT(lit)] = units_size;
+  units_size++;
 }
 
 // Adds a watch pointer for the lit at the specified clause ID
@@ -2590,10 +2639,10 @@ static srid_t perform_up_for_backwards_checking(ullong gen) {
   // done UP on the global state, so there is nothing more to find here
   // (Especially if we uncommit true units as we move backwards through form)
   memset(unit_literals_wp_up_indexes + i,
-    0, (unit_literals_size - i) * sizeof(uint));
+    0, (units_size - i) * sizeof(uint));
 
 restart_up:
-  for (; i < unit_literals_size; i++) {
+  for (; i < units_size; i++) {
     // Iterate through lit's watch pointers and see if any clause becomes unit
     int lit = NEGATE_LIT(unit_literals[i]);
     srid_t *wp_list = wps[lit];
@@ -2698,7 +2747,7 @@ restart_up:
     wp_sizes[lit] = wp_size;
   }
 
-  progressed_i = i;  // Lemma: (i == unit_literals_size)
+  progressed_i = i;  // Lemma: (i == units_size)
 
   // We restart UP to process the ignored clauses, if there are any
   // On a "first pass", we always ignore clauses, so if the bookmark is set,
@@ -2715,7 +2764,7 @@ restart_up:
   }
   
   if (up_state == GLOBAL_UP) {
-    global_up_literals_index = unit_literals_size;
+    global_up_literals_index = units_size;
   }
 
   return -1;
@@ -2762,7 +2811,7 @@ static srid_t perform_up_for_forwards_checking(ullong gen) {
     default: log_fatal_err("Corrupted up_state: %d", up_state);
   }
 
-  for (; i < unit_literals_size; i++) {
+  for (; i < units_size; i++) {
     int lit = NEGATE_LIT(unit_literals[i]);
 
     // Iterate through its watch pointers and see if the clause becomes unit
@@ -2832,7 +2881,7 @@ static srid_t perform_up_for_forwards_checking(ullong gen) {
   }
 
   if (up_state == GLOBAL_UP) {
-    global_up_literals_index = unit_literals_size;
+    global_up_literals_index = units_size;
   }
 
   return -1;
@@ -2885,20 +2934,12 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
          * for `lit` with the current clause ID, and we replace the previous
          * clause's ID in `unit_clauses`. */
         int var = VAR_FROM_LIT(lit);
-        srid_t prev_up_unit_clause = up_reasons[var];
-        up_reasons[var] = clause_index;
-
-        // Replace this clause in the `unit_clauses` structure
-        // This way, UP derivations stop at this unit clause
-        for (int i = 0; i < unit_clauses_size; i++) {
-          if (unit_clauses[i] == prev_up_unit_clause) {
-            unit_clauses[i] = clause_index;
-            break;
-          }
-        }
+        int idx = vars_unit_indexes[var];
+        unit_clauses[idx] = clause_index;
         break;
       default:
         set_unit_clause(lit, clause_index, GLOBAL_GEN);
+        break;
     }
   } else {
     /*
@@ -3004,7 +3045,7 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
   int *clause_end = get_clause_end(clause_index);
 
   srid_t refuting_clause = -1;
-  int refuting_clause_index = (int) unit_literals_size;
+  int refuting_clause_index = (int) units_size;
   for (; clause_iter < clause_end; clause_iter++) {
     int lit = *clause_iter;
     int var = VAR_FROM_LIT(lit);
@@ -3015,29 +3056,13 @@ static int assume_candidate_clause_and_perform_up(srid_t clause_index) {
         // Keep looping over the clause to mark assumed variables,
         // which will help minimize the number of global UP hints we need.
         // TODO: Store the refuting clause with the shortest UP derivation
-        if (refuting_clause == -1) {
+        if (get_unit_index_for_var(var) < refuting_clause_index) {
           // TODO(bug): Handle trivially tautological clauses
-          refuting_clause = up_reasons[var];
-          
-          // Find the index of the refuting clause
-          for (; refuting_clause_index > 0; refuting_clause_index--) {
-            if (unit_clauses[refuting_clause_index] == refuting_clause) {
-              break;
-            }
-          }
-        } else {
-          // See if an earlier index can be used to shorten the UP derivation
-          srid_t new_refuting_clause = up_reasons[var];
-          for (int i = refuting_clause_index - 1; i >= 0; i--) {
-            if (unit_clauses[i] == new_refuting_clause) {
-              refuting_clause = new_refuting_clause;
-              refuting_clause_index = i;
-              break;
-            }
-          }
+          refuting_clause = get_unit_clause_for_var(var);
+          refuting_clause_index = get_unit_index_for_var(var);
         }
       case FF: // fallthrough
-        MARK_AS_UP_ASSUMED_VAR(var);
+        mark_var_unit_index_as_assumed(var);
         break;
       case UNASSIGNED:
         assume_unit_literal(NEGATE_LIT(lit));
@@ -3078,10 +3103,10 @@ static void unassume_candidate_clause(srid_t clause_index) {
     int var = VAR_FROM_LIT(lit);
 
     // If the literal was originally unassigned, set its gen back to 0
-    if (up_reasons[var] == NO_UP_REASON) {
+    if (is_var_assumed_only_for_up(var)) {
       alpha[var] = 0;
     } else {
-      CLEAR_UP_ASSUMPTION_FOR_VAR(var);
+      clear_assumption_from_var_unit_index(var);
     }
   }
 
@@ -3094,7 +3119,7 @@ static inline void add_RAT_marked_var(int marked_var) {
 
 static inline void clear_RAT_marked_vars(void) {
   for (uint i = 0; i < RAT_marked_vars_size; i++) {
-    CLEAR_UP_ASSUMPTION_FOR_VAR(RAT_marked_vars[i]);
+    clear_assumption_from_var_unit_index(RAT_marked_vars[i]);
   }
 
   RAT_marked_vars_size = 0;
@@ -3163,16 +3188,16 @@ static int assume_RAT_clause_under_subst(srid_t clause_index) {
         int mapped_peval = peval_lit_under_alpha(mapped_lit);
         switch (mapped_peval) {
           case FF:
-            if (IS_UP_DERIVED_VAR(mapped_var)) {
-              MARK_AS_UP_ASSUMED_VAR(mapped_var);
+            if (is_var_set_due_to_up(mapped_var)) {
+              mark_var_unit_index_as_assumed(mapped_var);
               add_RAT_marked_var(mapped_var);
             }
             break;
           case TT:
-            if (IS_ASSUMED_VAR(mapped_var)) {
+            if (is_var_assumed_for_up(mapped_var)) {
               return SATISFIED_OR_MUL;
             } else if (refuting_clause == -1) {
-              refuting_clause = up_reasons[mapped_var];
+              refuting_clause = get_unit_clause_for_var(mapped_var);
             }
             break;
           case UNASSIGNED:
@@ -3197,10 +3222,9 @@ static void unassume_RAT_clause(srid_t clause_index) {
   FATAL_ERR_IF(up_state != RAT_UP, "up_state not RAT_UP.");
 
   // Clear the UP reasons for the variables set during RAT UP
-  for (int i = RAT_unit_literals_index; i < unit_literals_size; i++) {
+  for (int i = RAT_unit_literals_index; i < units_size; i++) {
     int lit = unit_literals[i];
-    int var = VAR_FROM_LIT(lit);
-    up_reasons[var] = NO_UP_REASON;
+    clear_lit_unit_index(lit);
   }
 
   clear_RAT_marked_vars();
@@ -3253,13 +3277,8 @@ static void uncommit_clause_and_set_as_candidate(srid_t clause_id) {
   // If this clause is unit, remove it from the set of unit clauses
   // The `unassign()` function preserves true units derived after this one
   int var = VAR_FROM_LIT(clause_ptr[0]);
-  if (up_reasons[var] == clause_id) {
-    for (int unit_idx = (int) unit_clauses_size - 1; unit_idx >= 0; unit_idx--) {
-      if (unit_clauses[unit_idx] == clause_id) {
-        unassign_global_units_due_to_deletion(unit_idx);
-        break;
-      }
-    }
+  if (is_var_set_due_to_up(var) && get_unit_clause_for_var(var) == clause_id) {
+    unassign_global_units_due_to_deletion(get_unit_index_for_var(var));
   }
 }
 
@@ -3473,11 +3492,12 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
     uint clause_size = get_clause_size(del_id);
 
     // Ignore deletion of the clause if it is a(n implied) unit.
-    // Watch pointer invariant: the true literal is the first in the clause
-    srid_t reason = up_reasons[VAR_FROM_LIT(del_clause[0])];
-    if (reason == del_id
-          && (ignore_implied_unit_deletions
-              || (ignore_unit_deletions && clause_size == 1))) {
+    // Watch pointer invariant: the true literal is the first in the clause.
+    int var = VAR_FROM_LIT(del_clause[0]);
+    if (is_var_set_due_to_up(var)
+        && get_unit_clause_for_var(var) == del_id
+        && (ignore_implied_unit_deletions
+          || (ignore_unit_deletions && clause_size == 1))) {
       logv("[line %lld] Ignoring deletion of (implied) unit clause %lld.",
         TO_DIMACS_LINE(line), TO_DIMACS_CLAUSE(del_id));
       clauses_lui[del_id] = -1;

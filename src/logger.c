@@ -48,11 +48,29 @@ void logc(const char *format, ...) {
   }
 }
 
+void logc_raw(const char *format, ...) {
+  if (VL_NORMAL <= verbosity_level) {
+    va_list ap;
+    va_start(ap, format);
+    vfprintf(stdout, format, ap); 
+    va_end(ap);
+  }
+}
+
 void logv(const char *format, ...) {
   if (VL_VERBOSE <= verbosity_level) {
     va_list ap;
     va_start(ap, format);
     log_args_with_c_and_newline(format, ap);
+    va_end(ap);
+  }
+}
+
+void logv_raw(const char *format, ...) {
+  if (VL_VERBOSE <= verbosity_level) {
+    va_list ap;
+    va_start(ap, format);
+    vfprintf(stdout, format, ap); 
     va_end(ap);
   }
 }

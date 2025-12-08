@@ -43,11 +43,10 @@ void log_raw(vlevel_t level, const char *format, ...);
 // Begins the message with `"c "` and ends it with a newline `'\n'`.
 void log_msg(vlevel_t level, const char *format, ...);
 
-// Alias for `log_msg(VL_NORMAL, ...)`.
-void logc(const char *format, ...);
-
-// Alias for `log_msg(VL_VERBOSE, ...)`.
-void logv(const char *format, ...);
+void logc(const char *format, ...);     // Alias for `log_msg(VL_NORMAL, ...)`.
+void logc_raw(const char *format, ...); // Alias for `log_raw(VL_NORMAL, ...)`.
+void logv(const char *format, ...);     // Alias for `log_msg(VL_VERBOSE, ...)`.
+void logv_raw(const char *format, ...); // Alias for `log_raw(VL_VERBOSE, ...)`.
 
 // Logs a message to `stderr`.
 // Begins the message with `"Error: "` and end the message with a newline `'\n'`.
