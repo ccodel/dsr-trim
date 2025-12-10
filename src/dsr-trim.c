@@ -263,15 +263,15 @@ static srid_t *clause_id_map = NULL;
 // The clause ID hash table, used for checking deletions.
 static ht_t clause_id_ht;
 
-// Counts the number of times a clause appears multiple times in the formula.
+// Counts the number of times a clause appears in the formula.
 typedef struct clause_multiplicity {
   srid_t clause_id;
-  uint multiplicity;
+  int multiplicity;
 } clause_mult_t;
 
-static clause_mult_t *clause_mults;
-static uint clause_mults_alloc_size = 0;
-static uint clause_mults_size = 0;
+// This hash table works in concert with `clause_id_t`
+// and stores multiplicies of clauses with two or more copies in the formula.
+static ht_t clause_mults_ht;
 
 // Forward declare these functions, since deletion needs them
 static void remove_wp_for_lit(int lit, srid_t clause);
@@ -1309,57 +1309,55 @@ static uint hash_clause(srid_t clause_index) {
  * @param clause_index
  * @param[out] hp Pointer to the hash value of the clause.
  * @param[out] bp Pointer to the hash table bucket where the match lives.
- * @param[out] bi Pointer to the hash table bucket index where the match lives.
+ * @param[out] ep Pointer to the hash table entry where the match lives.
  * @return The clause index of a matching clause that comes before this one,
  *         or `-1` if no such clause is found.
  */
-static srid_t find_hashed_clause(srid_t ci, uint *hp, htb_t **bp, uint *bi) {
+static srid_t find_hashed_clause(srid_t ci, uint *hp, ht_bucket_t **bp, ht_entry_t **ep) {
   int *clause = get_clause_start_unsafe(ci);
+  uint clause_size = get_clause_size(ci);
   uint hash = hash_clause(ci);
   if (hp != NULL) *hp = hash;
-  htb_t *bucket = ht_get_bucket(&clause_id_ht, hash);
-  uint bucket_size = bucket->size;
 
-  if (bucket_size == 0) return -1;
+  ht_bucket_t *bucket = ht_get_bucket(&clause_id_ht, hash);
+  ht_entry_t *entry = NULL;
+  srid_t possible_match;
 
-  // Iterate through all clauses in this bucket and try to find a match
-  int *matching_clause;
-  hte_t *entries = bucket->entries;
-  for (int i = 0; i < bucket_size; i++) {
-    srid_t possible_match = entries[i].data;
+  // Loop through all entries with the same hash to find a matching clause
+  while ((entry = ht_get_entry_in_bucket(&clause_id_ht, bucket, hash, entry)) != NULL) {
+    // Naively, we would use an `srid_t` pointer into `entry->data`,
+    // but if `srid_t == llong`, then we run into alignment issues.
+    // As a result, we must `memcpy` into a struct, which will be aligned.
+    memcpy(&possible_match, &entry->data, sizeof(srid_t));
 
     // First approximation: see if the clause sizes match
-    uint clause_size = get_clause_size(ci);
     uint match_size = get_clause_size(possible_match);
     if (clause_size == match_size) {
-      // Second approximation: see if the hashes match
-      uint match_hash = hash_clause(possible_match);
-      if (match_hash == hash) {
-        // Most clauses are small, so O(n^2) search is good enough
-        // Note that the literals aren't necessarily sorted due to wps
-        matching_clause = get_clause_start_unsafe(possible_match);
-        int found_match = 1; // We set this to 0 if a literal isn't found
-        for (int i = 0; i < match_size; i++) {
-          int lit = clause[i];
-          int found_lit = 0;
-          for (int j = 0; j < match_size; j++) {
-            if (lit == matching_clause[j]) {
-              found_lit = 1;
-              break;
-            }
-          }
-
-          if (!found_lit) {
-            found_match = 0;
+      // Now check if all literals match.
+      // Most clauses are small, so O(n^2) search is good enough.
+      // Note that the literals aren't necessarily sorted due to wps.
+      int *matching_clause = get_clause_start_unsafe(possible_match);
+      int found_match = 1;  // We set this to 0 if a literal isn't found
+      for (int i = 0; i < match_size; i++) {
+        int lit = clause[i];
+        int found_lit = 0;
+        for (int j = 0; j < match_size; j++) {
+          if (lit == matching_clause[j]) {
+            found_lit = 1;
             break;
           }
         }
 
-        if (found_match) {
-          if (bp != NULL) *bp = bucket;
-          if (bi != NULL) *bi = i;
-          return possible_match;
+        if (!found_lit) {
+          found_match = 0;
+          break;
         }
+      }
+
+      if (found_match) {
+        if (bp != NULL) *bp = bucket;
+        if (ep != NULL) *ep = entry;
+        return possible_match;
       }
     }
   }
@@ -1367,39 +1365,57 @@ static srid_t find_hashed_clause(srid_t ci, uint *hp, htb_t **bp, uint *bi) {
   return -1;
 }
 
-// Adds one to the mult counter, or if one isn't there for `clause_index`,
-// sets the mult to `1`. (Single occurrence clauses don't get added.)
-// Essentially, the `mult` counts the additional copies of the clause.
-static void inc_clause_mult(srid_t clause_index) {
-  for (int i = 0; i < clause_mults_size; i++) {
-    if (clause_mults[i].clause_id == clause_index) {
-      clause_mults[i].multiplicity++;
+/**
+ * @brief Adds 1 to the clause's multiplicity counter.
+ * 
+ * If a clause appears more than once in the formula, then a `clause_mult_t`
+ * struct is stored in the `clause_mults_ht` hash table, along with a count
+ * of its multiplicity.
+ * 
+ * This function checks the multiplicity table, and if the clause is found,
+ * its multiplicity counter is incremented. Otherwise, a new entry is added.
+ */
+static void inc_clause_mult(srid_t clause_index, uint hash) {
+  ht_bucket_t *bucket = ht_get_bucket(&clause_mults_ht, hash);
+  ht_entry_t *entry = NULL;
+  clause_mult_t mult;
+
+  while ((entry = ht_get_entry_in_bucket(&clause_mults_ht, bucket, hash, entry)) != NULL) {
+    // Extract the multiplicity information from the entry
+    memcpy(&mult, &entry->data, sizeof(clause_mult_t));
+    if (mult.clause_id == clause_index) {
+      mult.multiplicity++;
+      memcpy(&entry->data, &mult, sizeof(clause_mult_t));
       return;
     }
   }
 
-  // Clause not found in multiplicity list - insert a new entry in the back
-  RESIZE_ARR_CONCAT(clause_mults, sizeof(clause_mult_t));
-  clause_mults[clause_mults_size].clause_id = clause_index;
-  clause_mults[clause_mults_size].multiplicity = 1;
-  clause_mults_size++;
+  // No matching clause was found. Add it to the multiplicity table
+  mult.clause_id = clause_index;
+  mult.multiplicity = 2;
+  ht_insert(&clause_mults_ht, hash, &mult);
 }
 
 // Returns the number of remaining copies in the formula (after the decrease).
 // Returns 0 if the clause is not found (meaning it has multiplicity of 1).
-static uint dec_clause_mult(srid_t clause_index) {
-  for (int i = 0; i < clause_mults_size; i++) {
-    if (clause_mults[i].clause_id == clause_index) {
-      uint mult = clause_mults[i].multiplicity;
-      if (mult == 1) {
-        // Swap from back
-        clause_mults[i] = clause_mults[clause_mults_size - 1];
-        clause_mults_size--;
-      } else {
-        clause_mults[i].multiplicity--;
-      }
+static int dec_clause_mult(srid_t clause_index, uint hash) {
+  ht_bucket_t *bucket = ht_get_bucket(&clause_mults_ht, hash);
+  ht_entry_t *entry = NULL;
+  clause_mult_t mult;
 
-      return mult;
+  while ((entry = ht_get_entry_in_bucket(&clause_mults_ht, bucket, hash, entry)) != NULL) {
+    memcpy(&mult, &entry->data, sizeof(clause_mult_t));
+    if (mult.clause_id == clause_index) {
+      mult.multiplicity--;
+
+      // Remove the entry if we have a single copy of the clause left
+      if (mult.multiplicity == 1) {
+        ht_remove_entry_in_bucket(&clause_mults_ht, bucket, entry);
+        return 1;
+      } else {
+        memcpy(&entry->data, &mult, sizeof(clause_mult_t));
+        return mult.multiplicity;
+      }
     }
   }
 
@@ -1422,19 +1438,20 @@ static uint dec_clause_mult(srid_t clause_index) {
  * literals (we don't delete the empty clause or unit clauses).
  */
 static void delete_parsed_clause(void) {
-  htb_t *b;
-  uint b_idx;
-  srid_t clause_match = find_hashed_clause(formula_size, NULL, &b, &b_idx);
+  uint hash;
+  ht_bucket_t *b;
+  ht_entry_t *e;
+  srid_t clause_match = find_hashed_clause(formula_size, &hash, &b, &e);
 
   if (clause_match == -1) {
-    log_raw(VL_NORMAL, "The clause requested to be deleted: ");
+    logc_raw("The clause requested to be deleted: ");
     dbg_print_clause(formula_size);
     log_fatal_err("[line %lld] No matching clause found for deletion.",
       TO_DIMACS_LINE(current_line));
   }
 
   // If we still have copies of the clause, leave the hash table alone
-  if (dec_clause_mult(clause_match) > 0) return;
+  if (dec_clause_mult(clause_match, hash) > 0) return;
 
   // Otherwise, we are deleting the last copy of this clause 
 
@@ -1450,7 +1467,7 @@ static void delete_parsed_clause(void) {
     return;
   }
 
-  ht_remove_at_index(b, b_idx);
+  ht_remove_entry_in_bucket(&clause_id_ht, b, e);
   store_user_deletion(clause_match);
 
   // How we delete the clause from the formula depends on the checking mode
@@ -1486,7 +1503,7 @@ static void delete_parsed_clause(void) {
 }
 
 static inline void add_hashed_clause_to_ht(srid_t clause_index, uint hash) {
-  ht_insert(&clause_id_ht, hash, clause_index);
+  ht_insert(&clause_id_ht, hash, &clause_index);
 }
 
 /**
@@ -1513,7 +1530,7 @@ static void add_formula_clause_to_ht(srid_t clause_index) {
       TO_DIMACS_CLAUSE(clause_index),
       TO_DIMACS_CLAUSE(clause_match));
     delete_clause(clause_index);
-    inc_clause_mult(clause_match);
+    inc_clause_mult(clause_match, hash);
     if (ch_mode == FORWARDS_CHECKING_MODE) {
       // Delete the duplicate in the printed LSR proof.
       // However, the user is free to delete the clause later (which we ignore),
@@ -1541,7 +1558,7 @@ static srid_t add_clause_to_ht_or_inc_mult(void) {
   if (clause_match == -1) {
     add_hashed_clause_to_ht(ci, hash);
   } else {
-    inc_clause_mult(clause_match);
+    inc_clause_mult(clause_match, hash);
   }
 
   return clause_match;
@@ -1637,6 +1654,11 @@ static void parse_entire_dsr_file(void) {
     fclose(dsr_file);
   }
 
+  // Since we've parsed all possible clauses, we can free the hash tables
+  // that were tracking clause multiplicities/duplicates.
+  ht_free(&clause_id_ht);
+  ht_free(&clause_mults_ht);
+
   if (parsed_empty_clause) {
     logc("Parsed the empty clause after %lld proof lines (%lld additions).",
       num_parsed_lines, num_parsed_add_lines);
@@ -1678,10 +1700,6 @@ static void prepare_dsr_trim_data(void) {
   RAT_marked_vars_alloc_size = max_var + 1;
   RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
 
-  // We track multiplicities of duplicate clauses
-  clause_mults_alloc_size = INIT_CLAUSE_MULT_SIZE;
-  clause_mults = xmalloc(clause_mults_alloc_size * sizeof(clause_mult_t));
-
   // If we are backwards checking, allocate additional structures
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     // TODO: set to formula_size when resizing?
@@ -1706,7 +1724,8 @@ static void prepare_dsr_trim_data(void) {
   // Add all formula clauses to the clause hash table
   // Because this might add deletions to the formula, we must do this
   // after we have called `ra_init()` on the `deletions` data structure.
-  ht_init(&clause_id_ht, 4 * formula_size);
+  ht_init_with_size(&clause_id_ht, sizeof(srid_t), formula_size / 2);
+  ht_init(&clause_mults_ht, sizeof(clause_mult_t));
   for (srid_t i = 0; i < formula_size; i++) {
     add_formula_clause_to_ht(i);
   }
