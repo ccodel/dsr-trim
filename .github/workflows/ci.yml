@@ -41,3 +41,7 @@ jobs:
         run: echo "${GITHUB_WORKSPACE}/cadical/build" >> $GITHUB_PATH
       - name: Check CaDiCaL
         run: cadical --version
+
+      - name: Test
+        working-directory: main
+        run: ./test/test.sh
