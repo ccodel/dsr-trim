@@ -8,7 +8,7 @@ benchmark_hash="${1}"
 pushd $(mktemp -d)
 
 # Download.
-wget "https://benchmark-database.de/file/${benchmark_hash}" -O formula.cnf.xz
+wget --quiet -O formula.cnf.xz "https://benchmark-database.de/file/${benchmark_hash}"
 
 # Decompress.
 rm -f formula.cnf
