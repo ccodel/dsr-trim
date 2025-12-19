@@ -5,7 +5,8 @@ set -euo pipefail
 benchmark_hash="${1}"
 
 # Work in a temporary directory.
-pushd $(mktemp -d)
+work_dir=$(mktemp -d)
+pushd "${work_dir}"
 
 # Download.
 wget --quiet -O formula.cnf.xz "https://benchmark-database.de/file/${benchmark_hash}"
@@ -27,3 +28,7 @@ dsr-trim formula.{cnf,drat,lsr}
 
 # Check.
 lsr-check formula.{cnf,lsr}
+
+# Clean.
+popd
+rm -rf "${work_dir}"
