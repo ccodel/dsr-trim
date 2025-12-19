@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - ci-tests
   pull_request:
 
 jobs:
@@ -16,8 +17,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          path: main
           persist-credentials: false
       - name: Build
+        working-directory: main
         run: make
+      - name: Configure
+        run: echo "${GITHUB_WORKSPACE}/main/bin" >> $GITHUB_PATH
       - name: Check
-        run: ./dsr-trim --help
+        run: dsr-trim --help
+
+      - name: Checkout CaDiCaL
+        uses: actions/checkout@v5
+        with:
+          repository: arminbiere/cadical
+          ref: rel-2.1.3
+          path: cadical
+          persist-credentials: false
+      - name: Build CaDiCaL
+        working-directory: cadical
+        run: ./configure && make
+      - name: Configure CaDiCaL
+        run: echo "${GITHUB_WORKSPACE}/cadical/build" >> $GITHUB_PATH
+      - name: Check CaDiCaL
+        run: cadical --version
