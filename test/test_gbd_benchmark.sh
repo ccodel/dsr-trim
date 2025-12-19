@@ -16,7 +16,7 @@ xz --decompress formula.cnf.xz
 
 # Solve.
 status=0
-cadical --unsat --binary=false formula.{cnf,drat} || status=$?
+cadical --quiet --unsat --binary=false formula.{cnf,drat} || status=$?
 if [ "${status}" -ne "20" ]; then
     echo "solver did not return unsat"
     exit 1
