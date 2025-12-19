@@ -36,7 +36,7 @@ jobs:
           persist-credentials: false
       - name: Build CaDiCaL
         working-directory: cadical
-        run: ./configure && make
+        run: ./configure && make -j
       - name: Configure CaDiCaL
         run: echo "${GITHUB_WORKSPACE}/cadical/build" >> $GITHUB_PATH
       - name: Check CaDiCaL
