@@ -12,7 +12,6 @@ pushd "${work_dir}"
 wget --quiet -O formula.cnf.xz "https://benchmark-database.de/file/${benchmark_hash}"
 
 # Decompress.
-rm -f formula.cnf
 xz --decompress formula.cnf.xz
 
 # Solve.
