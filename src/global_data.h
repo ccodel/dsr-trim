@@ -14,6 +14,7 @@
 #include <limits.h>
 
 #include "global_types.h"
+#include "lit_occ.h"
 #include "range_array.h"
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -26,6 +27,9 @@
 #define FROM_DIMACS_LIT(x)      (((x) < 0) ? (((-(x)) << 1) - 1) : (((x) << 1) - 2))
 #define TO_DIMACS_LIT(x)        (((x) & 1) ? (((x) / -2) - 1) : (((x) / 2) + 1))
 #define TO_DIMACS_LINE(x)       ((x) + 1)
+
+#define MAX_LIT                 ((max_var * 2) + 1)
+#define MAX_LIT_EXCLUSIVE       ((max_var + 1) * 2)
 
 #ifdef LONGTYPE
 #define CLAUSE_ABS(x)           (llabs(x))
@@ -131,15 +135,6 @@ typedef enum parsing_strategy {
 // The global parsing strategy. By default, `PS_EAGER` is used.
 extern parsing_strategy_t p_strategy;
 
-/**
- * @brief Each literal tracks the first and last clause it appears in.
- * 
- */
-typedef struct min_max_clause_to_check {
-  srid_t min_clause;
-  srid_t max_clause;
-} min_max_clause_t;
-
 /* 
  * Note that the partial assignments and substitutions need to use longs for the
  * timpstamp values, since the number of lines in a proof can exceed 2^32. But
@@ -174,7 +169,7 @@ extern srid_t num_cnf_clauses;
 
 // The original number of variables in the parsed CNF formula.
 // Its value is set via a call to `parse_cnf()`.
-extern uint num_cnf_vars;
+extern int num_cnf_vars;
 
 /**
  * @brief The partial assignment used for unit propagation and RAT hints.
@@ -207,27 +202,11 @@ extern ullong subst_generation;
  */
 extern range_array_t witnesses;
 
-/** @brief Minimum clause to check during RAT clause checking.
- * 
- *  If a witness doesn't reduce a clause, it can be ignored during checking,
- *  since assuming its negation would provably lead to contradiction. Thus,
- *  when the SR witness is parsed, the literals set/mapped in the witness
- *  determine the min/max range of clause IDs to check. Anything outside this
- *  range is not reduced by the witness, and so can be ignored.
- * 
- *  Note that the min and max clauses are adjusted based on the literals
- *  "touched" by the witness, not their outputs under the substitution. 
- *  So for example, if (2 -> 3), then the min/max values for literal 2 are 
- *  included in the calculation, but not for literal 3.
- */
-extern srid_t min_clause_to_check;
-extern srid_t max_clause_to_check;
-
 // Cached size of the new SR clause. Equal to get_clause_size(formula_size).
 extern uint new_clause_size; 
 
 // Maximum 0-indexed variable ID parsed so far. Used for resizing arrays.
-extern uint max_var;
+extern int max_var;
 
 // Flag for whether the empty clause has been derived.
 // Can be set during CNF parsing if the empty clause is added.
@@ -235,8 +214,8 @@ extern int derived_empty_clause;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-int intcmp (const void *a, const void *b);
-int absintcmp (const void *a, const void *b);
+int intcmp(const void *a, const void *b);
+int absintcmp(const void *a, const void *b);
 
 // Allocates and initializes global data structures, given the size of a CNF formula.
 void init_global_data(void);
@@ -253,10 +232,8 @@ int map_lit_under_subst(int lit);
 
 void insert_lit(int lit);
 
-void perform_clause_first_last_update(srid_t clause_index);
 void commit_clause(void);
-void commit_clause_with_first_last_update(void);
-void uncommit_clause_with_first_last_update(void);
+void commit_and_delete_clause(void);
 int is_clause_deleted(srid_t clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
@@ -278,15 +255,13 @@ int *get_witness_start(srid_t line_num);
 int *get_witness_end(srid_t line_num);
 int  get_witness_size(srid_t line_num);
 
-void compute_min_max_clause_to_check(srid_t line_num);
 void assume_subst(srid_t line_num);
+void get_fl_clause_for_subst(srid_t line_num, lit_occ_t *lc, fl_clause_t *fl);
 
 int assume_negated_clause(srid_t clause_index, ullong gen);
 int assume_negated_clause_under_subst(srid_t clause_index, ullong gen);
 int reduce_clause_under_subst(srid_t clause_index);
-int reduce_clause_under_RAT_witness(srid_t clause_index, int pivot);
-
-void update_first_last_clause(int lit);
+int reduce_clause_under_pivot(srid_t clause_index, int pivot);
 
 // Prints the clause to stdout, for debugging purposes.
 void dbg_print_clause(srid_t clause_index);

@@ -6,8 +6,8 @@ BINDIR = bin
 
 # Supporting files
 # These get compiled to `.o` files without linking
-SUPPFILES = cli cnf_parser global_data global_parsing hash_table logger \
-						range_array sr_parser timer xio xmalloc \
+SUPPFILES = cli cnf_parser global_data global_parsing hash_table lit_occ \
+ 						logger range_array sr_parser timer xio xmalloc \
 						lsr-check/lsr_data lsr-check/lsr_err
 SUPPFILESWITHDIR = $(addprefix $(SRCDIR)/,$(SUPPFILES))
 OFILES = $(addsuffix .o,$(SUPPFILESWITHDIR))

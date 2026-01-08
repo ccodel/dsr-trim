@@ -49,6 +49,7 @@
 #include "xmalloc.h"
 #include "global_data.h"
 #include "global_parsing.h"
+#include "lit_occ.h"
 #include "logger.h"
 #include "range_array.h"
 #include "hash_table.h"
@@ -242,6 +243,7 @@ static FILE *lsr_file = NULL;
 
 // The total number of addition lines parsed. Incremented by `parse_dsr_line()`.
 static srid_t num_parsed_add_lines = 0;
+static srid_t num_parsed_del_lines = 0;
 static srid_t num_parsed_lines = 0;
 static uint parsed_empty_clause = 0;
 
@@ -330,7 +332,12 @@ static uint num_reduced_clauses = 0;
 
 // Indexed by the 0-indexed `current_line`.
 // Used only during backwards checking, and allocated by `add_initial_wps()`.
-static min_max_clause_t *lines_min_max_clauses_to_check = NULL;
+static fl_clause_t *lines_fl_clauses_to_check = NULL;
+
+// Allocated by `add_initial_wps()`.
+// During backwards checking, destroyed once the empty clause is derived.
+// During forwards checking, the structure is updated as the proof gets checked.
+static lit_occ_t lit_occ;
 
 static sr_timer_t timer;
 
@@ -858,7 +865,7 @@ static void unassign_global_units_due_to_deletion(int from_index) {
 ////////////////////////////////////////////////////////////////////////////////
 
 static void print_wps(void) {
-  for (int i = 0; i <= (max_var * 2) + 1; i++) {
+  for (int i = 0; i <= MAX_LIT; i++) {
     srid_t *wp_list = wps[i];
     uint wp_size = wp_sizes[i];
     if (wp_size == 0) continue;
@@ -1214,6 +1221,7 @@ static void dbg_print_hints(srid_t line_num) {
  * @param printed_line_id The 1-indexed DIMACS ID of the proof line.
  */
 static void print_lsr_line(srid_t line_num, srid_t printed_line_id) {
+  if (lsr_file == NULL) return;
   write_lsr_addition_line_start(lsr_file, printed_line_id);
   print_clause(CLAUSE_ID_FROM_LINE_NUM(line_num));
 
@@ -1436,8 +1444,11 @@ static int dec_clause_mult(srid_t clause_index, uint hash) {
  * 
  * The caller must ensure that the newly parsed clause has at least two
  * literals (we don't delete the empty clause or unit clauses).
+ * 
+ * @return 1 if the clause was deleted, 0 if an extra copy was deleted
+ *         or if the clause was not deleted due to being unit.
  */
-static void delete_parsed_clause(void) {
+static int delete_parsed_clause(void) {
   uint hash;
   ht_bucket_t *b;
   ht_entry_t *e;
@@ -1451,7 +1462,9 @@ static void delete_parsed_clause(void) {
   }
 
   // If we still have copies of the clause, leave the hash table alone
-  if (dec_clause_mult(clause_match, hash) > 0) return;
+  if (dec_clause_mult(clause_match, hash) > 0) {
+    return 0;
+  }
 
   // Otherwise, we are deleting the last copy of this clause 
 
@@ -1464,7 +1477,7 @@ static void delete_parsed_clause(void) {
       && get_unit_clause_for_lit(clause_match_ptr[0]) == clause_match
       && ((ignore_unit_deletions && clause_match_size == 1)
        || (ignore_implied_unit_deletions && clause_match_size > 1))) {
-    return;
+    return 0;
   }
 
   ht_remove_entry_in_bucket(&clause_id_ht, b, e);
@@ -1487,6 +1500,7 @@ static void delete_parsed_clause(void) {
       }
 
       // Now actually delete the clause from the formula
+      lit_occ_delete_clause(&lit_occ, clause_match);
       delete_clause(clause_match);
 
       // If the clause was a(n implied) unit, we must re-run unit propagation
@@ -1500,6 +1514,8 @@ static void delete_parsed_clause(void) {
       break;
     default: log_fatal_err("Invalid checking mode: %d", ch_mode);
   }
+
+  return 1;
 }
 
 static inline void add_hashed_clause_to_ht(srid_t clause_index, uint hash) {
@@ -1594,10 +1610,13 @@ static int parse_dsr_line(void) {
   int line_type = read_dsr_line_start(dsr_file);
   switch (line_type) {
     case DELETION_LINE:;
-      int is_tautology = parse_clause(dsr_file);
-      delete_parsed_clause();
+      parse_clause(dsr_file);
+      int actually_deleted_the_clause = delete_parsed_clause();
+      if (actually_deleted_the_clause) {
+        num_parsed_del_lines++;
+      }
       
-      // Remove the parsed literals from the formula
+      // Remove the parsed literals from the formula.
       // Note that `parse_clause()` doesn't commit the clause,
       // so `formula_size` remains unchanged.
       lits_db_size -= new_clause_size;
@@ -1673,13 +1692,13 @@ static void parse_entire_dsr_file(void) {
 static void prepare_dsr_trim_data(void) {
   // Allocate an empty watch pointer array for each literal
   // Allocate some additional space, since we'll probably add new literals later
-  wps_alloc_size = (max_var + 1) * 4;
+  wps_alloc_size = MAX_LIT_EXCLUSIVE * 2;
   wps = xcalloc(wps_alloc_size, sizeof(srid_t *));
   wp_alloc_sizes = xcalloc(wps_alloc_size, sizeof(uint)); 
   wp_sizes = xcalloc(wps_alloc_size, sizeof(uint));
 
   // Only allocate initial watch pointer space for literals in the formula 
-  for (int i = 0; i < (max_var + 1) * 2; i++) {
+  for (int i = 0; i <= MAX_LIT; i++) {
     wp_alloc_sizes[i] = INIT_LIT_WP_ARRAY_SIZE;
     wps[i] = xmalloc(INIT_LIT_WP_ARRAY_SIZE * sizeof(srid_t));
   }
@@ -1713,12 +1732,12 @@ static void prepare_dsr_trim_data(void) {
   }
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    ra_init(&hints, num_cnf_clauses * 10, num_cnf_vars, sizeof(srid_t));
-    ra_init(&deletions, num_cnf_vars * 10, num_cnf_vars, sizeof(srid_t));
+    ra_init(&hints,     num_cnf_clauses * 4, num_cnf_vars, sizeof(srid_t));
+    ra_init(&deletions,    num_cnf_vars * 2, num_cnf_vars, sizeof(srid_t));
     ra_init(&bcu_deletions, num_cnf_clauses, num_cnf_vars, sizeof(srid_t));
   } else {
-    ra_init(&hints, num_cnf_vars * 10, 3, sizeof(srid_t));
-    ra_init(&deletions, num_cnf_vars, 2, sizeof(srid_t));
+    ra_init(&hints,     num_cnf_vars * 4, 3, sizeof(srid_t));
+    ra_init(&deletions, num_cnf_vars * 2, 2, sizeof(srid_t));
   }
 
   // Add all formula clauses to the clause hash table
@@ -1736,9 +1755,9 @@ static void prepare_dsr_trim_data(void) {
 }
 
 static void resize_wps(void) {
-  if ((max_var + 1) * 2 >= wps_alloc_size) {
+  if (MAX_LIT >= wps_alloc_size) {
     uint old_size = wps_alloc_size;
-    wps_alloc_size = RESIZE((max_var + 1) * 2);
+    wps_alloc_size = RESIZE(MAX_LIT_EXCLUSIVE);
     wps = xrecalloc(wps,
       old_size * sizeof(srid_t *), wps_alloc_size * sizeof(srid_t *));
     wp_alloc_sizes = xrecalloc(wp_alloc_sizes,
@@ -2145,7 +2164,7 @@ static void print_or_store_lsr_line(ullong gen) {
  * are emitted after each check.
  */
 static void print_stored_lsr_proof(void) {
-  if (ch_mode != BACKWARDS_CHECKING_MODE) return; 
+  if (ch_mode != BACKWARDS_CHECKING_MODE || lsr_file == NULL) return; 
 
   timer_record(&timer, TIMER_LOCAL);
 
@@ -3326,33 +3345,25 @@ static int can_skip_clause(srid_t clause_index) {
  * This function allocates the necessary space. Indexed by line number.
  */
 static void alloc_min_max_clauses_to_check(void) {
-  lines_min_max_clauses_to_check = xmalloc(
-    num_parsed_add_lines * sizeof(min_max_clause_t));
+  lines_fl_clauses_to_check = xmalloc(
+    num_parsed_add_lines * sizeof(fl_clause_t));
+}
+
+static void store_clause_check_range(srid_t line_num) {
+  fl_clause_t *fl = &lines_fl_clauses_to_check[line_num];
+  get_fl_clause_for_subst(line_num, &lit_occ, fl);
 }
 
 /**
- * @brief Stores the current line's min/max clause range to check.
- *        We store it now before we officially update the min/max range
- *        during the forwards part of backwards checking.
+ * @brief Get the min max clause to check object
  * 
- * @param clause_id
+ * @param[out] fl  Stores the min/max (inclusive) clauses to check.
  */
-static void store_clause_check_range(srid_t clause_id) {
-  srid_t line_num = LINE_NUM_FROM_CLAUSE_ID(clause_id);
-  compute_min_max_clause_to_check(line_num);
-  perform_clause_first_last_update(clause_id); 
-
-  min_max_clause_t *mm = &lines_min_max_clauses_to_check[line_num];
-  mm->min_clause = min_clause_to_check;
-  mm->max_clause = max_clause_to_check;
-}
-
-static void set_min_max_clause_to_check(void) {
+static void get_min_max_clause_to_check(fl_clause_t *fl) {
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
-    min_clause_to_check =
-      lines_min_max_clauses_to_check[current_line].min_clause;
-    max_clause_to_check =
-      lines_min_max_clauses_to_check[current_line].max_clause;
+    memcpy(fl, &lines_fl_clauses_to_check[current_line], sizeof(fl_clause_t));
+  } else {
+    get_fl_clause_for_subst(current_line, &lit_occ, fl);
   }
 }
 
@@ -3398,7 +3409,7 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
   exit(1);
 }
 
-static void check_RAT_clause(srid_t clause_index) {
+static void check_reduced_clause(srid_t clause_index) {
   switch (reduce_clause_under_subst(clause_index)) {
     case SATISFIED_OR_MUL:
       increment_num_reduced_clauses(current_line);
@@ -3459,14 +3470,15 @@ static void check_dsr_line(void) {
   }
 
   // Now do RAT checking between min and max clauses to check (inclusive)
-  set_min_max_clause_to_check();
+  fl_clause_t fl;
+  get_min_max_clause_to_check(&fl);
   logv("[line %lld] Not RUP, checking clauses %lld to %lld", 
-    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(min_clause_to_check),
-    TO_DIMACS_CLAUSE(max_clause_to_check));
+    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(fl.first_clause),
+    TO_DIMACS_CLAUSE(fl.last_clause));
 
-  for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
+  for (srid_t i = fl.first_clause; i <= fl.last_clause; i++) {
     if (can_skip_clause(i)) continue;
-    check_RAT_clause(i);
+    check_reduced_clause(i);
   }
 
   /*
@@ -3483,9 +3495,9 @@ static void check_dsr_line(void) {
     However, in the general case, we want to allow witnesses that re-map
     the pivot literal elsewhere. In the case where the witness does NOT
     satisfy C, we treat it like any other RAT clause and subject it
-    to a RAT check. The recorded hint ID is the ID of the candidate itself.
+    to a check. The recorded hint ID is the ID of the candidate itself.
   */
-  check_RAT_clause(cc_index);
+  check_reduced_clause(cc_index);
 
   print_or_store_lsr_line(old_alpha_gen);
 
@@ -3495,8 +3507,8 @@ candidate_valid:
 
   if (ch_mode == FORWARDS_CHECKING_MODE) {
     current_line++;
-    perform_clause_first_last_update(cc_index);
     add_wps_and_perform_up(cc_index, old_alpha_gen);
+    lit_occ_add_clause(&lit_occ, cc_index);
   }
 }
 
@@ -3530,6 +3542,7 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
       remove_wp_for_lit(del_clause[1], del_id);
     }
 
+    lit_occ_delete_clause(&lit_occ, del_id);
     soft_delete_clause(del_id);
   }
 }
@@ -3586,7 +3599,21 @@ static line_type_t prepare_next_line(void) {
   else                        return parse_dsr_line();
 }
 
+static void prepare_lit_occ_for_cnf(void) {
+  // Only add occurrence data for the original CNF clauses.
+  // We will add redundant clauses as we process them below.
+  // Note: Only store lit-to-clause mappings if the user deletes clauses.
+  // This will speed up re-mappings of first/last clauses when processing dels.
+  if (num_parsed_del_lines > 0) {
+    lit_occ_add_formula_until_with_clause_mappings(&lit_occ, num_cnf_clauses);
+  } else {
+    lit_occ_add_formula_until(&lit_occ, num_cnf_clauses);
+  }
+}
+
 static void add_wps_and_up_initial_clauses(void) {
+  prepare_lit_occ_for_cnf();
+
   srid_t c;
   for (c = 0; c < num_cnf_clauses && !derived_empty_clause; c++) {
     if (is_clause_deleted(c)) continue;
@@ -3614,7 +3641,7 @@ static void add_wps_and_up_initial_clauses(void) {
   for (; c < end_of_formula && !derived_empty_clause; c++) {
     // Store the min/max clause range to check, given the current formula state
     // If we end up SR-checking this clause later, we use this range
-    store_clause_check_range(c);
+    store_clause_check_range(current_line);
 
     // Now process any user deletions by removing their watch pointers.
     // This function "soft deletes" the clauses from the formula,
@@ -3623,8 +3650,14 @@ static void add_wps_and_up_initial_clauses(void) {
 
     // Now perform UP on the "newly-added" clause
     add_wps_and_perform_up(c, 0);
+
+    // "Commit" the new clause
+    lit_occ_add_clause(&lit_occ, c);
     current_line++;
   }
+
+  // We have stored the first/last clause ranges, so free up the memory
+  lit_occ_destroy(&lit_occ);
 
   if (!derived_empty_clause) {
     log_err("Could not derive the empty clause during backwards checking.");
@@ -3820,7 +3853,14 @@ int main(int argc, char **argv) {
     lsr_file = stdout;
   } else {
     logc("LSR file path: %s", cli.lsr_file_path);
-    lsr_file = xfopen(cli.lsr_file_path, "w");
+
+    // Don't open a file if we are writing to `/dev/null`
+    if (strcmp(cli.lsr_file_path, "/dev/null") == 0
+        || strcmp(cli.lsr_file_path, "/dev/null/") == 0) {
+      lsr_file = NULL;
+    } else {
+      lsr_file = xfopen(cli.lsr_file_path, "w");
+    }
   }
 
   if (p_strategy == PS_EAGER) {

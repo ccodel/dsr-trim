@@ -25,10 +25,11 @@ srid_t *line_ids = NULL;
 uint line_ids_alloc_size = 0;
 
 range_array_t deletions;
-uint *lits_occurrences = NULL;
 
 FILE *lsr_file = NULL;
 sr_timer_t timer;
+
+lit_occ_t lit_occ;
 
 static srid_t num_parsed_lines = 0;
 
@@ -82,50 +83,6 @@ static void prepare_hints_for_next_addition_line(void) {
 }
 
 /**
- * @brief Adds one to the occurrence counter for each literal in the clause.
- * 
- * If the witness is ever omitted/just the pivot (i.e., a DRAT witness),
- * then only the hint groups included in the line need to be checked.
- * But to ensure that we didn't miss any RAT hint groups, we count the
- * number of times we encounter each relevant literal. If the counts
- * agree at the end, then the line was good.
- * 
- * When a clause gets added to the formula, its literals need to have their
- * occurrence counts incremented. This function does that.
- * 
- * @param clause_index The clause ID.
- */
-static void add_occurrences_for_clause(srid_t clause_index) {
-  int *start = get_clause_start_unsafe(clause_index);
-  int *end = get_clause_end(clause_index);
-  while (start < end) {
-    int lit = *start;
-    lits_occurrences[lit]++;
-    start++;
-  }
-}
-
-/**
- * @brief Subtracts one from the occurrences for each literal in the clause.
- * 
- * When a clause is deleted or otherwise removed from the formula, we need
- * to decrease the occurrence count for each literal in the clause.
- * 
- * Call this function before actually deleting the clause.
- * 
- * @param clause_index The clause ID.
- */
-static void remove_occurrences_for_clause(srid_t clause_index) {
-  int *start = get_clause_start_unsafe(clause_index);
-  int *end = get_clause_end(clause_index);
-  while (start < end) {
-    int lit = *start;
-    lits_occurrences[lit]--;
-    start++;
-  }
-}
-
-/**
  * @brief Marks the given candidate clause as being successfully redundant.
  *        Also increments the `current_line`.
  * 
@@ -134,8 +91,7 @@ static void remove_occurrences_for_clause(srid_t clause_index) {
  * and the occurrences for the literals in the clause.
  */
 void mark_clause_as_checked(srid_t clause_id) {
-  perform_clause_first_last_update(clause_id);
-  add_occurrences_for_clause(clause_id);
+  lit_occ_add_clause(&lit_occ, clause_id);
   current_line++;
 }
 
@@ -155,7 +111,7 @@ static void prepare_deletions_for_next_deletion_line(void) {
 }
 
 static inline void actually_delete_clause(srid_t clause_id) {
-  remove_occurrences_for_clause(clause_id);
+  lit_occ_delete_clause(&lit_occ, clause_id);
   delete_clause(clause_id);
 }
 
@@ -228,22 +184,19 @@ void prepare_lsr_check_data(void) {
   line_ids_alloc_size = num_cnf_clauses;
   line_ids = xcalloc(line_ids_alloc_size, sizeof(srid_t));
 
-  // Count the number of times each literal appears in the original CNF
-  lits_occurrences = xcalloc((max_var + 1) * 2, sizeof(uint));
-  for (srid_t c = 0; c < formula_size; c++) {
-    add_occurrences_for_clause(c);
-  }
+  lit_occ_init(&lit_occ);
+  lit_occ_add_formula_with_clause_mappings(&lit_occ);
 
   if (p_strategy == PS_EAGER) {
-    ra_init(&hints, num_cnf_clauses * 10, num_cnf_vars, sizeof(srid_t));
-    ra_init(&deletions, num_cnf_clauses * 10, num_cnf_vars, sizeof(srid_t));
+    ra_init(&hints, num_cnf_clauses * 4, num_cnf_vars, sizeof(srid_t));
+    ra_init(&deletions, num_cnf_clauses * 2, num_cnf_vars, sizeof(srid_t));
 
     line_num_RAT_hints_alloc_size = num_cnf_clauses;
     line_num_RAT_hints = xcalloc(line_num_RAT_hints_alloc_size, sizeof(uint)); 
 
     parse_entire_lsr_file();
   } else {
-    ra_init(&hints, num_cnf_vars * 10, 2, sizeof(srid_t));
+    ra_init(&hints, num_cnf_vars * 4, 2, sizeof(srid_t));
     max_line_id = num_cnf_clauses;
     // No deletions, since we process them as we go
   }

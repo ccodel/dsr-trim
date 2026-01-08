@@ -71,14 +71,14 @@ void parse_cnf(FILE *f) {
         FATAL_ERR_IF(res < 0, "Read error on problem header line.");
         break;
       default:
-        log_fatal_err("Char wasn't a comment or a problem line.");
+        log_fatal_err("Char %c wasn't a comment or a problem line.", c);
     }
   }
 
   FATAL_ERR_IF(num_cnf_vars <= 0,
-    "The problem header variable number (%d) was not positive.", num_cnf_vars);
+    "The number of vars in the header (%d) was not positive.", num_cnf_vars);
   FATAL_ERR_IF(num_cnf_clauses <= 0,
-    "The problem header clause number (%d) was not positive.", num_cnf_clauses);
+    "The number of clauses in the header (%d) was not positive.", num_cnf_clauses);
 
   // Formula parsing requires that newlines are left unconsumed until
   // the next call to `parse_formula_lit()`. This allows the parser 
@@ -88,7 +88,7 @@ void parse_cnf(FILE *f) {
 
   init_global_data();
 
-  // Now parse in the rest of the CNF file
+  // Now parse the rest of the CNF file.
   // Any intervening comment lines are ignored. (See `read_formula_lit()`.)
   while (formula_size < num_cnf_clauses) {
     int is_tautology = parse_clause(f);
@@ -97,15 +97,14 @@ void parse_cnf(FILE *f) {
         TO_DIMACS_CLAUSE(formula_size));
     } else if (is_tautology) {
       logc("Tautology in clause %lld detected, deleting...", formula_size);
-      commit_clause();
-      delete_clause(formula_size - 1);
+      commit_and_delete_clause();
     } else {
-      commit_clause_with_first_last_update();
+      commit_clause();
     }
   }
 
   fclose(f);
 
   logc("The CNF formula has %lld clauses and %d variables.",
-    formula_size, max_var);
+    formula_size, num_cnf_vars);
 }

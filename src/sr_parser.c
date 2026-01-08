@@ -82,11 +82,11 @@ void parse_sr_clause_and_witness(FILE *f, srid_t line_num) {
     ra_insert_int_elt(&witnesses, WITNESS_TERM);
   } else if (num_times_found_pivot > 0) {
     /*
-      Since `num_witness_atoms_parsed == 0`, we know that the clause
-      cannot be empty, but it will either be a UP clause or a DRAT clause,
-      since we didn't parse any additional witness atoms.
-      We need to store the pivot to that during backwrads checking we don't
-      need to track the pivot. (Clean up this note later)
+      Since `num_witness_atoms_parsed == 0`, meaning the witness is empty,
+      we know that the clause cannot be empty and must be UP or DRAT.
+      In the case of DRAT, we need to store the pivot, since the literals
+      might get re-ordered by the watch pointers during backwards checking
+      in dsr-trim.
     */
     ra_insert_int_elt(&witnesses, pivot);
   }

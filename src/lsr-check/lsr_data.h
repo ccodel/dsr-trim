@@ -11,6 +11,7 @@
 
 #include "../global_types.h"
 #include "../global_data.h"
+#include "../lit_occ.h"
 #include "../range_array.h"
 #include "../timer.h"
 #include <stdio.h>
@@ -58,16 +59,15 @@ extern uint line_ids_alloc_size;
 */
 extern range_array_t deletions;
 
-// Indexed by literal. Counts the number of clauses each literal appears in.
-// These can be used to check just the claimed RAT clauses.
-extern uint *lits_occurrences; 
-
 // The active LSR proof file. Assigned in `main()`. Can be `stdin`.
 extern FILE *lsr_file;
 
 // Timer used to time various parts of the runtime.
 // Initialized in the `main()` function and not `prepare_lsr_check_data()`.
 extern sr_timer_t timer;
+
+// Counts the number of times and the clauses that literals appear in.
+extern lit_occ_t lit_occ;
 
 ////////////////////////////////////////////////////////////////////////////////
 

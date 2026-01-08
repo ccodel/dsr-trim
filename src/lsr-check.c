@@ -272,15 +272,15 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
     get_line_id_for_line_num(current_line),
     LINE_ID_FROM_LINE_NUM(current_line));
 
-  const uint goal_occs = lits_occurrences[NEGATE_LIT(pivot)];
-  uint occs = 0;
+  srid_t goal_occs = get_lit_occurrences(&lit_occ, NEGATE_LIT(pivot));
+  srid_t occs = 0;
   srid_t c, max_clause = -1; // Assume increasing hint groups
   while (hints_iter < hints_end) {
     c = FROM_RAT_HINT(*hints_iter);
     FATAL_ERR_IF(c <= max_clause, "Not increasing IDs");
     max_clause = c;
 
-    switch (reduce_clause_under_RAT_witness(c, pivot)) {
+    switch (reduce_clause_under_pivot(c, pivot)) {
       case NOT_REDUCED:
       case SATISFIED_OR_MUL:
         log_fatal_err("[line %lld | id %lld] "
@@ -315,14 +315,14 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
           TO_DIMACS_CLAUSE(current_line),
           LINE_ID_FROM_LINE_NUM(current_line),
           TO_DIMACS_CLAUSE(c),
-          reduce_clause_under_RAT_witness(c, pivot)); 
+          reduce_clause_under_pivot(c, pivot)); 
     }
   }
 
   return (occs == goal_occs);
 }
 
-static void check_RAT_clause(srid_t i, srid_t **iter_ptr,
+static void check_SR_clause(srid_t i, srid_t **iter_ptr,
                              srid_t *hints_start, srid_t *hints_end) {
   srid_t *hints_iter = *iter_ptr;
   srid_t *up_iter;
@@ -436,36 +436,38 @@ static void check_line(void) {
       get_line_id_for_line_num(current_line),
       LINE_ID_FROM_LINE_NUM(current_line));
 
-  assume_subst(current_line);
-
   // If the witness is a single literal, then we may check only the RAT clauses
   if (get_witness_size(current_line) <= 1) {
     if (check_only_hints(hints_iter, hints_end, pivot)) {
       goto finish_line;
     }
 
-    // If the check fails, we do it the old-fashioned way
+    // If the check fails, we do it the old-fashioned way.
     // This *should* result in an error on some RAT clause without a hint group
   }
+  
+  fl_clause_t check_range;
+  assume_subst(current_line);
+  get_fl_clause_for_subst(current_line, &lit_occ, &check_range);
 
-  log_msg(VL_VERBOSE, "[line %lld | id %lld] Checking clauses %lld to %lld", 
+  logv("[line %lld | id %lld] Checking clauses %lld to %lld", 
       get_line_id_for_line_num(current_line),
       LINE_ID_FROM_LINE_NUM(current_line),
-      TO_DIMACS_CLAUSE(min_clause_to_check),
-      TO_DIMACS_CLAUSE(max_clause_to_check));
+      TO_DIMACS_CLAUSE(check_range.first_clause),
+      TO_DIMACS_CLAUSE(check_range.last_clause));
 
   // Now for each (not-deleted) clause, check that it is either
   //   - Satisfied or not reduced by the witness
-  //   - A RAT clause, whose hints derive contradiction
+  //   - A reduced clause, whose hints derive contradiction
   srid_t *hints_start = hints_iter;
   srid_t *up_iter;
-  for (srid_t i = min_clause_to_check; i <= max_clause_to_check; i++) {
+  for (srid_t i = check_range.first_clause; i <= check_range.last_clause; i++) {
     if (is_clause_deleted(i)) continue;
-    check_RAT_clause(i, &hints_iter, hints_start, hints_end);
+    check_SR_clause(i, &hints_iter, hints_start, hints_end);
   }
 
   // We also check the candidate clause, since the witness might not satisfy it
-  check_RAT_clause(candidate_clause_id, &hints_iter, hints_start, hints_end);
+  check_SR_clause(candidate_clause_id, &hints_iter, hints_start, hints_end);
 
 finish_line:
   alpha_generation = cc_gen; // Clear all unit propagations for this line
