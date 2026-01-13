@@ -137,6 +137,7 @@ static void store_clause_mapping(lit_occ_t *l, srid_t clause_index) {
     srid_t alloc_size = l->lits_clauses[lit].alloc_size;
     if (current_size >= alloc_size) {
       alloc_size = RESIZE(alloc_size);
+      alloc_size = MAX(alloc_size, MIN_LITS_CLAUSES_INNER_ARRAY_SIZE);
       l->lits_clauses[lit].clauses = xrealloc(l->lits_clauses[lit].clauses,
           alloc_size * sizeof(srid_t));
       l->lits_clauses[lit].alloc_size = alloc_size;
