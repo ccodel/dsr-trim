@@ -25,10 +25,10 @@ typedef struct first_last_clause_for_lit {
 
 typedef struct lit_clause_mapping {
   srid_t *clauses;
-  srid_t start_idx;   // Inclusive index into `clauses`. Often 0
-  srid_t end_idx;     // Exclusive index into `clauses`. The "size".
+  srid_t start_idx;   // Inclusive index into the active `clauses`. Often 0
+  srid_t end_idx;     // Exclusive index into the active `clauses`.
+  srid_t size;        // The total number of clauses in the mapping.
   srid_t alloc_size;  // The allocated size of `clauses`.
-  // NOTE: when `srid_t` is an int, this wastes space due to struct padding.
 } lc_map_t;
 
 /**
@@ -70,7 +70,12 @@ srid_t get_lit_occurrences(lit_occ_t *l, int lit);
 fl_clause_t *get_first_last_clause_for_lit(lit_occ_t *l, int lit);
 void get_first_last_clause_for_clause(lit_occ_t *l, srid_t clause, fl_clause_t *fl);
 
+srid_t *get_first_clause_containing_lit(lit_occ_t *l, int lit);
+srid_t *get_last_clause_containing_lit(lit_occ_t *l, int lit);
+
 void dbg_print_lit_occ_for_lit(lit_occ_t *l, int lit);
 void dbg_print_lit_occ(lit_occ_t *l);
+
+void lit_occ_validate(lit_occ_t *l);
 
 #endif /* _LIT_OCC_H_ */

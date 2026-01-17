@@ -598,7 +598,6 @@ void assume_subst(srid_t line_num) {
   for (; witness_iter < witness_end; witness_iter++) {
     int lit = *witness_iter;
     if (lit == WITNESS_TERM) break;
-    int neg_lit = NEGATE_LIT(lit);
     int var = VAR_FROM_LIT(lit);
 
     // Error if we have already set a variable in the substitution.

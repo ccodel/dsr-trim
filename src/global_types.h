@@ -13,11 +13,15 @@
 #include <stdio.h>
 
 #ifndef MIN
-#define MIN(x, y)  (((x) < (y)) ? (x) : (y))
+#define MIN(x, y)             (((x) < (y)) ? (x) : (y))
+#define SET_MIN(x, y, z)      ((x) = MIN((y), (z)))
+#define SET_MIN_LEFT(x, y)    SET_MIN(x, x, y)
 #endif
 
 #ifndef MAX
-#define MAX(x, y)  (((x) > (y)) ? (x) : (y))
+#define MAX(x, y)             (((x) > (y)) ? (x) : (y))
+#define SET_MAX(x, y, z)      ((x) = MAX((y), (z)))
+#define SET_MAX_LEFT(x, y)    SET_MAX(x, x, y)
 #endif
 
 #ifndef MSB

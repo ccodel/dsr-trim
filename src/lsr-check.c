@@ -274,9 +274,9 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
 
   srid_t goal_occs = get_lit_occurrences(&lit_occ, NEGATE_LIT(pivot));
   srid_t occs = 0;
-  srid_t c, max_clause = -1; // Assume increasing hint groups
+  srid_t max_clause = -1; // Assume increasing hint groups
   while (hints_iter < hints_end) {
-    c = FROM_RAT_HINT(*hints_iter);
+    srid_t c = FROM_RAT_HINT(*hints_iter);
     FATAL_ERR_IF(c <= max_clause, "Not increasing IDs");
     max_clause = c;
 
@@ -312,7 +312,7 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
       default: 
         log_fatal_err("[line %lld | id %lld] "
           "Clause %lld corrupted reduction value %d.",
-          TO_DIMACS_CLAUSE(current_line),
+          get_line_id_for_line_num(current_line),
           LINE_ID_FROM_LINE_NUM(current_line),
           TO_DIMACS_CLAUSE(c),
           reduce_clause_under_pivot(c, pivot)); 
@@ -366,7 +366,7 @@ static void check_SR_clause(srid_t i, srid_t **iter_ptr,
        * when the clause is immediately satisfied by alpha (when extended
        * by the UP after assuming the negation of the candidate clause).
        * Notably, this is different than the witness satisfying the clause.
-       * If alpha satisfies the RAT clause, then we skip its UP hints, if any
+       * If alpha satisfies the RAT clause, then we skip its UP hints, if any.
        */
       int neg_res = assume_negated_clause_under_subst(i, alpha_generation);
       if (neg_res == SATISFIED_OR_MUL) {

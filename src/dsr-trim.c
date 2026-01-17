@@ -45,18 +45,19 @@
 #include <string.h>
 #include <getopt.h>
 
-#include "xio.h"
-#include "xmalloc.h"
+#include "bitmask.h"
+#include "cli.h"
+#include "cnf_parser.h"
 #include "global_data.h"
 #include "global_parsing.h"
+#include "hash_table.h"
 #include "lit_occ.h"
 #include "logger.h"
 #include "range_array.h"
-#include "hash_table.h"
-#include "cli.h"
-#include "cnf_parser.h"
 #include "sr_parser.h"
 #include "timer.h"
+#include "xio.h"
+#include "xmalloc.h"
 
 /*
 TODOs:
@@ -338,8 +339,12 @@ static fl_clause_t *lines_fl_clauses_to_check = NULL;
 // During backwards checking, destroyed once the empty clause is derived.
 // During forwards checking, the structure is updated as the proof gets checked.
 static lit_occ_t lit_occ;
+static bmask_t bmask;
 
 static sr_timer_t timer;
+
+static srid_t num_drat_lines = 0;
+static srid_t num_sr_lines = 0;
 
 // Forward declare debug printing functions.
 static void dbg_print_hints(srid_t line_num);
@@ -1719,6 +1724,8 @@ static void prepare_dsr_trim_data(void) {
   RAT_marked_vars_alloc_size = max_var + 1;
   RAT_marked_vars = xmalloc(RAT_marked_vars_alloc_size * sizeof(int));
 
+  bmask_init(&bmask, RESIZE(num_cnf_clauses));
+
   // If we are backwards checking, allocate additional structures
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
     // TODO: set to formula_size when resizing?
@@ -2676,8 +2683,7 @@ static srid_t perform_up_for_backwards_checking(ullong gen) {
   // I guess the thought is that during backwards checking, we've already
   // done UP on the global state, so there is nothing more to find here
   // (Especially if we uncommit true units as we move backwards through form)
-  memset(unit_literals_wp_up_indexes + i,
-    0, (units_size - i) * sizeof(uint));
+  memset(unit_literals_wp_up_indexes + i, 0, (units_size - i) * sizeof(uint));
 
 restart_up:
   for (; i < units_size; i++) {
@@ -2687,7 +2693,7 @@ restart_up:
 
     uint wp_size = wp_sizes[lit]; // Store in a local variable for efficiency
     uint j = unit_literals_wp_up_indexes[i]; // Store in a local var for eff.
-    if (wp_size == 0 || j == wp_size) continue;
+    if (j == wp_size) continue;
     uint ignored_j = j;
 
     for (; j < wp_size; j++) {
@@ -3318,6 +3324,8 @@ static void uncommit_clause_and_set_as_candidate(srid_t clause_id) {
   if (is_var_set_due_to_up(var) && get_unit_clause_for_var(var) == clause_id) {
     unassign_global_units_due_to_deletion(get_unit_index_for_var(var));
   }
+
+  lit_occ_delete_clause(&lit_occ, clause_id);
 }
 
 static int can_skip_clause(srid_t clause_index) {
@@ -3350,8 +3358,9 @@ static void alloc_min_max_clauses_to_check(void) {
 }
 
 static void store_clause_check_range(srid_t line_num) {
-  fl_clause_t *fl = &lines_fl_clauses_to_check[line_num];
-  get_fl_clause_for_subst(line_num, &lit_occ, fl);
+  return;
+  // fl_clause_t *fl = &lines_fl_clauses_to_check[line_num];
+  // get_fl_clause_for_subst(line_num, &lit_occ, fl);
 }
 
 /**
@@ -3443,6 +3452,23 @@ static void check_reduced_clause(srid_t clause_index) {
   }
 }
 
+static void check_reduced_clause_wrapper(size_t index) {
+  usrid_t unsigned_clause = (usrid_t) index;
+  srid_t clause = (srid_t) unsigned_clause;
+  check_reduced_clause(clause);
+}
+
+static void collect_reduced_clauses(int lit) {
+  srid_t *cl_iter = get_first_clause_containing_lit(&lit_occ, lit);
+  if (cl_iter == NULL) return;
+  srid_t *cl_end = get_last_clause_containing_lit(&lit_occ, lit);
+  for (; cl_iter <= cl_end; cl_iter++) {
+    srid_t clause = *cl_iter;
+    if (can_skip_clause(clause) || bmask_is_bit_set(&bmask, clause)) continue;
+    bmask_set_bit(&bmask, clause);
+  }
+}
+
 static void check_dsr_line(void) {
   // We save the generation at the start of line checking so we can determine
   // which clauses are marked in the `dependency_markings` array.
@@ -3469,17 +3495,40 @@ static void check_dsr_line(void) {
     find_new_pivot_for_witness(cc_index);
   }
 
-  // Now do RAT checking between min and max clauses to check (inclusive)
-  fl_clause_t fl;
-  get_min_max_clause_to_check(&fl);
-  logv("[line %lld] Not RUP, checking clauses %lld to %lld", 
-    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(fl.first_clause),
-    TO_DIMACS_CLAUSE(fl.last_clause));
-
-  for (srid_t i = fl.first_clause; i <= fl.last_clause; i++) {
-    if (can_skip_clause(i)) continue;
-    check_reduced_clause(i);
+  if (get_witness_size(current_line) < 2) {
+    num_drat_lines++;
+  } else {
+    num_sr_lines++;
   }
+
+  int *witness_iter = get_witness_start(current_line);
+  int *witness_end = get_witness_end(current_line);
+  int pivot = witness_iter[0];
+  witness_iter++; // Skip the pivot literal
+
+  bmask_clear(&bmask);
+  collect_reduced_clauses(NEGATE_LIT(pivot));
+
+  int seen_pivot_divider = 0;
+  for (; witness_iter < witness_end; witness_iter++) {
+    int lit = *witness_iter;
+    if (lit == WITNESS_TERM) break;
+    int neg_lit = NEGATE_LIT(lit);
+
+    if (!seen_pivot_divider) {
+      if (lit == pivot) {
+        seen_pivot_divider = 1;
+      } else {
+        collect_reduced_clauses(neg_lit);
+      }
+    } else {
+      witness_iter++;
+      collect_reduced_clauses(lit);
+      collect_reduced_clauses(neg_lit);
+    }
+  }
+
+  bmask_map_over_set_bits(&bmask, check_reduced_clause_wrapper);
 
   /*
     Now check that the candidate, mapped under the witness,
@@ -3558,6 +3607,7 @@ static void restore_wps_for_user_deleted_clauses(srid_t clause_id) {
     // Only undelete clauses that were soft deleted
     if (is_clause_deleted(del_id)) {
       soft_undelete_clause(del_id);
+      lit_occ_add_clause(&lit_occ, del_id);
       int *del_clause = get_clause_start_unsafe(del_id);
       uint clause_size = get_clause_size(del_id);
       if (clause_size > 1) {
@@ -3600,15 +3650,7 @@ static line_type_t prepare_next_line(void) {
 }
 
 static void prepare_lit_occ_for_cnf(void) {
-  // Only add occurrence data for the original CNF clauses.
-  // We will add redundant clauses as we process them below.
-  // Note: Only store lit-to-clause mappings if the user deletes clauses.
-  // This will speed up re-mappings of first/last clauses when processing dels.
-  if (num_parsed_del_lines > 0) {
-    lit_occ_add_formula_until_with_clause_mappings(&lit_occ, num_cnf_clauses);
-  } else {
-    lit_occ_add_formula_until(&lit_occ, num_cnf_clauses);
-  }
+  lit_occ_add_formula_until_with_clause_mappings(&lit_occ, num_cnf_clauses);
 }
 
 static void add_wps_and_up_initial_clauses(void) {
@@ -3655,9 +3697,6 @@ static void add_wps_and_up_initial_clauses(void) {
     lit_occ_add_clause(&lit_occ, c);
     current_line++;
   }
-
-  // We have stored the first/last clause ranges, so free up the memory
-  lit_occ_destroy(&lit_occ);
 
   if (!derived_empty_clause) {
     log_err("Could not derive the empty clause during backwards checking.");
