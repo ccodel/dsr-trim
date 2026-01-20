@@ -23,10 +23,12 @@
 // differentiate binary and textual proof files with the first character.
 // We also differentiate DSR and LSR lines, so that the (de)compression tool
 // can automatically detect which kind of proof we are reading.
-#define DSR_BINARY_ADDITION_LINE_START    (1)
-#define DSR_BINARY_DELETION_LINE_START    (2)
-#define LSR_BINARY_ADDITION_LINE_START    (3)
-#define LSR_BINARY_DELETION_LINE_START    (4)
+#define DSR_BINARY_ADDITION_LINE_START      (1)
+#define DSR_BINARY_DELETION_LINE_START      (2)
+#define LSR_BINARY_ADDITION_LINE_START      (3)
+#define LSR_BINARY_DELETION_LINE_START      (4)
+#define CADICAL_BINARY_ADDITION_LINE_START  ('a')
+#define CADICAL_BINARY_DELETION_LINE_START  ('d')
 
 /**
  * @brief Determines if `c` is one of the binary line start characters.
@@ -38,8 +40,10 @@
  * @return 1 if `c` is a binary line start character, and 0 otherwise.
  */
 #define IS_BINARY_LINE_START(c) \
-      (DSR_BINARY_ADDITION_LINE_START <= (c) \
-       && (c) <= LSR_BINARY_DELETION_LINE_START)
+      ((DSR_BINARY_ADDITION_LINE_START <= (c) \
+       && (c) <= LSR_BINARY_DELETION_LINE_START) \
+       || (c) == CADICAL_BINARY_ADDITION_LINE_START \
+       || (c) == CADICAL_BINARY_DELETION_LINE_START)
 
 /**
  * @brief Determines if a non-whitespace character `c` may appear in a DSR

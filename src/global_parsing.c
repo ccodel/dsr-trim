@@ -235,8 +235,12 @@ line_type_t read_dsr_line_start(FILE *f) {
     // The next character should be the binary version of 'a' or 'd'
     int c = getc_unlocked(f);
     switch (c) {
-      case DSR_BINARY_ADDITION_LINE_START: return ADDITION_LINE;
-      case DSR_BINARY_DELETION_LINE_START: return DELETION_LINE;
+      case DSR_BINARY_ADDITION_LINE_START: 
+      case CADICAL_BINARY_ADDITION_LINE_START:
+        return ADDITION_LINE;
+      case DSR_BINARY_DELETION_LINE_START:
+      case CADICAL_BINARY_DELETION_LINE_START:
+        return DELETION_LINE;
       case LSR_BINARY_ADDITION_LINE_START:
       case LSR_BINARY_DELETION_LINE_START:
         log_fatal_err("Expected a binary DSR proof, got an LSR proof instead.");
@@ -265,8 +269,12 @@ line_type_t read_lsr_line_start(FILE *f, srid_t *line_id) {
       case DSR_BINARY_ADDITION_LINE_START:
       case DSR_BINARY_DELETION_LINE_START:
         log_fatal_err("Expected a binary LSR proof, got a DSR proof instead.");
-      case LSR_BINARY_ADDITION_LINE_START: line_type = ADDITION_LINE; break;
-      case LSR_BINARY_DELETION_LINE_START: line_type = DELETION_LINE; break;
+      case LSR_BINARY_ADDITION_LINE_START:
+      case CADICAL_BINARY_ADDITION_LINE_START:
+        line_type = ADDITION_LINE; break;
+      case LSR_BINARY_DELETION_LINE_START:
+      case CADICAL_BINARY_DELETION_LINE_START:
+        line_type = DELETION_LINE; break;
       default:
         err_not_binary_proof(f);
     }

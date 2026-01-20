@@ -32,7 +32,6 @@
 #include <getopt.h>   // getopt_long()
 
 #include "xio.h"
-#include "global_data.h"
 #include "global_parsing.h"
 #include "logger.h"
 
@@ -46,11 +45,15 @@ static FILE *output_file;
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#define HELP_OPT      ('h')
-#define OPT_STR       ("h")
+#define HELP_OPT        ('h')
+#define COMPRESS_OPT    ('c')
+#define DECOMPRESS_OPT  ('d')
+#define OPT_STR         ("cdh")
 
 static struct option const longopts[] = {
-  { "help", no_argument, NULL, HELP_OPT },
+  { "compress",   no_argument, NULL, COMPRESS_OPT },
+  { "decompress", no_argument, NULL, DECOMPRESS_OPT },
+  { "help",       no_argument, NULL, HELP_OPT },
   { NULL, 0, NULL, 0 }
 };
 
@@ -62,11 +65,16 @@ static void print_usage(FILE *f) {
   fprintf(f, "\n");
   fprintf(f, "Alternatively, you can add these options:\n");
   fprintf(f, "\n");
-  fprintf(f, "  -h | --help    Prints this help message and exits.\n");
+  fprintf(f, "  -c | --compress       Compress the proof.\n");
+  fprintf(f, "  -d | --decompress     Decompress the proof.\n");
+  fprintf(f, "  -h | --help           Prints this help message and exits.\n");
   fprintf(f, "\n");
   fprintf(f, "When an output file is not provided, `stdout` is used.\n");
   fprintf(f, "Compressed proofs aren't human-readable, so we recommend\n");
   fprintf(f, "using pipes/redirection when using `stdout` for compression.\n");
+  fprintf(f, "\n");
+  fprintf(f, "Also, since CaDiCaL uses a slightly different binary format,\n");
+  fprintf(f, "use the `-c` and `-d` options when converting CaDiCaL proofs.\n");
   fprintf(f, "\n");
 }
 
@@ -250,10 +258,22 @@ int main(int argc, char *argv[]) {
     return (argc != 1);
   }
 
+  // Automatically determine compression and what kind of proof file later.
+  // The `-c` and `-d` options override this automatic detection.
+  int should_configure_parsing = 1;
+
   // Process any command-line options
   int ch;
   while ((ch = getopt_long(argc, argv, OPT_STR, longopts, NULL)) != -1) {
     switch (ch) {
+      case COMPRESS_OPT:
+        read_binary = 0;
+        should_configure_parsing = 0;
+        break;
+      case DECOMPRESS_OPT:
+        read_binary = 1;
+        should_configure_parsing = 0;
+        break;
       case HELP_OPT:
         print_usage(stdout);
         return 0;
@@ -280,9 +300,12 @@ int main(int argc, char *argv[]) {
   }
 
   // Write the opposite format of what we detect we will be reading
-  configure_proof_file_parsing(input_file);
+  if (should_configure_parsing) {
+    configure_proof_file_parsing(input_file);
+  }
+
   write_binary = !read_binary;
-  
+
   int is_dsr = is_dsr_proof();
   if (is_dsr) {
     compress_dsr_proof();

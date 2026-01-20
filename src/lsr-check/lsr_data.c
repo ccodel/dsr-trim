@@ -189,7 +189,7 @@ void prepare_lsr_check_data(void) {
 
   if (p_strategy == PS_EAGER) {
     ra_init(&hints, num_cnf_clauses * 4, num_cnf_vars, sizeof(srid_t));
-    ra_init(&deletions, num_cnf_clauses * 2, num_cnf_vars, sizeof(srid_t));
+    ra_init(&deletions, num_cnf_clauses / 4, num_cnf_vars, sizeof(srid_t));
 
     line_num_RAT_hints_alloc_size = num_cnf_clauses;
     line_num_RAT_hints = xcalloc(line_num_RAT_hints_alloc_size, sizeof(uint)); 
