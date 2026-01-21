@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#define KEEP_TAUTOLOGIES      (0)
+#define DELETE_TAUTOLOGIES    (1)
+
 // Parses a single clause and stores it in `lits_db` and `formula`.
 // Sorts the literals, eliminates duplicates, and checks for tautology.
 // Note that it does NOT call `commit_clause()`.
@@ -20,6 +23,6 @@ int parse_clause(FILE *f);
 
 // Parses the CNF and puts it into global data structures.
 // On success, closes the FILE.
-void parse_cnf(FILE *cnf_file);
+void parse_cnf(FILE *cnf_file, int delete_tautologies);
 
 #endif /* _CNF_PARSER_H_ */

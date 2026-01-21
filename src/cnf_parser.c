@@ -57,7 +57,21 @@ int parse_clause(FILE *f) {
   return sort_and_dedup_new_cnf_clause();
 }
 
-void parse_cnf(FILE *f) {
+/**
+ * @brief Parses the CNF file under the file pointer `f`.
+ * 
+ * The `delete_tautologies` flag indicates whether tautological clauses
+ * in the CNF formula should be deleted as soon as they are parsed.
+ * If the flag is not set, then tautolgies will remain in the formula
+ * and treated as any other clause. If the flag IS set, then the tautological
+ * formula is deleted, but the formula size is still incremented. In other
+ * words, a hole is left where that clause would have gone.
+ * 
+ * The `delete_tautologies` flag is needed to differentiate between
+ * `dsr-trim`, which wants tautologies gone, with `lsr-check`, which
+ * should keep them and let the proof itself delete those clauses.
+ */
+void parse_cnf(FILE *f, int delete_tautologies) {
   int c, res, found_problem_line = 0;
   while (!found_problem_line) {
     switch ((c = getc_unlocked(f))) {
@@ -95,8 +109,9 @@ void parse_cnf(FILE *f) {
     if (new_clause_size == 0) {
       log_fatal_err("The empty clause was found at clause %lld in the CNF.",
         TO_DIMACS_CLAUSE(formula_size));
-    } else if (is_tautology) {
-      logc("Tautology in clause %lld detected, deleting...", formula_size);
+    } else if (is_tautology && delete_tautologies) {
+      logc("Tautology in clause %lld detected, deleting...",
+          TO_DIMACS_CLAUSE(formula_size));
       commit_and_delete_clause();
     } else {
       commit_clause();

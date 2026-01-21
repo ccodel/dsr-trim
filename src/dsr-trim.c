@@ -3955,7 +3955,7 @@ int main(int argc, char **argv) {
   timer_record(&timer, TIMER_GLOBAL);
 
   timer_record(&timer, TIMER_LOCAL);
-  parse_cnf(cnf_file);
+  parse_cnf(cnf_file, DELETE_TAUTOLOGIES);
   timer_print_elapsed(&timer, TIMER_LOCAL, "Parsing the CNF");
 
   int input_proof_is_in_binary = configure_proof_file_parsing(dsr_file);
