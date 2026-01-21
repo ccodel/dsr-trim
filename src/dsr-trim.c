@@ -1166,7 +1166,7 @@ static void print_deletions(srid_t line_num) {
  * @param printed_line_num The line ID to print with the line.
  */
 static inline void print_deletions_with_line_id(srid_t printed_line_num) {
-  if (get_num_deletions(printed_line_num) == 0) return;
+  if (lsr_file == NULL || get_num_deletions(printed_line_num) == 0) return;
   write_lsr_deletion_line_start(lsr_file, printed_line_num);
   print_deletions(printed_line_num);
   write_sr_line_end(lsr_file);
@@ -1476,10 +1476,10 @@ static int delete_parsed_clause(void) {
   // Forwards checking only: Do not delete (implied) units unless requested.
   int *clause_match_ptr = get_clause_start_unsafe(clause_match);
   uint clause_match_size = get_clause_size(clause_match);
-  int is_a_derived_unit = is_lit_set_due_to_up(clause_match_ptr[0]);
+  int is_a_derived_unit = is_lit_set_due_to_up(clause_match_ptr[0]) 
+        && (get_unit_clause_for_lit(clause_match_ptr[0]) == clause_match);
   if (ch_mode == FORWARDS_CHECKING_MODE
       && is_a_derived_unit
-      && get_unit_clause_for_lit(clause_match_ptr[0]) == clause_match
       && ((ignore_unit_deletions && clause_match_size == 1)
        || (ignore_implied_unit_deletions && clause_match_size > 1))) {
     return 0;
@@ -3397,7 +3397,7 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
       switch (mapped_lit) {
         case SUBST_TT: log_err_raw("TT "); break;
         case SUBST_FF: log_err_raw("FF "); break;
-        default: log_raw(VL_VERBOSE, "%d ", TO_DIMACS_LIT(mapped_lit));
+        default: log_err_raw("%d ", TO_DIMACS_LIT(mapped_lit));
       }
     }
     log_err_raw("0\n");
@@ -3645,8 +3645,20 @@ static line_type_t prepare_next_line(void) {
     num_reduced_clauses = 0;
   }
 
-  if (p_strategy == PS_EAGER) return ADDITION_LINE;
-  else                        return parse_dsr_line();
+  if (p_strategy == PS_EAGER) {
+    // Edge case: if we are backwards checking and we made it to line 0,
+    // don't check the line if we haven't used the clause somewhere else.
+    srid_t candidate_id = CLAUSE_ID_FROM_LINE_NUM(current_line);
+    if (current_line == 0 && ch_mode == BACKWARDS_CHECKING_MODE \
+          && IS_UNUSED_LUI(clauses_lui[candidate_id])) {
+      return DELETION_LINE; // Skip checking this line
+    } else {
+      return ADDITION_LINE;
+    }
+  }
+  else {
+    return parse_dsr_line();
+  }
 }
 
 static void prepare_lit_occ_for_cnf(void) {

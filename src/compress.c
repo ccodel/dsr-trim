@@ -86,6 +86,8 @@ static int is_compressed_dsr_proof(void) {
   switch (c) {
     case DSR_BINARY_ADDITION_LINE_START:
     case DSR_BINARY_DELETION_LINE_START:
+    case CADICAL_BINARY_ADDITION_LINE_START:
+    case CADICAL_BINARY_DELETION_LINE_START:
       return 1;
     case LSR_BINARY_ADDITION_LINE_START:
     case LSR_BINARY_DELETION_LINE_START:
@@ -253,7 +255,7 @@ static void compress_lsr_proof(void) {
 
 int main(int argc, char *argv[]) {
   // Print a help message, and return an error code if too many arguments
-  if (argc <= 1 || argc > 3) {
+  if (argc <= 1 || argc > 4) {
     print_usage((argc == 1) ? stdout : stderr);
     return (argc != 1);
   }

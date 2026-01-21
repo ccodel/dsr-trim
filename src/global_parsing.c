@@ -19,8 +19,28 @@ int write_binary = 0;
 
 int configure_proof_file_parsing(FILE *f) {
   int c = getc_unlocked(f);
+
+  // Cadical uses 'a' and 'd for start lines, even in binary mode.
+  // Thus, if we detect a 'd' first, check if the next character is a space.
+  // If it is, then check if the next character is a minus sign or a digit.
+  // If all conditions hold, assume we have a text-based proof.
+  if (c == 'd') {
+    int c2 = getc_unlocked(f);
+    int c3 = getc_unlocked(f);
+    if (c2 == ' ' && (c3 == '-' || isdigit(c3))) {
+      read_binary = 0;
+    } else {
+      read_binary = 1;
+    }
+
+    // TODO: This is not guaranteed to work.
+    ungetc(c3, f);
+    ungetc(c2, f);
+  } else {
+    read_binary = IS_BINARY_LINE_START(c);
+  }
+
   ungetc(c, f);
-  read_binary = IS_BINARY_LINE_START(c);
   return read_binary;
 }
 
@@ -81,22 +101,26 @@ int read_lit(FILE *f) {
 }
 
 int read_formula_lit(FILE *f) {
-  // Ignore all upcoming comment lines
-  while (scan_until_char(f, '\n')) {
-    int c = getc_unlocked(f);
-    if (c == DIMACS_COMMENT_LINE) {
-      // Read to the end of the line, discarding the comment
-      while (getc_unlocked(f) != '\n') {}
-      ungetc('\n', f); // Invariant: leave newlines unconsumed
-    } else {
-      ungetc(c, f);
-      break;
+  if (read_binary) {
+    return read_lit_binary(f);
+  } else {
+    // Ignore all upcoming comment lines
+    while (scan_until_char(f, '\n')) {
+      int c = getc_unlocked(f);
+      if (c == DIMACS_COMMENT_LINE) {
+        // Read to the end of the line, discarding the comment
+        while (getc_unlocked(f) != '\n') {}
+        ungetc('\n', f); // Invariant: leave newlines unconsumed
+      } else {
+        ungetc(c, f);
+        break;
+      }
     }
+    
+    int res, lit;
+    READ_LIT(res, f, &lit);
+    return lit;
   }
-  
-  int res, lit;
-  READ_LIT(res, f, &lit);
-  return lit;
 }
 
 void write_lit_binary(FILE *f, int lit) {
