@@ -1615,10 +1615,15 @@ static int parse_dsr_line(void) {
   int line_type = read_dsr_line_start(dsr_file);
   switch (line_type) {
     case DELETION_LINE:;
-      parse_clause(dsr_file);
-      int actually_deleted_the_clause = delete_parsed_clause();
-      if (actually_deleted_the_clause) {
-        num_parsed_del_lines++;
+      int is_tautology = parse_clause(dsr_file);
+
+      // Only delete the clause if it isn't a tautology,
+      // since we already deleted tautologies from the CNF.
+      if (!is_tautology) {
+        int actually_deleted_the_clause = delete_parsed_clause();
+        if (actually_deleted_the_clause) {
+          num_parsed_del_lines++;
+        }
       }
       
       // Remove the parsed literals from the formula.
