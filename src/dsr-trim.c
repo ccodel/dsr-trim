@@ -2586,9 +2586,18 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
   for (uint i = 0; i < wp_list_size; i++) {
     if (wp_list[i] == clause) {
       // Overwrite the removed clause with the last clause in the list
-      // TODO: Shrink array if small enough?
       wp_list[i] = wp_list[wp_list_size - 1];
-      wp_sizes[lit]--;
+      uint size = --wp_sizes[lit];
+
+      // Downsize if the size drops below a certain threshold
+      size = MAX(INIT_LIT_WP_ARRAY_SIZE, size);
+      if (size < wp_alloc_sizes[lit] / 6) {
+        // (But keep some padding)
+        size = (size * 3) / 2;
+        wp_alloc_sizes[lit] = size;
+        wps[lit] = xrealloc(wps[lit], size * sizeof(srid_t));
+      }
+
       return;
     }
   }
