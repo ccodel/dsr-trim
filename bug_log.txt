@@ -49,3 +49,6 @@ compress/decompress.c:
 
 logger.c:
     - (10/27/25) Variadic arguments weren't being passed on to the helper function correctly. Funnily enough, this was only detected by using an Ubuntu Docker container. Using a Mac and the PSC clusters didn't cause any problems.
+
+range_array.c:
+    - (2/24/26) ra_uncommit_range() was incorrect, where existing data wasn't getting erased. This made a DRAT clause appear to be an DPR clause (with an additional true/false literal), causing the proof to break. Swapping the order of the two operations in the function fixed the bug.

@@ -79,8 +79,8 @@ void ra_commit_range(range_array_t *ra) {
 }
 
 void ra_uncommit_range(range_array_t *ra) {
-  ra->data_size = ra->indexes[ra->indexes_size];
   ra->indexes_size--;
+  ra->data_size = ra->indexes[ra->indexes_size];
 }
 
 /**
