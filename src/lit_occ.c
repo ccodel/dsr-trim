@@ -287,7 +287,7 @@ void lit_occ_add_formula_with_clause_mappings(lit_occ_t *l) {
 void lit_occ_add_clause(lit_occ_t *l, srid_t clause_index) {
   if (is_clause_deleted(clause_index)) return;
 
-  if (MAX_LIT > l->alloc_size) {
+  if (MAX_LIT >= l->alloc_size) {
     lit_occ_realloc(l);
   }
 
