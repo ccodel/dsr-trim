@@ -95,6 +95,16 @@ void mark_clause_as_checked(srid_t clause_id) {
   current_line++;
 }
 
+static inline void delete_stored_clauses(void) {
+  srid_t *del_iter = get_deletions_start();
+  srid_t *del_end = get_deletions_end();
+  for (; del_iter < del_end; del_iter++) {
+    srid_t clause_id = *del_iter;
+    lit_occ_delete_clause(&lit_occ, clause_id);
+    delete_clause(clause_id);
+  }
+}
+
 /**
  * @brief Prepares the data structure that stores deletions to receive the
  *        next deletion line.
@@ -107,12 +117,10 @@ void mark_clause_as_checked(srid_t clause_id) {
 static void prepare_deletions_for_next_deletion_line(void) {
   if (p_strategy == PS_EAGER) {
     ra_commit_range(&deletions);
+  } else {
+    delete_stored_clauses();
+    ra_reset(&deletions);
   }
-}
-
-static inline void actually_delete_clause(srid_t clause_id) {
-  lit_occ_delete_clause(&lit_occ, clause_id);
-  delete_clause(clause_id);
 }
 
 /**
@@ -123,14 +131,10 @@ static inline void actually_delete_clause(srid_t clause_id) {
  * 
  * @param clause_id The clause to be deleted, in 1-indexed (DIMACS) form.
  */
-void process_deletion(srid_t clause_id) {
+static void store_deletion(srid_t clause_id) {
   FATAL_ERR_IF(clause_id < 0, "Deletion ID %lld was negative.", clause_id);
   clause_id = FROM_DIMACS_CLAUSE(clause_id);
-  if (p_strategy == PS_EAGER) {
-    ra_insert_srid_elt(&deletions, clause_id);
-  } else {
-    actually_delete_clause(clause_id);
-  }
+  ra_insert_srid_elt(&deletions, clause_id); 
 }
 
 /** 
@@ -188,17 +192,17 @@ void prepare_lsr_check_data(void) {
   lit_occ_add_formula_with_clause_mappings(&lit_occ);
 
   if (p_strategy == PS_EAGER) {
-    ra_init(&hints, num_cnf_clauses * 4, num_cnf_vars, sizeof(srid_t));
-    ra_init(&deletions, num_cnf_clauses / 4, num_cnf_vars, sizeof(srid_t));
+    ra_init(&hints, num_cnf_clauses / 2, num_cnf_vars, sizeof(srid_t));
+    ra_init(&deletions, num_cnf_clauses / 16, num_cnf_vars, sizeof(srid_t));
 
     line_num_RAT_hints_alloc_size = num_cnf_clauses;
     line_num_RAT_hints = xcalloc(line_num_RAT_hints_alloc_size, sizeof(uint)); 
 
     parse_entire_lsr_file();
   } else {
-    ra_init(&hints, num_cnf_vars * 4, 2, sizeof(srid_t));
+    ra_init(&hints, num_cnf_vars, 2, sizeof(srid_t));
+    ra_init(&deletions, num_cnf_clauses / 16, 2, sizeof(srid_t));
     max_line_id = num_cnf_clauses;
-    // No deletions, since we process them as we go
   }
 
   current_line = 0;
@@ -220,14 +224,6 @@ int has_another_lsr_line(void) {
     return LINE_ID_FROM_LINE_NUM(current_line) <= max_line_id;
   } else {
     return has_another_line(lsr_file);
-  }
-}
-
-static inline void delete_stored_clauses(void) {
-  srid_t *del_iter = get_deletions_start();
-  srid_t *del_end = get_deletions_end();
-  for (; del_iter < del_end; del_iter++) {
-    actually_delete_clause(*del_iter);
   }
 }
 
@@ -291,16 +287,18 @@ line_type_t parse_lsr_line(void) {
       max_line_id = line_id;
 
       // We "1-index" deletion lines to account for a starting deletion line
-      srid_t deletion_line_num = MAX(0, current_line + 1);
+      srid_t deletion_line_num = MAX(0, TO_DIMACS_LINE(current_line));
 
       // Cap off empty deletion lines until we reach the current line
       if (p_strategy == PS_EAGER) {
         ra_commit_empty_ranges_until(&deletions, deletion_line_num);
       }
 
-      // The deletion line ends when we encounter a 0
+      // The deletion line ends when we encounter a 0.
+      // The deletions get processed when we parse the next addition line.
+      // See `prepare_deletions_for_next_deletion_line()`.
       while ((clause_id = read_clause_id(lsr_file)) != 0) {
-        process_deletion(clause_id); 
+        store_deletion(clause_id); 
       }
 
       break;

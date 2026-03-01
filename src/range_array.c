@@ -17,10 +17,10 @@
 void ra_init(range_array_t *ra, ullong init_num_elts, 
                       ullong init_num_ranges, uint elts_size) {
   ra->data_size = 0;
-  ra->data_alloc_size = init_num_elts;
+  ra->data_alloc_size = MAX(init_num_elts, 4L);
   ra->data = xmalloc(ra->data_alloc_size * elts_size);
   ra->indexes_size = 0;
-  ra->indexes_alloc_size = init_num_ranges;
+  ra->indexes_alloc_size = MAX(init_num_ranges, 2L);
   ra->indexes = xmalloc(ra->indexes_alloc_size * sizeof(srid_t));
   ra->indexes[0] = 0; // Start the first range at the 0th index
   ra->elts_size = elts_size;

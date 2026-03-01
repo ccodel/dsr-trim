@@ -20,13 +20,13 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 // Converts a negative DIMACS RAT hint clause ID to a 0-indexed clause ID.
-#define FROM_RAT_HINT(x)        (-(x) - 1)
-#define TO_RAT_HINT(x)          (-(x) - 1)
-#define FROM_DIMACS_CLAUSE(x)   ((x) - 1)
-#define TO_DIMACS_CLAUSE(x)     ((x) + 1)
+#define FROM_RAT_HINT(x)        (-(x) - SRID_ONE)
+#define TO_RAT_HINT(x)          (-(x) - SRID_ONE)
+#define FROM_DIMACS_CLAUSE(x)   ((x) - SRID_ONE)
+#define TO_DIMACS_CLAUSE(x)     ((x) + SRID_ONE)
 #define FROM_DIMACS_LIT(x)      (((x) < 0) ? (((-(x)) << 1) - 1) : (((x) << 1) - 2))
 #define TO_DIMACS_LIT(x)        (((x) & 1) ? (((x) / -2) - 1) : (((x) / 2) + 1))
-#define TO_DIMACS_LINE(x)       ((x) + 1)
+#define TO_DIMACS_LINE(x)       ((x) + SRID_ONE)
 
 #define MAX_LIT                 ((max_var * 2) + 1)
 #define MAX_LIT_EXCLUSIVE       ((max_var + 1) * 2)
@@ -62,8 +62,8 @@
  * the `line_id` is essentially `num_cnf_clauses`-indexed.
  */
 
-#define LINE_ID_FROM_LINE_NUM(line_num)    ((line_num) + num_cnf_clauses + 1)
-#define LINE_NUM_FROM_LINE_ID(line_id)     ((line_id) - (num_cnf_clauses + 1))
+#define LINE_ID_FROM_LINE_NUM(line_num)    ((line_num) + num_cnf_clauses + SRID_ONE)
+#define LINE_NUM_FROM_LINE_ID(line_id)     ((line_id) - (num_cnf_clauses + SRID_ONE))
 #define CLAUSE_ID_FROM_LINE_NUM(line_num)  ((line_num) + num_cnf_clauses)
 #define LINE_NUM_FROM_CLAUSE_ID(clause_id) ((clause_id) - num_cnf_clauses)
 

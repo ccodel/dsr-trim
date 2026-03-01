@@ -48,6 +48,7 @@ typedef ullong usrid_t;
 #define SRID_MSB         MSB64
 #define SRID_MIN         LLONG_MIN
 #define SRID_MAX         LLONG_MAX
+#define SRID_ONE         (1L)
 #define SRID_NEG_ONE     (-1L)
 #else
 typedef int srid_t;
@@ -55,6 +56,7 @@ typedef unsigned int usrid_t;
 #define SRID_MSB         MSB32
 #define SRID_MIN         INT_MIN
 #define SRID_MAX         INT_MAX
+#define SRID_ONE         (1)
 #define SRID_NEG_ONE     (-1)
 #endif
 

@@ -100,12 +100,12 @@ void mark_clause_as_checked(srid_t clause_id);
 // If there are no deletions, then this function equals `get_deletions_end()`.
 // Implemented as a macro.
 #define get_deletions_start()  \
-    ((srid_t *) ra_get_range_start(&deletions, current_line))
+    ((srid_t *) ra_get_range_start(&deletions, (p_strategy == PS_EAGER) ? current_line : 0))
 
 // Returns a pointer to the end of the current line's deletions, if any.
 // Implemented as a macro.
 #define get_deletions_end()    \
-    ((srid_t *) ra_get_range_end(&deletions, current_line))
+    ((srid_t *) ra_get_range_end(&deletions, (p_strategy == PS_EAGER) ? current_line : 0))
 
 void dbg_print_lsr_hints(void);
 void prepare_lsr_check_data(void);
