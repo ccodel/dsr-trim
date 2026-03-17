@@ -186,23 +186,23 @@ static up_state_t up_state = GLOBAL_UP;
 static srid_t **wps = NULL;
 
 // Allocated size of the 2D array of watch pointers.
-static uint wps_alloc_size = 0;
+static int wps_alloc_size = 0;
 
 // Allocated size of watch pointer array for each literal.
 // Invariant: if wps[i] == NULL, then wp_alloc_sizes[i] = 0.
-static uint *wp_alloc_sizes = NULL;
+static int *wp_alloc_sizes = NULL;
 
 // Number of watch pointers under each literal.
 // Invariant: if wps[i] == NULL, then wp_sizes[i] = 0.
-static uint *wp_sizes = NULL; // TODO: New name
+static int *wp_sizes = NULL; // TODO: New name
 
 // A list of literals, in order of when they become unit.
 static int *unit_literals = NULL;
 
 // A list of clauses, in order of when they became unit.
 static srid_t *unit_clauses = NULL;
-static uint units_alloc_size = 0;
-static uint units_size = 0;
+static int units_alloc_size = 0;
+static int units_size = 0;
 
 // Indexed by variable.
 // Stores the index into `unit_literals` if that variable is set to true/false.
@@ -214,12 +214,12 @@ static ullong *vars_dependency_markings = NULL;
 static int vars_dependency_markings_alloc_size = 0;
 
 // Index pointing at the "unprocessed" global UP literals
-static uint global_up_literals_index = 0;
+static int global_up_literals_index = 0;
 
-static uint candidate_assumed_literals_index = 0;
-static uint candidate_unit_literals_index = 0;
-static uint RAT_assumed_literals_index = 0;
-static uint RAT_unit_literals_index = 0;
+static int candidate_assumed_literals_index = 0;
+static int candidate_unit_literals_index = 0;
+static int RAT_assumed_literals_index = 0;
+static int RAT_unit_literals_index = 0;
 
 /**
  * @brief Stores the variables added as unit literals when assuming the
@@ -236,8 +236,8 @@ static uint RAT_unit_literals_index = 0;
  * See `assume_RAT_clause_under_subst()` and `unassume_RAT_clause()`.
  */
 static int *RAT_marked_vars = NULL;
-static uint RAT_marked_vars_alloc_size = 0;
-static uint RAT_marked_vars_size = 0;
+static int RAT_marked_vars_alloc_size = 0;
+static int RAT_marked_vars_size = 0;
 
 static FILE *dsr_file = NULL;
 static FILE *lsr_file = NULL;
@@ -246,7 +246,7 @@ static FILE *lsr_file = NULL;
 static srid_t num_parsed_add_lines = 0;
 static srid_t num_parsed_del_lines = 0;
 static srid_t num_parsed_lines = 0;
-static uint parsed_empty_clause = 0;
+static int parsed_empty_clause = 0;
 
 // 0-indexed current line ID.
 static srid_t current_line = 0;
@@ -291,7 +291,7 @@ static srid_t perform_up_for_forwards_checking(ullong gen);
 // First, any clause that appears in the UP refutation of the empty clause
 // is marked.
 static srid_t *clauses_lui = NULL;
-static uint clauses_lui_alloc_size = 0;
+static int clauses_lui_alloc_size = 0;
 
 // Stores the index into each unit literal's watch pointer list
 // to reduce duplicate checks on SAT/unit clauses during backwards checking
@@ -299,7 +299,7 @@ static uint clauses_lui_alloc_size = 0;
 //
 // Is kept as NULL if not doing backward checking.
 // See `set_unit_literal`.
-static uint *unit_literals_wp_up_indexes = NULL;
+static int *unit_literals_wp_up_indexes = NULL;
 
 /**
  * @brief Store line hints.
@@ -327,9 +327,9 @@ typedef struct line_RAT_hint_information {
 } line_RAT_info_t;
 
 static line_RAT_info_t *lines_RAT_hint_info = NULL;
-static uint lines_RAT_hint_info_alloc_size = 0;
-static uint num_RAT_clauses = 0;
-static uint num_reduced_clauses = 0;
+static int lines_RAT_hint_info_alloc_size = 0;
+static int num_RAT_clauses = 0;
+static int num_reduced_clauses = 0;
 
 // Indexed by the 0-indexed `current_line`.
 // Used only during backwards checking, and allocated by `add_initial_wps()`.
@@ -541,8 +541,8 @@ static srid_t *get_deletions_end(srid_t line_num) {
   return ra_get_range_end(&deletions, idx);
 }
 
-static uint get_num_deletions(srid_t line_num) {
-  return (uint) (get_deletions_end(line_num) - get_deletions_start(line_num));
+static int get_num_deletions(srid_t line_num) {
+  return (int) (get_deletions_end(line_num) - get_deletions_start(line_num));
 }
 
 /**
@@ -592,7 +592,7 @@ static void discard_bcu_deletions_after_empty_clause(srid_t line_num) {
 
 // Assumes only called during backwards checking.
 // Returns `1` if the LUI is adjusted. Returns `0` otherwise.
-static uint adjust_clause_lui(srid_t clause_id) {
+static int adjust_clause_lui(srid_t clause_id) {
   srid_t lui = clauses_lui[clause_id];
 
   if (IS_USER_DEL_LUI(lui)) {
@@ -872,7 +872,7 @@ static void unassign_global_units_due_to_deletion(int from_index) {
 static void print_wps(void) {
   for (int i = 0; i <= MAX_LIT; i++) {
     srid_t *wp_list = wps[i];
-    uint wp_size = wp_sizes[i];
+    int wp_size = wp_sizes[i];
     if (wp_size == 0) continue;
     log_raw(VL_NORMAL, "[%d] ", TO_DIMACS_LIT(i));
     for (int j = 0; j < wp_size; j++) {
@@ -980,7 +980,7 @@ static void print_initial_clause_deletions(void) {
 // The caller must ensure the clause is not deleted from the formula.
 static void print_clause(srid_t clause_id) {
   int *clause = get_clause_start(clause_id);
-  uint size = get_clause_size(clause_id);
+  int size = (int) get_clause_size(clause_id);
 
   // Don't print anything if it's the empty clause
   if (size == 0) return;
@@ -1328,7 +1328,7 @@ static uint hash_clause(srid_t clause_index) {
  */
 static srid_t find_hashed_clause(srid_t ci, uint *hp, ht_bucket_t **bp, ht_entry_t **ep) {
   int *clause = get_clause_start_unsafe(ci);
-  uint clause_size = get_clause_size(ci);
+  int clause_size = (int) get_clause_size(ci);
   uint hash = hash_clause(ci);
   if (hp != NULL) *hp = hash;
 
@@ -1344,7 +1344,7 @@ static srid_t find_hashed_clause(srid_t ci, uint *hp, ht_bucket_t **bp, ht_entry
     memcpy(&possible_match, &entry->data, sizeof(srid_t));
 
     // First approximation: see if the clause sizes match
-    uint match_size = get_clause_size(possible_match);
+    int match_size = (int) get_clause_size(possible_match);
     if (clause_size == match_size) {
       // Now check if all literals match.
       // Most clauses are small, so O(n^2) search is good enough.
@@ -1475,7 +1475,7 @@ static int delete_parsed_clause(void) {
 
   // Forwards checking only: Do not delete (implied) units unless requested.
   int *clause_match_ptr = get_clause_start_unsafe(clause_match);
-  uint clause_match_size = get_clause_size(clause_match);
+  int clause_match_size = (int) get_clause_size(clause_match);
   int is_a_derived_unit = is_lit_set_due_to_up(clause_match_ptr[0]) 
         && (get_unit_clause_for_lit(clause_match_ptr[0]) == clause_match);
   if (ch_mode == FORWARDS_CHECKING_MODE
@@ -1704,8 +1704,8 @@ static void prepare_dsr_trim_data(void) {
   // Allocate some additional space, since we'll probably add new literals later
   wps_alloc_size = MAX_LIT_EXCLUSIVE * 2;
   wps = xcalloc(wps_alloc_size, sizeof(srid_t *));
-  wp_alloc_sizes = xcalloc(wps_alloc_size, sizeof(uint)); 
-  wp_sizes = xcalloc(wps_alloc_size, sizeof(uint));
+  wp_alloc_sizes = xcalloc(wps_alloc_size, sizeof(int)); 
+  wp_sizes = xcalloc(wps_alloc_size, sizeof(int));
 
   // Only allocate initial watch pointer space for literals in the formula 
   for (int i = 0; i <= MAX_LIT; i++) {
@@ -1740,7 +1740,7 @@ static void prepare_dsr_trim_data(void) {
     lines_RAT_hint_info_alloc_size = formula_size * 2;
     lines_RAT_hint_info = xcalloc(lines_RAT_hint_info_alloc_size, sizeof(line_RAT_info_t));
 
-    unit_literals_wp_up_indexes = xcalloc(units_alloc_size, sizeof(uint));
+    unit_literals_wp_up_indexes = xcalloc(units_alloc_size, sizeof(int));
   }
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
@@ -1768,14 +1768,13 @@ static void prepare_dsr_trim_data(void) {
 
 static void resize_wps(void) {
   if (MAX_LIT >= wps_alloc_size) {
-    uint old_size = wps_alloc_size;
+    const ulong i = sizeof(int);
+    int old_size = wps_alloc_size;
     wps_alloc_size = RESIZE(MAX_LIT_EXCLUSIVE);
     wps = xrecalloc(wps,
       old_size * sizeof(srid_t *), wps_alloc_size * sizeof(srid_t *));
-    wp_alloc_sizes = xrecalloc(wp_alloc_sizes,
-      old_size * sizeof(uint), wps_alloc_size * sizeof(uint));
-    wp_sizes = xrecalloc(wp_sizes,
-      old_size * sizeof(uint), wps_alloc_size * sizeof(uint));
+    wp_alloc_sizes = xrecalloc(wp_alloc_sizes, old_size * i, wps_alloc_size * i);
+    wp_sizes = xrecalloc(wp_sizes, old_size * i, wps_alloc_size * i);
   }
 }
 
@@ -1797,7 +1796,7 @@ static void resize_units(void) {
 
     if (ch_mode == BACKWARDS_CHECKING_MODE) {
       unit_literals_wp_up_indexes = xrecalloc(unit_literals_wp_up_indexes,
-        old_size * sizeof(uint), units_alloc_size * sizeof(uint));
+        old_size * sizeof(int), units_alloc_size * sizeof(int));
     }
   }
 }
@@ -1812,9 +1811,9 @@ static void resize_units(void) {
 static void minimize_RAT_hints(void) {
   // These variables are declared `static` to persist across function calls
   // Only this function needs them, so we declare them here instead of globally
-  static uint *skipped_RAT_indexes = NULL;
-  static uint skipped_RAT_indexes_alloc_size = 0;
-  static uint skipped_RAT_indexes_size = 0;
+  static int *skipped_RAT_indexes = NULL;
+  static int skipped_RAT_indexes_alloc_size = 0;
+  static int skipped_RAT_indexes_size = 0;
 
   // Iterate over the RAT hint groups and mark last used IDs
   srid_t nrhg = get_num_RAT_clauses(current_line);
@@ -1824,7 +1823,7 @@ static void minimize_RAT_hints(void) {
   skipped_RAT_indexes_size = 0;
   if (skipped_RAT_indexes == NULL) {
     skipped_RAT_indexes_alloc_size = max_var;
-    skipped_RAT_indexes = xmalloc(max_var * sizeof(uint));
+    skipped_RAT_indexes = xmalloc(max_var * sizeof(int));
   }
 
   // First pass: mark "active" clauses
@@ -1847,8 +1846,8 @@ static void minimize_RAT_hints(void) {
     } else if (IS_UNUSED_LUI(RAT_lui)) {
       // Add unused or "current" hints to the skipped indexes list
       // Subtract 1 due to the ++ above
-      INSERT_ARR_ELT_CONCAT(skipped_RAT_indexes, sizeof(uint),
-        (uint) ((hints_iter - hints_start) - 1));
+      INSERT_ARR_ELT_CONCAT(skipped_RAT_indexes, sizeof(int),
+        (int) ((hints_iter - hints_start) - 1));
       SKIP_REMAINING_UP_HINTS(hints_iter, hints_end);
     } else {
       log_fatal_err("[line %lld] RAT clause %lld was deleted before UP hint.",
@@ -1861,13 +1860,13 @@ static void minimize_RAT_hints(void) {
 
   // Second pass: mark "skipped" hints
   // Keep iterating over the skipped indexes until we mark no more
-  uint old_len;
+  int old_len;
   while ((old_len = skipped_RAT_indexes_size) > 0) {
     skipped_RAT_indexes_size = 0;
     num_marked = 0;
 
-    for (uint i = 0; i < old_len; i++) {
-      uint offset = skipped_RAT_indexes[i];
+    for (int i = 0; i < old_len; i++) {
+      int offset = skipped_RAT_indexes[i];
       srid_t *iter = hints_start + offset;
       srid_t RAT_clause = FROM_RAT_HINT(*iter);
       srid_t RAT_lui = clauses_lui[RAT_clause];
@@ -1909,13 +1908,13 @@ static void minimize_RAT_hints(void) {
   hints_iter = hints_start;
   srid_t *write_iter = hints_start;
 
-  uint len;
-  for (uint i = 0; i < skipped_RAT_indexes_size; i++) {
+  int len;
+  for (int i = 0; i < skipped_RAT_indexes_size; i++) {
     srid_t *skip_start = hints_start + skipped_RAT_indexes[i];
 
     // Copy hints over, only if needed
     if (skip_start != hints_iter) {
-      len = (uint) (skip_start - hints_iter);
+      len = (int) (skip_start - hints_iter);
       if (write_iter != hints_iter) {
         memmove(write_iter, hints_iter, len * sizeof(srid_t));
       }
@@ -1928,7 +1927,7 @@ static void minimize_RAT_hints(void) {
   }
 
   // Write the remaining hints
-  len = (uint) (hints_end - hints_iter);
+  len = (int) (hints_end - hints_iter);
   if (write_iter != hints_iter) {
     memmove(write_iter, hints_iter, len * sizeof(srid_t));
   }
@@ -2559,14 +2558,14 @@ static void add_wp_for_lit(int lit, srid_t clause) {
   resize_wps();
 
   // Now allocate more space for the `wp[lit]` array, if needed
-  uint alloc_size = wp_alloc_sizes[lit];
+  int alloc_size = wp_alloc_sizes[lit];
   if (wp_sizes[lit] == alloc_size) {
     wp_alloc_sizes[lit] = MAX(INIT_LIT_WP_ARRAY_SIZE, RESIZE(alloc_size));
     wps[lit] = xrealloc(wps[lit], wp_alloc_sizes[lit] * sizeof(srid_t));
   }
   
   // TODO: Error checking, see if wp is already in the list
-  /*for (uint i = 0; i < wp_sizes[lit]; i++) {
+  /*for (int i = 0; i < wp_sizes[lit]; i++) {
     if (wps[lit][i] == clause) {
       log_fatal_err("Clause %lld already has a watch pointer for literal %d",
         TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
@@ -2580,14 +2579,14 @@ static void add_wp_for_lit(int lit, srid_t clause) {
 
 static void remove_wp_for_lit(int lit, srid_t clause) {
   srid_t *wp_list = wps[lit];
-  uint wp_list_size = wp_sizes[lit];
+  int wp_list_size = wp_sizes[lit];
 
   // Find the clause in the wp list and remove it
-  for (uint i = 0; i < wp_list_size; i++) {
+  for (int i = 0; i < wp_list_size; i++) {
     if (wp_list[i] == clause) {
       // Overwrite the removed clause with the last clause in the list
       wp_list[i] = wp_list[wp_list_size - 1];
-      uint size = --wp_sizes[lit];
+      int size = --wp_sizes[lit];
 
       // Downsize if the size drops below a certain threshold
       size = MAX(INIT_LIT_WP_ARRAY_SIZE, size);
@@ -2680,11 +2679,11 @@ static srid_t perform_up_for_backwards_checking(ullong gen) {
     aside from setting the ignored bit to 0.
    */
 
-  uint progressed_i = 0;
-  uint bookmarked_i = UINT_MAX;
+  int progressed_i = 0;
+  int bookmarked_i = INT_MAX;
   int accepting_unused_clauses = 0;
 
-  uint i;
+  int i;
   switch (up_state) {
     case GLOBAL_UP:    i = global_up_literals_index;         break;
     case CANDIDATE_UP: i = candidate_assumed_literals_index; break;
@@ -2697,7 +2696,7 @@ static srid_t perform_up_for_backwards_checking(ullong gen) {
   // I guess the thought is that during backwards checking, we've already
   // done UP on the global state, so there is nothing more to find here
   // (Especially if we uncommit true units as we move backwards through form)
-  memset(unit_literals_wp_up_indexes + i, 0, (units_size - i) * sizeof(uint));
+  memset(unit_literals_wp_up_indexes + i, 0, (units_size - i) * sizeof(int));
 
 restart_up:
   for (; i < units_size; i++) {
@@ -2705,10 +2704,10 @@ restart_up:
     int lit = NEGATE_LIT(unit_literals[i]);
     srid_t *wp_list = wps[lit];
 
-    uint wp_size = wp_sizes[lit]; // Store in a local variable for efficiency
-    uint j = unit_literals_wp_up_indexes[i]; // Store in a local var for eff.
+    int wp_size = wp_sizes[lit]; // Store in a local variable for efficiency
+    int j = unit_literals_wp_up_indexes[i]; // Store in a local var for eff.
     if (j == wp_size) continue;
-    uint ignored_j = j;
+    int ignored_j = j;
 
     for (; j < wp_size; j++) {
       srid_t clause_id = wp_list[j];
@@ -2737,9 +2736,9 @@ restart_up:
       // If we haven't processed these watch pointers yet, we try to
       // replace `lit` with a non-false wp later in the clause
       if (i >= progressed_i) {
-        uint clause_size = get_clause_size(clause_id);
+        int clause_size = (int) get_clause_size(clause_id);
         int found_new_wp = 0;
-        for (uint k = 2; k < clause_size; k++) {
+        for (int k = 2; k < clause_size; k++) {
           if (peval_lit_under_alpha(clause[k]) != FF) {
             // The kth literal is non-false, so swap it with the first wp
             int new_wp = clause[k];
@@ -2793,7 +2792,7 @@ restart_up:
           i = progressed_i;
           
           goto restart_up;
-        } else if (bookmarked_i == UINT_MAX) {
+        } else if (bookmarked_i == INT_MAX) {
           // We are ignoring an unused, potentially-unit clause
           // Store the minimum wp index of any unused/skipped unit clause
           bookmarked_i = i;
@@ -2812,7 +2811,7 @@ restart_up:
   // there is at least one ignored clause
   // On "return passes," the bookmark monotonically increases, and we only
   // provably have no ignored clause if we are still accepting clauses
-  if (!accepting_unused_clauses && bookmarked_i != UINT_MAX) {
+  if (!accepting_unused_clauses && bookmarked_i != INT_MAX) {
     // We ignored at least one clause.
     // Go back to the `bookmarked_i`
     // We restart UP at saved `unit_literals_wp_up_indexes[i]`,
@@ -2861,7 +2860,7 @@ static srid_t perform_up_for_forwards_checking(ullong gen) {
    * Otherwise, we have a new unit, and we continue with unit propagation.
    */
 
-  uint i;
+  int i;
   switch (up_state) {
     case GLOBAL_UP:    i = global_up_literals_index;         break;
     case CANDIDATE_UP: i = candidate_assumed_literals_index; break;
@@ -2874,12 +2873,12 @@ static srid_t perform_up_for_forwards_checking(ullong gen) {
 
     // Iterate through its watch pointers and see if the clause becomes unit
     srid_t *wp_list = wps[lit];
-    uint wp_size = wp_sizes[lit]; // Store and edit this value in a variable
-    for (uint j = 0; j < wp_size; j++) {
+    int wp_size = wp_sizes[lit]; // Store and edit this value in a variable
+    for (int j = 0; j < wp_size; j++) {
       srid_t clause_id = wp_list[j];
 
       int *clause = get_clause_start_unsafe(clause_id);
-      uint clause_size = get_clause_size(clause_id);
+      int clause_size = (int) get_clause_size(clause_id);
       
       // Lemma: the clause is not a unit clause (yet), and its w-pointers are 
       // the first two literals in the clause (we may reorder literals here).
@@ -2900,7 +2899,7 @@ static srid_t perform_up_for_forwards_checking(ullong gen) {
 
       // Otherwise, scan the clause for a non-false literal
       int found_new_wp = 0;
-      for (uint k = 2; k < clause_size; k++) {
+      for (int k = 2; k < clause_size; k++) {
         if (peval_lit_under_alpha(clause[k]) != FF) {
           // The kth literal is non-false, so swap it with the first wp
           clause[1] = clause[k];
@@ -2969,7 +2968,7 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
   FATAL_ERR_IF(up_state != GLOBAL_UP, "up_state not GLOBAL_UP.");
 
   int *clause = get_clause_start_unsafe(clause_index);
-  uint clause_size = get_clause_size(clause_index);
+  int clause_size = (int) get_clause_size(clause_index);
 
   FATAL_ERR_IF(clause_size == 0,
     "[line %lld] Cannot add wps and UP on the empty clause, %lld",
@@ -3014,9 +3013,9 @@ static void add_wps_and_perform_up(srid_t clause_index, ullong gen) {
       we scan the clause for two such literals.  Along the way, we might
       discover that the clause is unit or falsified.
     */
-    uint non_ff_lits = 0;
-    uint unassigned_lits = 0;
-    for (uint i = 0; i < clause_size && non_ff_lits < 2; i++) {
+    int non_ff_lits = 0;
+    int unassigned_lits = 0;
+    for (int i = 0; i < clause_size && non_ff_lits < 2; i++) {
       int lit = clause[i];
       peval_t peval = peval_lit_under_alpha(lit);
       if (peval != FF) {
@@ -3176,7 +3175,7 @@ static inline void add_RAT_marked_var(int marked_var) {
 }
 
 static inline void clear_RAT_marked_vars(void) {
-  for (uint i = 0; i < RAT_marked_vars_size; i++) {
+  for (int i = 0; i < RAT_marked_vars_size; i++) {
     clear_assumption_from_var_unit_index(RAT_marked_vars[i]);
   }
 
@@ -3583,7 +3582,7 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
   for (; dels < del_end; dels++) {
     srid_t del_id = *dels;
     int *del_clause = get_clause_start(del_id);
-    uint clause_size = get_clause_size(del_id);
+    int clause_size = (int) get_clause_size(del_id);
 
     // Ignore deletion of the clause if it is a(n implied) unit.
     // Watch pointer invariant: the true literal is the first in the clause.
@@ -3623,7 +3622,7 @@ static void restore_wps_for_user_deleted_clauses(srid_t clause_id) {
       soft_undelete_clause(del_id);
       lit_occ_add_clause(&lit_occ, del_id);
       int *del_clause = get_clause_start_unsafe(del_id);
-      uint clause_size = get_clause_size(del_id);
+      int clause_size = (int) get_clause_size(del_id);
       if (clause_size > 1) {
         add_wp_for_lit(del_clause[0], del_id);
         add_wp_for_lit(del_clause[1], del_id);
