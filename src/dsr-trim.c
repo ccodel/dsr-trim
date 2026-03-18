@@ -151,15 +151,6 @@ Potential optimizations:
 #define DEL_IDX_FROM_LINE_NUM(line_num)  \
   ((num_parsed_add_lines - 1) - (line_num))
 
-// A common swap operation in `perform_up_for_backwards_checking()`.
-#define SWAP_WP_LIST_ELEMS(wp_list, clause_id, j, ignored_j)         do {      \
-    if (j != ignored_j) {                                                      \
-      wp_list[j] = wp_list[ignored_j];                                         \
-      wp_list[ignored_j] = clause_id;                                          \
-    }                                                                          \
-    ignored_j++;                                                               \
-  } while (0)
-
 #define SKIP_REMAINING_UP_HINTS(iter, end) do {                                \
     while ((iter) < (end) && *(iter) > 0) (iter)++;                            \
   } while (0)
@@ -2609,79 +2600,41 @@ static void remove_wp_for_lit(int lit, srid_t clause) {
     TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause), TO_DIMACS_LIT(lit));
 }
 
-// Returns the clause ID that becomes falsified, or -1 if not found.
+/**
+ * @brief Performs unit propagation when the checking mode is `BACKWARDS`.
+ * 
+ * During backwards checking, we prefer to derive unit clauses that were
+ * used in a later unit propagation derivation (i.e., marked clauses)
+ * over unused clauses. To accomplish this, we use a two-stage unit
+ * propagation algorithm.
+ * 
+ * @param gen The timestamp/generation to set new units to.
+ * @return The clause ID of the falsified clause, or -1 if none found.
+ *         Regardless of the return value, the discovered unit literals
+ *         are added to `unit_literals`, `unit_clauses`, and `alpha`.
+ */
 static srid_t perform_up_for_backwards_checking(ullong gen) {
   /*
+    When performing unit propagation for backwards checking, we use a two-stage
+    algorithm to prioritize marked (i.e., used) clauses.
+    
+    On the first pass, if we find any marked unit clauses, we immediately
+    add them as a unit clause, which increases the number of unit literals
+    to check. If we encounter an unmarked clause that might become unit
+    (meaning all literals except one are false, and the last is unassigned),
+    then we swap it to the front of the watch pointer list for the current
+    (negated) unit literal we are checking.
 
-    When performing UP for backwards checking, we do a very similar thing
-    to UP for forwards checking, except we skip unmarked clauses as possible
-    unit clauses in favor of marked clauses (i.e., clauses that were involved
-    in another UP derivation) in order to reduce the number of clauses we
-    need in the formula to derive the empty clause.
+    On the second pass, we loop over these ignored units. Whenever we add
+    a new unit, we return tot he first pass, bookmarking our progress.
 
-    In the inner loop (j), any watch pointer with (j' < j) is either:
-      - A satisfied clause, via its first watch pointer
-      - A unit clause, made unit via its first watch pointer (which is then set to true)
-
-    This is because if a clause is falsified, it generates a contradiction,
-    and UP exits. If instead the first watch pointer is not satisfied, but
-    the clause contains a non-falsified literal to replace the considered
-    negated lit, then lit's watch pointer is removed.
-
-    As a result, if we prefer marked clauses for UP, then circle back,
-    the only clauses that "come before" will not have their truth values
-    changed.
-
-      (Lemma: when adding unit clauses/literals to be processed by UP,
-        we will never have both (l) and (-l) waiting to be processed,
-        since we already set the assignment.)
-
-    As for clauses that "come after" our bookmarked spot, they will be one of:
-      - A satisfied clause
-      - A unit clause
-      - An ignored, unmarked clause
-
-    Repeating the UP loop on these clauses generates the following behavior:
-      - Ignored (continue)
-      - Ignored (since its watch pointer has been set to true, making it satisfied)
-      - Actually do UP
-
-    One solution is to "bubble up" the ignored unmarked clauses, i.e.,
-    to "bubble down" the satisfied/unit clauses. One way to do this is
-    to save the earliest ignored index, and then maintain the following invariant:
-
-    | SAT | SAT | UNIT/SAT | ... | IGN | IGN | ... | new UNIT | ... |
-
-    Then the index of the ignored clause in `wps_list[j]` increments by one,
-    and the new unit/satisfied clause swaps with the earliest ignored clause:
-
-    | SAT | SAT | UNIT/SAT | ... | new unit | IGN | ... | IGN | ... |
-
-    This slightly changes the order of watch pointers within the list,
-    which could be more expensive than simply doing the redundant thing.
-
-    Running an experiment on packing.cnf gives about 5 billion SAT cases,
-    and only 126 million UNIT cases, which makes not repeating the SAT
-    cases a good thing to do, even if the swaps are expensive.
-
-    This also means that we not only need to store the (i, j) pair of a bookmark,
-    but we also need to store the (j' < j) index to swap ignored clauses with.
-    (Thus, if i == i', then both j' and j need to be incremented, etc.)
-
-      I think this means that we only have to set a bit if we ignored a clause
-      during the j run for some i, save the (i, j) pair of the ignored, and
-      restore it later
-
-    Another interesting point: ignored clauses can be any type
-    (SAT, UNIT, SWAP, CONTRA), we just don't know which one until we process.
-    From that point, swapping can still occur, but the invariant from "before"
-    is maintained, so we don't need to store anything special when processing,
-    aside from setting the ignored bit to 0.
+    On a handful of tests, we found that a supermajority of watch pointers
+    are satisfied or have their watch pointers swapped, rather than become unit
+    or cause a contradiction. Thus, we prioritize the `TT` branch.
    */
-
+  
   int progressed_i = 0;
   int bookmarked_i = INT_MAX;
-  int accepting_unused_clauses = 0;
 
   int i;
   switch (up_state) {
@@ -2691,32 +2644,22 @@ static srid_t perform_up_for_backwards_checking(ullong gen) {
     default: log_fatal_err("Corrupted up_state: %d", up_state);
   }
 
-  // Reset the `wp_up_indexes`
-  // TODO: Why don't we reset the whole thing?
-  // I guess the thought is that during backwards checking, we've already
-  // done UP on the global state, so there is nothing more to find here
-  // (Especially if we uncommit true units as we move backwards through form)
+  // Reset the `wp_up_indexes` from our starting index `i` to the end.
+  // Any call to `set_unit_clause()` sets the new index value to 0.
   memset(unit_literals_wp_up_indexes + i, 0, (units_size - i) * sizeof(int));
 
-restart_up:
+  // Stage 1: Add units from used clauses, defer possible unused units.
+  restart_unit_propagation:
   for (; i < units_size; i++) {
-    // Iterate through lit's watch pointers and see if any clause becomes unit
     int lit = NEGATE_LIT(unit_literals[i]);
     srid_t *wp_list = wps[lit];
-
-    int wp_size = wp_sizes[lit]; // Store in a local variable for efficiency
-    int j = unit_literals_wp_up_indexes[i]; // Store in a local var for eff.
-    if (j == wp_size) continue;
-    int ignored_j = j;
-
-    for (; j < wp_size; j++) {
+    int ignored_j = 0;
+    for (int j = 0; j < wp_sizes[lit]; j++) {
       srid_t clause_id = wp_list[j];
-      int *clause = get_clause_start(clause_id);
+      int *clause = get_clause_start_unsafe(clause_id);
 
-      // The clause is not a unit clause (yet), and its watch pointers are 
-      // the first two literals in the clause (we may reorder literals here).
-
-      // Place the other watch pointer first
+      // Invariant: the first two literals in the clause are watch pointers.
+      // Place the other watch pointer first.
       if (clause[0] == lit) {
         clause[0] = clause[1];
         clause[1] = lit;
@@ -2724,102 +2667,119 @@ restart_up:
 
       int first_wp = clause[0];
       peval_t first_peval = peval_lit_under_alpha(first_wp);
-
-      // If `first_wp` evals to true, then the clause is satisfied (not unit)
       if (first_peval == TT) {
-        // We swap the satisfied clause back in the wp_list,
-        // so that the ignored clauses get bubbled up to the end
-        SWAP_WP_LIST_ELEMS(wp_list, clause_id, j, ignored_j);
-        continue;
+        continue; // A satisfied clause cannot be unit or falsified
       }
 
-      // If we haven't processed these watch pointers yet, we try to
-      // replace `lit` with a non-false wp later in the clause
-      if (i >= progressed_i) {
-        int clause_size = (int) get_clause_size(clause_id);
-        int found_new_wp = 0;
-        for (int k = 2; k < clause_size; k++) {
-          if (peval_lit_under_alpha(clause[k]) != FF) {
-            // The kth literal is non-false, so swap it with the first wp
-            int new_wp = clause[k];
-            clause[1] = new_wp;
-            clause[k] = lit;
+      // Try to replace this watch pointer with another later in the clause.
+      int clause_size = (int) get_clause_size(clause_id);
+      for (int k = 2; k < clause_size; k++) {
+        int new_wp = clause[k];
+        peval_t new_peval = peval_lit_under_alpha(new_wp);
+        if (new_peval != FF) {
+          // The kth literal is non-false, so swap it with lit's watch pointer
+          clause[k] = lit;
+          clause[1] = new_wp;
 
-            // Because clauses do not have duplicate literals, we know that
-            // `clause[1] != lit`, and so even if `wps` gets reallocated,
-            // it won't affect `wp_list = wps[lit]`.
-            add_wp_for_lit(new_wp, clause_id);
+          // Since clauses do not have duplicate literals, adding a watch
+          // pointer for `new_wp` does not affect `wps[lit]`.
+          // Thus, even if the `wps` array gets reallocated (perhaps due to
+          // `new_wp` becoming the first watch pointer for that literal),
+          // it won't affect the allocation of `wp_list = wps[lit]`.
+          add_wp_for_lit(new_wp, clause_id);
 
-            // Instead of calling `remove_wp_for_lit()`, we swap from the back
-            wp_list[j] = wp_list[wp_size - 1];
-            wp_size--;
-            found_new_wp = 1;
-            break;
-          }
-        }
-
-        if (found_new_wp) {
-          j--; // We need to decrement, since we placed a new wp in `wp_list[j]`
-          continue;  
+          // Instead of calling `remove_wp_for_lit()`, replace with last wp
+          wp_sizes[lit]--;
+          wp_list[j] = wp_list[wp_sizes[lit]];
+          j--; // Check the new watch pointer we swapped in
+          goto next_wp_for_lit;
         }
       }
 
-      // We didn't find a replacement non-FF watch pointer. Is `first_wp` FF?
+      // If all literals are false, we found a UP contradiction.
       if (first_peval == FF) {
-        // Since all literals are false, we found a UP contradiction
-        // No need to update `unit_literals_wp_up_indexes[i]`, no more UP left
-        wp_sizes[lit] = wp_size; // Restore from the local variable
         return clause_id;
+      }
+
+      // The first literal is unassigned, so we have a new unit clause.
+      // During backwards checking, we prefer already-used clauses.
+      if (IS_USED_LUI(clauses_lui[clause_id])) {
+        set_unit_clause(first_wp, clause_id, gen);
       } else {
-        // The first literal is unassigned, so we have a unit clause/literal
-        // For backwards checking, we prefer already-used clauses
-        if (IS_USED_LUI(clauses_lui[clause_id])) {
-          set_unit_clause(first_wp, clause_id, gen); // Add as a unit literal
-          SWAP_WP_LIST_ELEMS(wp_list, clause_id, j, ignored_j);
-        } else if (accepting_unused_clauses) {
-          accepting_unused_clauses = 0;
-          bookmarked_i = i; // Monotonically increases
+        // Ignore this unused, potentially-unit clause in stage 1.
+        if (j != ignored_j) {
+          wp_list[j] = wp_list[ignored_j];
+          wp_list[ignored_j] = clause_id;
+        }
+        ignored_j++; 
 
-          set_unit_clause(first_wp, clause_id, gen);
-          SWAP_WP_LIST_ELEMS(wp_list, clause_id, j, ignored_j);
-
-          // Now that we've marked a clause, perhaps the new unit literal
-          // gives us new unit clauses that are already marked.
-          // We would prefer these over more ignored, unmarked clauses
-          // associated with this unit literal.
-          unit_literals_wp_up_indexes[i] = ignored_j; // Save our progress
-          wp_sizes[lit] = wp_size;
-          i = progressed_i;
-          
-          goto restart_up;
-        } else if (bookmarked_i == INT_MAX) {
-          // We are ignoring an unused, potentially-unit clause
-          // Store the minimum wp index of any unused/skipped unit clause
+        // Store which unit literal index is our first ignored clause
+        if (bookmarked_i == INT_MAX) {
           bookmarked_i = i;
         }
       }
+
+      next_wp_for_lit:
+      continue;
     }
 
+    // Store how many clauses we ignored for this literal, for stage 2.
     unit_literals_wp_up_indexes[i] = ignored_j;
-    wp_sizes[lit] = wp_size;
   }
 
-  progressed_i = i;  // Lemma: (i == units_size)
+  // If no ignored clauses remain, stop unit propagation.
+  if (bookmarked_i == INT_MAX) {
+    goto finish_up;
+  }
 
-  // We restart UP to process the ignored clauses, if there are any
-  // On a "first pass", we always ignore clauses, so if the bookmark is set,
-  // there is at least one ignored clause
-  // On "return passes," the bookmark monotonically increases, and we only
-  // provably have no ignored clause if we are still accepting clauses
-  if (!accepting_unused_clauses && bookmarked_i != INT_MAX) {
-    // We ignored at least one clause.
-    // Go back to the `bookmarked_i`
-    // We restart UP at saved `unit_literals_wp_up_indexes[i]`,
-    i = bookmarked_i;
-    accepting_unused_clauses = 1;
-    goto restart_up;
+  // Stage 2: process ignored clauses, accepting at most one unused clause
+  // before resuming stage 1 from `progressed_i`.
+  progressed_i = units_size;
+  i = bookmarked_i;
+  bookmarked_i = INT_MAX;
+
+  for (; i < units_size; i++) {
+    int lit = NEGATE_LIT(unit_literals[i]);
+    srid_t *wp_list = wps[lit];
+    for (int j = unit_literals_wp_up_indexes[i] - 1; j >= 0; j--) {
+      srid_t clause_id = wp_list[j];
+      int *clause = get_clause_start_unsafe(clause_id);
+
+      /*
+        Unlike in stage 1, we DON'T need to do the following things:
+        
+        1. Move the other watch pointer to index 0. Since all other literals
+           in this clause are false under `alpha`, the only way for the
+           other watch pointer to move to `clause[1]` is if stage 1 processes
+           it. But for stage 1 to process it, `first_wp` would need to be set to
+           false, which would set the entire clause to false and cause a
+           UP contradiction, and UP would stop there.
+
+        2. Look for a non-`FF` literal to replace the first. We already did
+           this in stage 1 before we ignored this clause, and since `alpha`
+           is a monotonically growing partial assignment during a single
+           stretch of UP, there won't suddenly be a new non-`FF` literal later.
+
+        3. Check for `TT` or `FF`, since we already checked for those cases
+           in stage 1. See point (1) above. However, stage 1 might have in
+           the meantime set `first_wp` to `TT`, so we only set a unit if
+           `first_wp` is still unassigned. Otherwise, we continue to the
+           next watch pointer in the list.
+      */
+      int first_wp = clause[0];
+      peval_t first_peval = peval_lit_under_alpha(first_wp);
+      if (first_peval == UNASSIGNED) {
+        // Accept a single unused clause, then resume stage 1.
+        unit_literals_wp_up_indexes[i] = j;
+        bookmarked_i = i;
+        i = progressed_i;
+        set_unit_clause(first_wp, clause_id, gen);
+        goto restart_unit_propagation;
+      }
+    }
   }
   
+  finish_up:
   if (up_state == GLOBAL_UP) {
     global_up_literals_index = units_size;
   }
@@ -3982,5 +3942,6 @@ int main(int argc, char **argv) {
 
   prepare_dsr_trim_data();
   check_proof();
+
   return 0;
 }
