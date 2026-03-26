@@ -2294,7 +2294,7 @@ static int minimize_witness(void) {
 
       /* 
        * In most cases, (l -> m) undergoes normal minimization.
-       * However, we can (extremely rarely) end up in the position where
+       * However, we can (extremely rarely) end up in the situation where
        * the pivot `p` is minimized to FF. Because we do not want to repeat
        * `p` in the TT/FF mappings to encode that it should be mapped to FF,
        * there is no way for the pivot to be both the pivot and to be mapped
@@ -2415,7 +2415,8 @@ static void find_new_pivot_for_witness(srid_t cc_index) {
    * 
    * If `new_pivot` is in the PR portion, then there is no (new_pivot -> TT/FF)
    * mapping in the SR portion, due to `assume_subst()`. We swap new_pivot
-   * and pivot in the PR portion, and return.
+   * and pivot in the PR portion, and return (after replacing the appearance
+   * of the pivot as a separator).
    * 
    * If `new_pivot` is in the SR portion, then either:
    *   - it is mapped to TT (modulo the sign of `new_pivot`), and so its entry
@@ -2445,11 +2446,11 @@ static void find_new_pivot_for_witness(srid_t cc_index) {
       if (encountered_new_pivot_mapping) return;
     } else if (lit == new_pivot) {
       if (witness_inc == 1) {
-        // Swap with the old pivot
+        // Replace with the old pivot
         *witness_iter = pivot;
         encountered_new_pivot_mapping = 1;
       } else {
-        // Swap the mapping with the end of the witness
+        // Swap the mapping with the one at the end of the witness
         if (witness_iter + 2 < witness_end && witness_iter[2] != WITNESS_TERM) {
           int *new_pivot_ptr = witness_iter;
           
@@ -2464,7 +2465,7 @@ static void find_new_pivot_for_witness(srid_t cc_index) {
           new_pivot_ptr[1] = witness_iter[1];
         }
 
-        *witness_iter = WITNESS_TERM;
+        *witness_iter = WITNESS_TERM; // Erase the previous new-pivot mapping
         return;
       }
     }
@@ -3391,13 +3392,26 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
   exit(1);
 }
 
+/**
+ * @brief Checks that the clause has the SR property with respect to the
+ *        current substitution and truth assignment.
+ * 
+ * Syntatically, this function checks that `(F /\ !C /\ !D) |-1 \bot`,
+ * where `C` is the candidate clause and `D` is the formula clause evaluated
+ * under the substitution.
+ *  
+ * @param clause_index The ID of the clause to check.
+ */
 static void check_reduced_clause(srid_t clause_index) {
   switch (reduce_clause_under_subst(clause_index)) {
     case SATISFIED_OR_MUL:
       increment_num_reduced_clauses(current_line);
     case NOT_REDUCED: // fallthrough
-      return;
-    case REDUCED:
+      break;
+    case CONTRADICTION:
+      log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
+        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
+    default: // case REDUCED
       add_RAT_clause_hint(clause_index);
       increment_num_reduced_clauses(current_line);
 
@@ -3415,13 +3429,6 @@ static void check_reduced_clause(srid_t clause_index) {
       unassume_RAT_clause(clause_index);
       alpha_generation += GEN_INC; // Clear this round of RAT units from alpha
       break;
-    case CONTRADICTION:
-      log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
-        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
-    default:
-      log_fatal_err("[line %lld] Clause %lld corrupted reduction value %d.",
-        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index),
-        reduce_clause_under_subst(clause_index));
   }
 }
 
@@ -3518,7 +3525,15 @@ static void check_dsr_line(void) {
     the pivot literal elsewhere. In the case where the witness does NOT
     satisfy C, we treat it like any other RAT clause and subject it
     to a check. The recorded hint ID is the ID of the candidate itself.
+
+    Also, we must check that the candidate clause is reduced by the substitution
+    in some way. Otherwise, the SR check simplifies to `F /\ !C |-1 \bot`,
+    which would be derivable by RUP alone. Since we only get to this check if
+    the candidate is NOT derivable by RUP, we must throw an error.
   */
+  FATAL_ERR_IF(reduce_clause_under_subst(cc_index) == NOT_REDUCED,
+    "[line %lld] Candidate clause %lld is not reduced by the substitution.",
+    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(cc_index));
   check_reduced_clause(cc_index);
 
   print_or_store_lsr_line(old_alpha_gen);

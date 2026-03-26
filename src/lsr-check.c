@@ -466,7 +466,14 @@ static void check_line(void) {
     check_SR_clause(i, &hints_iter, hints_start, hints_end);
   }
 
-  // We also check the candidate clause, since the witness might not satisfy it
+  // We also check the candidate clause, since the witness might not satisfy it.
+  // Crucially, the witness must reduce the clause in some way.
+  // If no error is thrown, do an SR check like normal.
+  FATAL_ERR_IF(reduce_clause_under_subst(candidate_clause_id) == NOT_REDUCED,
+    "[line %lld | id %lld] Candidate clause %lld is not reduced under the substitution.",
+    get_line_id_for_line_num(current_line),
+    LINE_ID_FROM_LINE_NUM(current_line),
+    TO_DIMACS_CLAUSE(candidate_clause_id));
   check_SR_clause(candidate_clause_id, &hints_iter, hints_start, hints_end);
 
 finish_line:
