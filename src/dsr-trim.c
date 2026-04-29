@@ -1464,16 +1464,26 @@ static int delete_parsed_clause(void) {
 
   // Otherwise, we are deleting the last copy of this clause 
 
-  // Forwards checking only: Do not delete (implied) units unless requested.
   int *clause_match_ptr = get_clause_start_unsafe(clause_match);
   int clause_match_size = (int) get_clause_size(clause_match);
-  int is_a_derived_unit = is_lit_set_due_to_up(clause_match_ptr[0]) 
-        && (get_unit_clause_for_lit(clause_match_ptr[0]) == clause_match);
-  if (ch_mode == FORWARDS_CHECKING_MODE
-      && is_a_derived_unit
-      && ((ignore_unit_deletions && clause_match_size == 1)
-       || (ignore_implied_unit_deletions && clause_match_size > 1))) {
+  int is_a_derived_unit;
+
+  // Do not delete true units, if requested (which it is, by default)
+  if (ignore_unit_deletions && clause_match_size == 1) {
     return 0;
+  }
+  
+  // Do not delete implied units (but only known during forwards checking).
+  // NOTE: We also cannot call `is_lit_set_due_to_up()` during backwards
+  // checking, since the underlying array may not have been resized.
+  if (ch_mode == FORWARDS_CHECKING_MODE) {
+    is_a_derived_unit = is_lit_set_due_to_up(clause_match_ptr[0]) 
+        && (get_unit_clause_for_lit(clause_match_ptr[0]) == clause_match);
+
+    if (is_a_derived_unit
+        && (ignore_implied_unit_deletions && clause_match_size > 1)) {
+      return 0;
+    }
   }
 
   ht_remove_entry_in_bucket(&clause_id_ht, b, e);
@@ -3953,6 +3963,22 @@ int main(int argc, char **argv) {
       logc("The emitted LSR proof will also be in binary format.");
       write_binary = 1;
     }
+  }
+
+  // In rare cases, the input CNF formula might be trivially unsatisfiable.
+  // This means the formula contains the empty clause.
+  // Since the caller might expect a trivial proof to be emitted,
+  // we manually write the empty clause as the proof.
+  if (derived_empty_clause) {
+    print_proof_checking_result();
+    if (lsr_file != NULL) {
+      write_lsr_addition_line_start(lsr_file, num_cnf_clauses + 1);
+      write_lit(lsr_file, 0); // Empty clause
+      write_sr_line_end(lsr_file);
+      fclose(lsr_file);
+    }
+
+    return 0;
   }
 
   prepare_dsr_trim_data();

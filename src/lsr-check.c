@@ -596,6 +596,13 @@ int main(int argc, char *argv[]) {
   parse_cnf(cnf_file, KEEP_TAUTOLOGIES);
   timer_print_elapsed(&timer, TIMER_LOCAL, "Parsing the CNF");
 
+  // In rare cases, we don't need to check the proof if the formula is UNSAT
+  if (derived_empty_clause) {
+    logc("The formula is trivially unsatisfiable.");
+    print_proof_checking_result();
+    return 0;
+  }
+
   int input_proof_is_in_binary = configure_proof_file_parsing(lsr_file);
   if (input_proof_is_in_binary) {
     logc("Detected that the LSR proof is in binary format.");

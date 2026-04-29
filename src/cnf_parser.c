@@ -89,8 +89,8 @@ void parse_cnf(FILE *f, int delete_tautologies) {
     }
   }
 
-  FATAL_ERR_IF(num_cnf_vars <= 0,
-    "The number of vars in the header (%d) was not positive.", num_cnf_vars);
+  FATAL_ERR_IF(num_cnf_vars < 0,
+    "The number of vars in the header (%d) was negative.", num_cnf_vars);
   FATAL_ERR_IF(num_cnf_clauses <= 0,
     "The number of clauses in the header (%d) was not positive.", num_cnf_clauses);
 
@@ -107,8 +107,11 @@ void parse_cnf(FILE *f, int delete_tautologies) {
   while (formula_size < num_cnf_clauses) {
     int is_tautology = parse_clause(f);
     if (new_clause_size == 0) {
-      log_fatal_err("The empty clause was found at clause %lld in the CNF.",
-        TO_DIMACS_CLAUSE(formula_size));
+      logc("The empty clause was found at clause %lld in the CNF.",
+          TO_DIMACS_CLAUSE(formula_size));
+      derived_empty_clause = 1;
+      commit_clause();
+      break;
     } else if (is_tautology && delete_tautologies) {
       logc("Tautology in clause %lld detected, deleting...",
           TO_DIMACS_CLAUSE(formula_size));
