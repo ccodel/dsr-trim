@@ -22,6 +22,7 @@
 #define DIR_OFFSET              (3)
 #define NAME_OFFSET             (4)
 #define EAGER_STREAMING_OFFSET  (5)
+#define DEL_PROOF_OFFSET        (6)
 
 #define HELP_MSG_MASK         (1 << HELP_MSG_OFFSET)
 #define QUIET_VERBOSE_MASK    (1 << QUIET_VERBOSE_OFFSET)
@@ -29,6 +30,7 @@
 #define DIR_MASK              (1 << DIR_OFFSET)
 #define NAME_MASK             (1 << NAME_OFFSET)
 #define EAGER_STREAMING_MASK  (1 << EAGER_STREAMING_OFFSET)
+#define DEL_PROOF_MASK        (1 << DEL_PROOF_OFFSET)
 
 void cli_init(cli_opts_t *cli) {
   memset(cli, 0, offsetof(cli_opts_t, cnf_file_path_buf));
@@ -59,6 +61,7 @@ static int get_mask_from_opt(int opt) {
     case NAME_OPT: return NAME_MASK;
     case EAGER_OPT: // waterfall
     case STREAMING_OPT: return EAGER_STREAMING_MASK;
+    case DEL_PROOF_OPT: return DEL_PROOF_MASK;
     default: return -1;
   }
 }
@@ -125,6 +128,7 @@ cli_res_t cli_handle_opt(cli_opts_t *cli, int opt, int optopt,
     cli->cnf_file_path = ((char *) cli->cnf_file_path_buf) + len;
     copy_and_update_bufs(cli, len);
     break;
+  case DEL_PROOF_OPT: delete_proof_after_parsing = 1; break;
   case '?':
     return CLI_HELP_MESSAGE_TO_STDERR;
   default:

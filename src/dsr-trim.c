@@ -349,14 +349,21 @@ static void dbg_print_unit_literals(void);
 
 #define FORWARD_OPT          ('f')
 #define COMPRESS_PROOF_OPT   ('c')
+#define PRINT_UNSAT_CORE_OPT ('C')
+#define RUP_ADDS_ONLY_OPT    ('U')
 #define EMIT_VALID_FORM_OPT  (LONG_HELP_MSG_OPT + 1)
 #define DEL_UNITS_OPT        (LONG_HELP_MSG_OPT + 2)
 #define DEL_IMPL_UNITS_OPT   (LONG_HELP_MSG_OPT + 3)
 
-#define OPT_STR             ("cf" BASE_CLI_OPT_STR)
+#define OPT_STR             ("cfC:U" BASE_CLI_OPT_STR)
 
-// The file where we emit a VALID formula, if `--emit-valid-formula-to` is set.
-static FILE *valid_formula_file = NULL;
+static cli_opts_t cli;
+
+static int emit_valid_formula_flag = 0;
+static char valid_formula_file_path[MAX_FILE_PATH_LEN] = {0};
+
+static int print_unsat_core_flag = 0;
+static char unsat_core_file_path [MAX_FILE_PATH_LEN] = {0};
 
 /*
  * CC (9/17/2025): After staring at a whiteboard for an hour, I convinced
@@ -373,6 +380,9 @@ static FILE *valid_formula_file = NULL;
 static int ignore_unit_deletions = 1;
 static int ignore_implied_unit_deletions = 1;
 
+// If set, throw an error if the proof has any non-RUP addition steps.
+static int rup_additions_only = 0;
+
 // The set of "long options" for CLI argument parsing. Used by `getopt_long()`.
 static struct option const longopts[] = {
   { "forward",                     no_argument, NULL, FORWARD_OPT },
@@ -380,18 +390,38 @@ static struct option const longopts[] = {
   { "emit-valid-formula-to", required_argument, NULL, EMIT_VALID_FORM_OPT },
   { "delete-units",                no_argument, NULL, DEL_UNITS_OPT },
   { "delete-implied-units",        no_argument, NULL, DEL_IMPL_UNITS_OPT },
+  { "unsat-core",            required_argument, NULL, PRINT_UNSAT_CORE_OPT },
+  { "rup-only",                    no_argument, NULL, RUP_ADDS_ONLY_OPT },
   BASE_LONG_OPTS_ARRAY
 };
 
 // Prints a shorter help message to the provided `FILE` stream.
 static void print_short_help_msg(FILE *f) {
-  char *usage_str = "Usage: ./dsr-trim [OPTIONS] <cnf> <dsr> [lsr]\n";
+  char *usage_str = "Usage: ./dsr-trim [OPTIONS] <cnf> [dsr] [lsr]\n";
   fprintf(f, "%s", usage_str);
 }
 
 // Prints a longer help message to the provided `FILE` stream.
 static void print_long_help_msg(FILE *f) {
-  char *usage_str = "Usage: ./dsr-trim [OPTIONS] <cnf> <dsr> [lsr]\n";
+  char *usage_str = "Usage: ./dsr-trim [OPTIONS] <cnf> <dsr> [lsr]\n"
+  "\n"
+  "where\n"
+  "\n"
+  "  <cnf>    Required file path to the CNF file.\n"
+  "  [dsr]    File path to the DSR proof file. If omitted, `stdin` is used.\n"
+  "  [lsr]    File path to the output LSR proof file. No proof printed if omitted.\n"
+  "\n"
+  "and where [OPTIONS] may take any of the following:\n"
+  "\n"
+  "  -h        Prints this help message. (No proof checking.)\n"
+  "  --help    Prints a longer help message. (No proof checking.)\n"
+  "\n"
+  "   -q       Quiet mode. Only reports the final result.\n"
+  "   -v       Verbose mode. Prints additional statistics and information.\n"
+  "\n"
+  "   -C | --unsat-core <file>   Print the UNSAT core to <file>.\n"
+  "   -U | --rup-only            Only allow RUP addition lines in the proof.\n"
+  "\n";
   fprintf(f, "%s", usage_str);
 }
 
@@ -1231,12 +1261,24 @@ static void print_lsr_line(srid_t line_num, srid_t printed_line_id) {
   write_sr_line_end(lsr_file);
 }
 
+// Prints a clause to `f` in DIMACS format, with an ending '0'.
+// Assumes that the literals in the clause have been sorted.
+static void print_sorted_clause(FILE *f, int *clause_start, int *clause_end) {
+  for (; clause_start < clause_end; clause_start++) {
+    int lit = *clause_start;
+    write_lit(f, TO_DIMACS_LIT(lit));
+  }
+  write_sr_line_end(f);
+}
+
 static void print_valid_formula_if_requested(void) {
-  if (valid_formula_file == NULL) return;
+  if (emit_valid_formula_flag == 0) return;
 
   if (derived_empty_clause) {
     logc("The emitted \"valid\" formula contains the empty clause.");
   }
+
+  FILE *f = xfopen(valid_formula_file_path, "w");
 
   // Count how many non-deleted clauses there are, for the problem header
   srid_t num_present_clauses = 0;
@@ -1248,9 +1290,8 @@ static void print_valid_formula_if_requested(void) {
   int write_binary_before = write_binary;
   write_binary = 0;
 
-  // Write the `cnf p <num_vars> <num_clauses>` problem header
-  fputc(DIMACS_PROBLEM_LINE, valid_formula_file);
-  fprintf(valid_formula_file, CNF_HEADER_STR, max_var + 1, num_present_clauses);
+  // Write the "p cnf <num_vars> <num_clauses>" problem header
+  fprintf(f, FULL_CNF_HEADER_STR, max_var + 1, num_present_clauses);
 
   for (srid_t c = 0; c < formula_size; c++) {
     if (is_clause_deleted(c)) continue;
@@ -1263,19 +1304,55 @@ static void print_valid_formula_if_requested(void) {
     if (c < num_cnf_clauses) {
       qsort(iter, end - iter, sizeof(int), absintcmp);
     } else if (c == num_cnf_clauses) {
-      fprintf(valid_formula_file,
+      fprintf(f,
           "c >>> Redundant clauses start below this point <<<\n");
     }
 
-    for (; iter < end; iter++) {
-      int lit = *iter;
-      write_lit(valid_formula_file, TO_DIMACS_LIT(lit));
-    }
-    write_sr_line_end(valid_formula_file);
+    print_sorted_clause(f, iter, end);
   }
 
   write_binary = write_binary_before; // Restore the old value
-  fclose(valid_formula_file);
+  fclose(f);
+}
+
+static void print_unsat_core_if_requested(void) {
+  if (!derived_empty_clause) return;
+
+  // Count the number of UNSAT core clauses
+  srid_t num_unsat_core_clauses = 0;
+  for (srid_t c = 0; c < num_cnf_clauses; c++) {
+    if (IS_USED_LUI(clauses_lui[c])) {
+      num_unsat_core_clauses++;
+    }
+  }
+
+  logc("%lld of %lld clauses in UNSAT core",
+      num_unsat_core_clauses, num_cnf_clauses);
+
+  // Only print the UNSAT core if the user provided a file path
+  if (print_unsat_core_flag == 0) return;
+  
+  FILE *f = xfopen(unsat_core_file_path, "w");
+  int write_binary_before = write_binary;
+  write_binary = 0;
+
+  // Print the problem header of the new, smaller formula
+  fprintf(f, FULL_CNF_HEADER_STR, num_cnf_vars, num_unsat_core_clauses);
+
+  for (srid_t c = 0; c < num_cnf_clauses; c++) {
+    if (IS_UNUSED_LUI(clauses_lui[c])) continue;
+
+    int *iter = get_clause_start(c);
+    int *end = get_clause_end(c);
+
+    // Re-sort the literals in increasing order of magnitude
+    qsort(iter, end - iter, sizeof(int), absintcmp);
+    print_sorted_clause(f, iter, end);
+  }
+
+  write_binary = write_binary_before; // Restore the old value
+  fclose(f);
+  logc("UNSAT core written to: %s", unsat_core_file_path);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1680,9 +1757,7 @@ static void parse_entire_dsr_file(void) {
     parsed_empty_clause = (new_clause_size == 0);
   }
 
-  if (dsr_file != stdin) {
-    fclose(dsr_file);
-  }
+  close_and_unlink_proof_file(dsr_file, cli.dsr_file_path);
 
   // Since we've parsed all possible clauses, we can free the hash tables
   // that were tracking clause multiplicities/duplicates.
@@ -3476,6 +3551,9 @@ static void check_dsr_line(void) {
 
   // Since we didn't derive UP contradiction, the clause should be nonempty
   FATAL_ERR_IF(new_clause_size == 0, "Didn't UP refute the empty clause.");
+  FATAL_ERR_IF(rup_additions_only, "[line %lld] Clause %lld is not RUP,"
+    " but `-U` (i.e., RUP additions only) was specified.",
+    TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(cc_index));
 
   // Now we turn to RAT checking - minimize and assume the witness
   max_RAT_line = MAX(max_RAT_line, current_line);
@@ -3794,8 +3872,8 @@ static void check_proof(void) {
     }
   }
 
-  if (p_strategy == PS_STREAMING && dsr_file != stdin) {
-    fclose(dsr_file);
+  if (p_strategy == PS_STREAMING) {
+    close_and_unlink_proof_file(dsr_file, cli.dsr_file_path);
   }
 
   timer_print_elapsed(&timer, TIMER_LOCAL, "Proof checking");
@@ -3803,6 +3881,7 @@ static void check_proof(void) {
 
   print_stored_lsr_proof();
   print_valid_formula_if_requested();
+  print_unsat_core_if_requested();
   timer_print_elapsed(&timer, TIMER_GLOBAL, "Total runtime");
 }
 
@@ -3816,14 +3895,8 @@ int main(int argc, char **argv) {
 
   int forward_set = 0, compress_set = 0;
   int del_units_set = 0, del_impl_units_set = 0;
-  cli_opts_t cli;
   cli_init(&cli);
   
-  // Emit VALID formulas to a file, upon request
-  int emit_set = 0;
-  char valid_formula_file_path[MAX_FILE_PATH_LEN];
-  valid_formula_file_path[MAX_FILE_PATH_LEN - 1] = '\0';
-
   // Parse CLI arguments
   int ch;
   cli_res_t cli_res;
@@ -3839,9 +3912,14 @@ int main(int argc, char **argv) {
       FATAL_ERR_IF(compress_set, "Cannot set `-c` or `--compress` twice.");
       compress_set = 1;
       break;
+    case PRINT_UNSAT_CORE_OPT:
+      FATAL_ERR_IF(print_unsat_core_flag, "Cannot set `-C` or `--unsat-core` twice.");
+      print_unsat_core_flag = 1;
+      strncpy(unsat_core_file_path, argv[optind - 1], MAX_FILE_PATH_LEN - 1);
+      break;
     case EMIT_VALID_FORM_OPT:
-      FATAL_ERR_IF(emit_set, "Cannot set `--emit-valid-formula-to` twice.");
-      emit_set = 1;
+      FATAL_ERR_IF(emit_valid_formula_flag, "Cannot set `--emit-valid-formula-to` twice.");
+      emit_valid_formula_flag = 1;
       strncpy(valid_formula_file_path, argv[optind - 1], MAX_FILE_PATH_LEN - 1);
       break;
     case DEL_UNITS_OPT:
@@ -3851,6 +3929,10 @@ int main(int argc, char **argv) {
     case DEL_IMPL_UNITS_OPT:
       FATAL_ERR_IF(del_impl_units_set, "Cannot set `--delete-implied-units` twice.");
       del_impl_units_set = 1;
+      break;
+    case RUP_ADDS_ONLY_OPT:
+      FATAL_ERR_IF(rup_additions_only, "Cannot set `-U` or `--rup-only` twice.");
+      rup_additions_only = 1;
       break;
     default:
       cli_res = cli_handle_opt(&cli, ch, optopt, argv[optind - 1], optarg);
@@ -3897,12 +3979,9 @@ int main(int argc, char **argv) {
     dsr_file = xfopen(cli.dsr_file_path, "r");
   }
 
-  if (cli.lsr_file_path == NULL) {
-    logc("No LSR file path provided, using stdout.");
-    lsr_file = stdout;
-  } else {
+  if (cli.lsr_file_path != NULL) {
     logc("LSR file path: %s", cli.lsr_file_path);
-
+    
     // Don't open a file if we are writing to `/dev/null`
     if (strcmp(cli.lsr_file_path, "/dev/null") == 0
         || strcmp(cli.lsr_file_path, "/dev/null/") == 0) {
@@ -3931,11 +4010,6 @@ int main(int argc, char **argv) {
   if (compress_set) {
     write_binary = 1;
     logc("The emitted LSR proof will be in binary format (`-c` specified).");
-  }
-
-  if (emit_set) {
-    logc("Emitting a VALID formula to: %s", valid_formula_file_path);
-    valid_formula_file = xfopen(valid_formula_file_path, "w");
   }
 
   if (del_units_set) {

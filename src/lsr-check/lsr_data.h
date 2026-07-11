@@ -9,12 +9,14 @@
 #ifndef _LSR_CHECK_DATA_H_
 #define _LSR_CHECK_DATA_H_
 
+#include <stdio.h>
+
 #include "../global_types.h"
 #include "../global_data.h"
 #include "../lit_occ.h"
 #include "../range_array.h"
 #include "../timer.h"
-#include <stdio.h>
+#include "../cli.h"
 
 #ifndef SKIP_REMAINING_UP_HINTS
 #define SKIP_REMAINING_UP_HINTS(iter, end) do {                                \
@@ -68,6 +70,9 @@ extern sr_timer_t timer;
 
 // Counts the number of times and the clauses that literals appear in.
 extern lit_occ_t lit_occ;
+
+// Command line options. Initialized in `main()`.
+extern cli_opts_t cli;
 
 ////////////////////////////////////////////////////////////////////////////////
 

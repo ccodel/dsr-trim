@@ -146,7 +146,7 @@ static void print_long_help_msg(FILE *f) {
   "  --help    Prints this (longer) help message. (No proof checking.)\n"
   "\n"
   "  -q        Quiet mode. Only reports the final result.\n"
-  "  -v        Verbose mode. Prints additional statistics and information\n"
+  "  -v        Verbose mode. Prints additional statistics and information.\n"
   "            All comment lines are prefixed with \"c \".\n"
   "\n"
   "  --dir=<d>   | -d <dir>    Specify a common directory to use for the\n"
@@ -502,8 +502,8 @@ static void check_proof(void) {
     }
   }
 
-  if (p_strategy == PS_STREAMING && lsr_file != stdin) {
-    fclose(lsr_file);
+  if (p_strategy == PS_STREAMING) {
+    close_and_unlink_proof_file(lsr_file, cli.lsr_file_path);
   }
 
   if (p_strategy == PS_EAGER) {
@@ -525,7 +525,6 @@ int main(int argc, char *argv[]) {
   }
 
   p_strategy = PS_STREAMING;
-  cli_opts_t cli;
   cli_init(&cli);
 
   // Parse CLI arguments

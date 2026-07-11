@@ -31,10 +31,11 @@
 #define NAME_OPT              ('n')
 #define EAGER_OPT             ('e')
 #define STREAMING_OPT         ('s')
+#define DEL_PROOF_OPT         ('D')   // Delete the proof after parsing
 
 // The base option string used by `getopt_long()`.
 // Not wrapped in parentheses to allow for C string-literal concatenation.
-#define BASE_CLI_OPT_STR      "d:ehn:qsvV"
+#define BASE_CLI_OPT_STR      "d:ehn:qsvDV"
 
 #define BASE_LONG_OPTS_ARRAY       \
   { "help",      no_argument,       NULL, LONG_HELP_MSG_OPT }, \

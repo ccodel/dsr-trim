@@ -7,6 +7,7 @@
  */
 
 #include <ctype.h>
+#include <stdio.h>
 
 #include "global_data.h"
 #include "global_parsing.h"
@@ -16,6 +17,7 @@
 
 int read_binary = 0;
 int write_binary = 0;
+int delete_proof_after_parsing = 0;
 
 int configure_proof_file_parsing(FILE *f) {
   int c = getc_unlocked(f);
@@ -42,6 +44,17 @@ int configure_proof_file_parsing(FILE *f) {
 
   ungetc(c, f);
   return read_binary;
+}
+
+
+void close_and_unlink_proof_file(FILE *f, const char *path) {
+  if (f != stdin && f != NULL) {
+    if (delete_proof_after_parsing) {
+      remove(path);
+    }
+
+    fclose(f);
+  }
 }
 
 /**

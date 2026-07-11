@@ -87,6 +87,7 @@
 
 // Problem header format string for CNFs.
 #define CNF_HEADER_STR      (" cnf %d %lld\n")
+#define FULL_CNF_HEADER_STR ("p cnf %d %lld\n")
 #else
 // The kind of numeric token we read by default.
 #define READ_CLAUSE_ID      READ_INT_TOKEN
@@ -95,6 +96,7 @@
 
 // Problem header format string for CNFs.
 #define CNF_HEADER_STR      (" cnf %d %d\n")
+#define FULL_CNF_HEADER_STR ("p cnf %d %d\n")
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -107,12 +109,20 @@ extern int read_binary;
 // By default. assumes the proof should not be written in binary format.
 extern int write_binary;
 
+// Flag for whether the proof checker should delete the proof after parsing.
+// Set via the `-D` command-line option. (See `cli.h`/`cli.c`.)
+extern int delete_proof_after_parsing;
+
 // Checks the first character of the proof file `f` to determine
 // if the proof is in binary or human-readable format.
 // Adjusts `read_binary` accordingly.
 // When the function returns, any consumed characters are placed back into `f`.
 // Returns 1 if in binary, 0 if human-readable.
 int configure_proof_file_parsing(FILE *f);
+
+// If `f` is not `stdin`, closes the proof file.
+// Also unlinks the file path if `delete_proof_after_parsing` is set.
+void close_and_unlink_proof_file(FILE *f, const char *path);
 
 int scan_until_char(FILE *f, int match);
 

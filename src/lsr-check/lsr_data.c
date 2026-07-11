@@ -31,6 +31,8 @@ sr_timer_t timer;
 
 lit_occ_t lit_occ;
 
+cli_opts_t cli;
+
 static srid_t num_parsed_lines = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -358,8 +360,8 @@ void parse_entire_lsr_file(void) {
       break;
     }
   }
-  
-  fclose(lsr_file);
+ 
+  close_and_unlink_proof_file(lsr_file, cli.lsr_file_path);
 
   // Just in case, commit the hints and deletions
   ra_commit_range(&hints);
