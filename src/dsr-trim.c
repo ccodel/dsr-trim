@@ -349,13 +349,14 @@ static void dbg_print_unit_literals(void);
 
 #define FORWARD_OPT          ('f')
 #define COMPRESS_PROOF_OPT   ('c')
+#define DECOMPRESS_PROOF_OPT ('A')  ///< Write the proof in ASCII format
 #define PRINT_UNSAT_CORE_OPT ('C')
 #define RUP_ADDS_ONLY_OPT    ('U')
 #define EMIT_VALID_FORM_OPT  (LONG_HELP_MSG_OPT + 1)
 #define DEL_UNITS_OPT        (LONG_HELP_MSG_OPT + 2)
 #define DEL_IMPL_UNITS_OPT   (LONG_HELP_MSG_OPT + 3)
 
-#define OPT_STR             ("cfC:U" BASE_CLI_OPT_STR)
+#define OPT_STR             ("cfAC:U" BASE_CLI_OPT_STR)
 
 static cli_opts_t cli;
 
@@ -387,6 +388,7 @@ static int rup_additions_only = 0;
 static struct option const longopts[] = {
   { "forward",                     no_argument, NULL, FORWARD_OPT },
   { "compress",                    no_argument, NULL, COMPRESS_PROOF_OPT },
+  { "ascii",                       no_argument, NULL, DECOMPRESS_PROOF_OPT },
   { "emit-valid-formula-to", required_argument, NULL, EMIT_VALID_FORM_OPT },
   { "delete-units",                no_argument, NULL, DEL_UNITS_OPT },
   { "delete-implied-units",        no_argument, NULL, DEL_IMPL_UNITS_OPT },
@@ -419,6 +421,7 @@ static void print_long_help_msg(FILE *f) {
   "   -q       Quiet mode. Only reports the final result.\n"
   "   -v       Verbose mode. Prints additional statistics and information.\n"
   "\n"
+  "   -A | --ascii               Write the proof in ASCII format.\n"
   "   -C | --unsat-core <file>   Print the UNSAT core to <file>.\n"
   "   -U | --rup-only            Only allow RUP addition lines in the proof.\n"
   "\n";
@@ -3912,6 +3915,10 @@ int main(int argc, char **argv) {
       FATAL_ERR_IF(compress_set, "Cannot set `-c` or `--compress` twice.");
       compress_set = 1;
       break;
+    case DECOMPRESS_PROOF_OPT:
+      FATAL_ERR_IF(compress_set, "Cannot set `-d` or `--decompress` twice.");
+      compress_set = 2;
+      break;
     case PRINT_UNSAT_CORE_OPT:
       FATAL_ERR_IF(print_unsat_core_flag, "Cannot set `-C` or `--unsat-core` twice.");
       print_unsat_core_flag = 1;
@@ -4007,9 +4014,14 @@ int main(int argc, char **argv) {
     log_fatal_err("Forwards checking and eager parsing not implemented.");
   }
 
-  if (compress_set) {
-    write_binary = 1;
-    logc("The emitted LSR proof will be in binary format (`-c` specified).");
+  if (lsr_file != NULL) {
+    if (compress_set == 1) {
+      write_binary = 1;
+      logc("The emitted LSR proof will be in binary format (`-c` specified).");
+    } else if (compress_set == 2) {
+      write_binary = 0;
+      logc("The emitted LSR proof will be in ASCII format (`-d` specified).");
+    }
   }
 
   if (del_units_set) {
@@ -4033,7 +4045,7 @@ int main(int argc, char **argv) {
   int input_proof_is_in_binary = configure_proof_file_parsing(dsr_file);
   if (input_proof_is_in_binary) {
     logc("Detected that the DSR proof is in binary format.");
-    if (write_binary == 0) {
+    if (write_binary == 0 && compress_set == 0 && lsr_file != NULL) {
       logc("The emitted LSR proof will also be in binary format.");
       write_binary = 1;
     }
