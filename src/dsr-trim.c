@@ -1831,13 +1831,16 @@ static void prepare_dsr_trim_data(void) {
     ra_init(&deletions, num_cnf_vars * 2, 2, sizeof(srid_t));
   }
 
-  // Add all formula clauses to the clause hash table
-  // Because this might add deletions to the formula, we must do this
-  // after we have called `ra_init()` on the `deletions` data structure.
+  // Add all (non-deleted) formula clauses to the clause hash table,
+  // skipping clauses deleted during CNF parse, such as tautologies.
+  // Since the `add_formula` function deletes duplicate clauses,
+  // we must call `ra_init(&deletions)` before running this loop.
   ht_init_with_size(&clause_id_ht, sizeof(srid_t), formula_size / 2);
   ht_init(&clause_mults_ht, sizeof(clause_mult_t));
   for (srid_t i = 0; i < formula_size; i++) {
-    add_formula_clause_to_ht(i);
+    if (!is_clause_deleted(i)) {
+      add_formula_clause_to_ht(i);
+    }
   }
 
   if (ch_mode == BACKWARDS_CHECKING_MODE) {
