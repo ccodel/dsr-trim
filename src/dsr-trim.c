@@ -3991,14 +3991,7 @@ int main(int argc, char **argv) {
 
   if (cli.lsr_file_path != NULL) {
     logc("LSR file path: %s", cli.lsr_file_path);
-    
-    // Don't open a file if we are writing to `/dev/null`
-    if (strcmp(cli.lsr_file_path, "/dev/null") == 0
-        || strcmp(cli.lsr_file_path, "/dev/null/") == 0) {
-      lsr_file = NULL;
-    } else {
-      lsr_file = xfopen(cli.lsr_file_path, "w");
-    }
+    lsr_file = xfopen(cli.lsr_file_path, "w");
   }
 
   if (p_strategy == PS_EAGER) {
