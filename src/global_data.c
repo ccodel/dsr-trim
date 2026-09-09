@@ -25,9 +25,8 @@
 /** Sets the sign bit for the clause index value to logically delete it. */
 #define DELETE_CLAUSE(x)          ((x) | SRID_MSB)
 
-// TODO: Instead of floating point, use numerator and denominator.
-#define DELETION_GC_NUMER           1
-#define DELETION_GC_DENOM           4
+#define DELETION_GC_NUMER           (1)
+#define DELETION_GC_DENOM           (4)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -92,8 +91,6 @@ int absllongcmp(const void *a, const void *b) {
   return (llabs(ia) - llabs(ib)); 
 }
 
-// TODO: determine how to mark functions as inline wrt header files. Profile later?
-
 void init_global_data(void) {
   lits_db_alloc_size = num_cnf_clauses * 4;
   formula_alloc_size = num_cnf_clauses * 2;
@@ -144,23 +141,6 @@ void print_proof_checking_result(void) {
   }
 }
 
-// Assumes that VAR_FROM_LIT(lit) < alpha_subst_size
-inline void set_lit_for_alpha(int lit, ullong gen) {
-  int var = VAR_FROM_LIT(lit);
-  // This flips the least-significant bit if `lit` is negated
-  alpha[var] = gen ^ IS_NEG_LIT(lit);
-}
-
-// Compares against alpha_generation
-inline peval_t peval_lit_under_alpha(int lit) {
-  ullong gen = alpha[VAR_FROM_LIT(lit)];
-  if (gen >= alpha_generation) {
-    return IS_NEG_GEN(gen) ^ IS_NEG_LIT(lit);
-  } else {
-    return UNASSIGNED;
-  }
-}
-
 // Returns the number of unassigned literals if not satisfied, -1 if satisfied.
 int peval_clause_under_alpha(srid_t clause_index) {
   FATAL_ERR_IF(is_clause_deleted(clause_index),
@@ -194,29 +174,12 @@ static void set_mapping_for_subst(int lit, int lit_mapping) {
   subst_mappings[var] = lit_mapping ^ IS_NEG_LIT(lit);
 }
 
-// Returns the lit value of subst(lit). Can return SUBST_TT/_FF.
-// Compares against subst_generation.
-int map_lit_under_subst(int lit) {
-  int var = VAR_FROM_LIT(lit);
-  ullong gen = subst_generations[var];
-  if (gen >= subst_generation) {
-    // This negates the mapping if `lit` is negated
-    return subst_mappings[var] ^ IS_NEG_LIT(lit);
-  } else {
-    return lit;
-  }
-}
-
 /**
  * @brief Inserts a literal into the literal database, adjusts `max_var`,
  *        and increments the `new_clause_size`.
  * 
  * In addition, this function updates `max_var` and allocates data structures
  * that depend on `max_var` for their allocation size, if necessary.
- * 
- * Does not perform first-last updates. For that, call either
- * `commit_clause_with_first_last_update()` or
- * `perform_clause_first_last_update()`.
  * 
  * @param lit The 0-indexed, non-DIMACS literal to insert.
  */
@@ -263,13 +226,6 @@ void commit_clause(void) {
 void commit_and_delete_clause(void) {
   commit_clause();
   delete_clause(formula_size - 1);
-}
-
-int is_clause_deleted(srid_t clause_index) {
-  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "is_clause_deleted(): Clause index %lld was out of bounds (%lld).",
-    clause_index, formula_size);
-  return IS_DELETED_CLAUSE(formula[clause_index]);
 }
 
 static inline void gc_lits_db(void) {
@@ -354,51 +310,6 @@ void delete_clause(srid_t clause_index) {
   lits_db_deleted_size += next_clause_ptr - clause_ptr;
   formula[clause_index] = DELETE_CLAUSE(clause_ptr);
   gc_lits_db(); // If we deleted enough from `lits_db`, garbage collect
-}
-
-inline int *get_clause_start_unsafe(srid_t clause_index) {
-  return lits_db + formula[clause_index];
-}
-
-int *get_clause_start(srid_t clause_index) {
-  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "get_clause_start(): Clause %lld was out of bounds (%lld).",
-    TO_DIMACS_CLAUSE(clause_index), formula_size);
-  return lits_db + CLAUSE_IDX(formula[clause_index]);
-}
-
-int *get_clause_end_unsafe(srid_t clause_index) {
-  if (clause_index == formula_size) {
-    return lits_db + lits_db_size;
-  } else {
-    return lits_db + formula[clause_index + 1];
-  }
-}
-
-int *get_clause_end(srid_t clause_index) {
-  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "get_clause_end(): Clause %lld was out of bounds (%lld).",
-    TO_DIMACS_CLAUSE(clause_index), formula_size);
-
-  if (clause_index == formula_size) {
-    return lits_db + lits_db_size;
-  } else {
-    return lits_db + CLAUSE_IDX(formula[clause_index + 1]);
-  }
-}
-
-// TODO: What should this return for the new clause, if not yet added?
-uint get_clause_size(srid_t clause_index) {
-  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
-    "get_clause_size(): Clause index %lld was out of bounds (%lld).",
-    clause_index, formula_size);
-
-  if (clause_index == formula_size) {
-    return (uint) (lits_db_size - CLAUSE_IDX(formula[clause_index]));
-  } else {
-    return (uint) (CLAUSE_IDX(formula[clause_index + 1])
-      - CLAUSE_IDX(formula[clause_index]));
-  }
 }
 
 /**

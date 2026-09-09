@@ -15,6 +15,7 @@
 
 #include "global_types.h"
 #include "lit_occ.h"
+#include "logger.h"
 #include "range_array.h"
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -217,35 +218,24 @@ extern int derived_empty_clause;
 int intcmp(const void *a, const void *b);
 int absintcmp(const void *a, const void *b);
 
-// Allocates and initializes global data structures, given the size of a CNF formula.
+// Allocates and initializes global data structures, given `num_cnf_clauses`.
 void init_global_data(void);
 
 // Prints either `VERIFIED UNSAT` or `VALID`, depending on whether
 // the empty clause was derived (`derived_empty_clause`).
 void print_proof_checking_result(void);
 
-void set_lit_for_alpha(int lit, ullong gen);
-peval_t peval_lit_under_alpha(int lit);
 int peval_clause_under_alpha(srid_t clause_index);
-
-int map_lit_under_subst(int lit);
 
 void insert_lit(int lit);
 
 void commit_clause(void);
 void commit_and_delete_clause(void);
-int is_clause_deleted(srid_t clause_index);
 
 // Deletes a clause. Errors if the clause is already deleted.
 void delete_clause(srid_t clause_index);
 void soft_delete_clause(srid_t clause_index);
 void soft_undelete_clause(srid_t clause_index);
-
-int *get_clause_start_unsafe(srid_t clause_index);
-int *get_clause_start(srid_t clause_index);
-int *get_clause_end_unsafe(srid_t clause_index);
-int *get_clause_end(srid_t clause_index);
-uint get_clause_size(srid_t clause_index);
 
 int sort_and_dedup_new_cnf_clause(void);
 int sort_and_dedup_new_sr_clause(void);
@@ -274,5 +264,120 @@ void dbg_print_formula(void);
 void dbg_print_assignment(void);
 void dbg_print_subst(void);
 void dbg_print_witness(srid_t line_num);
+
+// The following functions are called in hot loops, such as unit propagation.
+// Thus, to improve runtime, we define them as `static inline` in the header
+// to allow the compiler to inline them in other files.
+
+static inline void set_lit_for_alpha(int lit, ullong gen);
+static inline peval_t peval_lit_under_alpha(int lit);
+static inline int map_lit_under_subst(int lit);
+static inline int is_clause_deleted(srid_t clause_index);
+static inline int *get_clause_start_unsafe(srid_t clause_index);
+static inline int *get_clause_start(srid_t clause_index);
+static inline int *get_clause_end_unsafe(srid_t clause_index);
+static inline int *get_clause_end(srid_t clause_index);
+static inline uint get_clause_size(srid_t clause_index);
+
+// These macros are also defined in `global_data.c`.
+// We undefine them at the end of this header file.
+
+/** Determines if the sign bit is set to mark a deleted clause. */
+#define IS_DELETED_CLAUSE(x)      ((x) & SRID_MSB)
+
+/** Removes the sign bit from the clause index value to remove deletion info. */
+#define CLAUSE_IDX(x)             ((x) & (~SRID_MSB))
+
+/** Sets the sign bit for the clause index value to logically delete it. */
+#define DELETE_CLAUSE(x)          ((x) | SRID_MSB)
+
+/*
+ * The accessors below are defined here, rather than in `global_data.c`, so
+ * that they inline into the unit propagation and clause reduction loops that
+ * dominate `dsr-trim`'s runtime. Out of line, each one costs a call plus a
+ * reload of the globals it touches.
+ */
+
+// Assumes that VAR_FROM_LIT(lit) < alpha_subst_size
+static inline void set_lit_for_alpha(int lit, ullong gen) {
+  // This flips the least-significant bit if `lit` is negated
+  alpha[VAR_FROM_LIT(lit)] = gen ^ IS_NEG_LIT(lit);
+}
+
+// Compares against alpha_generation
+static inline peval_t peval_lit_under_alpha(int lit) {
+  ullong gen = alpha[VAR_FROM_LIT(lit)];
+  if (gen >= alpha_generation) {
+    return IS_NEG_GEN(gen) ^ IS_NEG_LIT(lit);
+  } else {
+    return UNASSIGNED;
+  }
+}
+
+// Returns the lit value of subst(lit). Can return SUBST_TT/_FF.
+// Compares against subst_generation.
+static inline int map_lit_under_subst(int lit) {
+  int var = VAR_FROM_LIT(lit);
+  ullong gen = subst_generations[var];
+  if (gen >= subst_generation) {
+    // This negates the mapping if `lit` is negated
+    return subst_mappings[var] ^ IS_NEG_LIT(lit);
+  } else {
+    return lit;
+  }
+}
+
+static inline int is_clause_deleted(srid_t clause_index) {
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "is_clause_deleted(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
+  return IS_DELETED_CLAUSE(formula[clause_index]);
+}
+
+static inline int *get_clause_start_unsafe(srid_t clause_index) {
+  return lits_db + formula[clause_index];
+}
+
+static inline int *get_clause_start(srid_t clause_index) {
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "get_clause_start(): Clause %lld was out of bounds (%lld).",
+    TO_DIMACS_CLAUSE(clause_index), formula_size);
+  return lits_db + CLAUSE_IDX(formula[clause_index]);
+}
+
+static inline int *get_clause_end_unsafe(srid_t clause_index) {
+  if (clause_index == formula_size) {
+    return lits_db + lits_db_size;
+  } else {
+    // Note: The next clause might be soft deleted, so mask here.
+    //       This is in contrast with `get_clause_start_unsafe()`.
+    return lits_db + CLAUSE_IDX(formula[clause_index + 1]);
+  }
+}
+
+static inline int *get_clause_end(srid_t clause_index) {
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "get_clause_end(): Clause %lld was out of bounds (%lld).",
+    TO_DIMACS_CLAUSE(clause_index), formula_size);
+  return get_clause_end_unsafe(clause_index);
+}
+
+static inline uint get_clause_size(srid_t clause_index) {
+  FATAL_ERR_IF(clause_index < 0 || clause_index > formula_size,
+    "get_clause_size(): Clause index %lld was out of bounds (%lld).",
+    clause_index, formula_size);
+
+  if (clause_index == formula_size) {
+    return (uint) (lits_db_size - CLAUSE_IDX(formula[clause_index]));
+  } else {
+    return (uint) (CLAUSE_IDX(formula[clause_index + 1])
+      - CLAUSE_IDX(formula[clause_index]));
+  }
+}
+
+// Redefined in `global_data.c`
+#undef IS_DELETED_CLAUSE
+#undef CLAUSE_IDX
+#undef DELETE_CLAUSE
 
 #endif /* _GLOBAL_DATA_H_ */
