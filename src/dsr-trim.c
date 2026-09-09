@@ -1869,8 +1869,11 @@ static void resize_sr_trim_data(void) {
     vars_dependency_markings_alloc_size, (max_var + 1), sizeof(ullong));
 }
 
-static void resize_units(void) {
-  if (units_size >= units_alloc_size) {
+// During profiling, we found that `resize_units()` was inlined, despite
+// not being marked `inline`, and this resulted in more traffic around
+// stack frame setups. Thus, we split `resize_units()` into two function
+// calls to make it less likely for the compiler to inline it.
+static void resize_units_impl(void) {
     int old_size = units_alloc_size;
     units_alloc_size = RESIZE(units_size);
     unit_literals = xrealloc(unit_literals, units_alloc_size * sizeof(int));
@@ -1880,6 +1883,13 @@ static void resize_units(void) {
       unit_literals_wp_up_indexes = xrecalloc(unit_literals_wp_up_indexes,
         old_size * sizeof(int), units_alloc_size * sizeof(int));
     }
+}
+
+// Resizes the `unit_literals` and `unit_clauses` arrays, if needed.
+// Call this whenever adding a new unit literal.
+static inline void resize_units(void) {
+  if (units_size >= units_alloc_size) {
+    resize_units_impl();
   }
 }
 
@@ -2603,7 +2613,7 @@ static void decrement_state(void) {
 
 // Assumes the literal as true, and adds it to the `unit_literals` array.
 // Infers the correct generation value from state.
-static inline void assume_unit_literal(int lit) {
+static void assume_unit_literal(int lit) {
   ullong gen = (up_state == CANDIDATE_UP) ? ASSUMED_GEN : alpha_generation;
   set_lit_for_alpha(lit, gen);
   resize_units();
