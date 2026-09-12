@@ -40,6 +40,7 @@ dsr-trim:
     - (1/20/26): When deleting a clause during forwards checking, unit propagation was resetting when it shouldn't. The bug was that an implied unit was calculated too loosely: previously, an implied unit was one whose first literal was set to true via unit propagation, but this resulted in false positives wrt clauses subsumed by other (implied) units (e.g. [5 0] and [5 -10 0]). The calculation was updated to check if the unit clause for that literal matched the one that is to be deleted.
     - (3/25/26): When checking the candidate clause for the SR property, throw an error if the substitution does not reduce the clause in some way. Otherwise, broken proofs that should be derivable via RUP get past. (This bug applies to lsr-check as well.)
     - (4/29/26): Backwards checking didn't properly ignore the deletion of true unit clauses during parsing. This bug caused a second copy of a true unit to overwrite the first, and on backwards checking, when the second copy was uncommitted, the first copy was forgotten, leading to far fewer global units than expected.
+    - (9/11/26): Backwards checking didn't properly delete true units. The fix was to call `unassign_global_units_due_to_deletion()` when removing watch pointers in the initial forward pass, and then to call a new function `restore_true_unit_clause()` when returning to that line during the backward pass.
 
 global_parsing.c:
     - Not taking the absolute value of a token, meaning that negative tokens get "mapped twice."

@@ -399,7 +399,8 @@ static struct option const longopts[] = {
 
 // Prints a shorter help message to the provided `FILE` stream.
 static void print_short_help_msg(FILE *f) {
-  char *usage_str = "Usage: ./dsr-trim [OPTIONS] <cnf> [dsr] [lsr]\n";
+  char *usage_str = "Usage: ./dsr-trim [OPTIONS] <cnf> [dsr] [lsr]\n"
+    "For a longer print message, run `./dsr-trim --help`\n";
   fprintf(f, "%s", usage_str);
 }
 
@@ -424,6 +425,9 @@ static void print_long_help_msg(FILE *f) {
   "   -A | --ascii               Write the proof in ASCII format.\n"
   "   -C | --unsat-core <file>   Print the UNSAT core to <file>.\n"
   "   -U | --rup-only            Only allow RUP addition lines in the proof.\n"
+  "\n"
+  "   --delete-units             Allow deletions of true and implied units.\n"
+  "   --delete-implied-units     Allow deletions of implied units.\n"
   "\n";
   fprintf(f, "%s", usage_str);
 }
@@ -869,7 +873,7 @@ static void unassign_global_units_due_to_deletion(int from_index) {
     }
   }
 
-  global_up_literals_index = MIN(min_unit_index, global_up_literals_index);
+  SET_MIN_RIGHT(min_unit_index, global_up_literals_index);
 
   // Now keep unit literals/clauses that are true units
   int write_idx = from_index;
@@ -1319,6 +1323,7 @@ static void print_valid_formula_if_requested(void) {
 }
 
 static void print_unsat_core_if_requested(void) {
+  // Only emit the core if UNSAT was derived
   if (!derived_empty_clause) return;
 
   // Count the number of UNSAT core clauses
@@ -2635,6 +2640,32 @@ static void set_unit_clause(int lit, srid_t clause, ullong gen) {
   units_size++;
 }
 
+/**
+ * @brief Restores a true unit that was deleted during backwards checking.
+ * 
+ * If the same unit literal was derived elsewhere, we replace the clause
+ * that causes the unit literal in `unit_clauses` with `clause_id`,
+ * in order to reduce the length of unit propagation chains in the proof.
+ */
+static void restore_true_unit_clause(int lit, srid_t clause_id) {
+  FATAL_ERR_IF(get_clause_size(clause_id) != 1,
+    "Clause %lld is not a unit clause", TO_DIMACS_CLAUSE(clause_id));
+
+  switch (peval_lit_under_alpha(lit)) {
+    case TT:
+      unit_clauses[get_unit_index_for_lit(lit)] = clause_id;
+      break;
+    case FF:
+      // We should have derived contradiction earlier
+      log_fatal_err("[line %lld] Restored unit clause %lld is falsified.",
+        TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_id));
+      break;
+    default:
+      set_unit_clause(lit, clause_id, GLOBAL_GEN);
+      break;
+  }
+}
+
 // Adds a watch pointer for the lit at the specified clause ID
 static void add_wp_for_lit(int lit, srid_t clause) {
   // Resize the literal-indexes arrays if lit is outside our allocated bounds
@@ -3500,6 +3531,16 @@ static void check_reduced_clause(srid_t clause_index) {
     case NOT_REDUCED: // fallthrough
       break;
     case CONTRADICTION:
+      // Emit additional information if the clause is a true unit
+      if (ignore_unit_deletions && get_clause_size(clause_index) == 1) {
+        log_err_raw("c [line %lld]"
+          " Clause %lld is unit, and the witness sets it to false.\n"
+          "c Perhaps the proof tries to delete it prior to this point?\n"
+          "c By default, deletions of unit clauses are ignored.\n"
+          "c Try re-running dsr-trim with the `--delete-units` option.\n",
+          TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
+      }
+
       log_fatal_err("[line %lld] Reduced clause %lld claims contradiction.",
         TO_DIMACS_LINE(current_line), TO_DIMACS_CLAUSE(clause_index));
     default: // case REDUCED
@@ -3653,11 +3694,13 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
     int *del_clause = get_clause_start(del_id);
     int clause_size = (int) get_clause_size(del_id);
 
-    // Ignore deletion of the clause if it is a(n implied) unit.
     // Watch pointer invariant: the true literal is the first in the clause.
     int var = VAR_FROM_LIT(del_clause[0]);
-    if (is_var_set_due_to_up(var)
-        && get_unit_clause_for_var(var) == del_id
+    int is_a_derived_unit = is_var_set_due_to_up(var)
+      && get_unit_clause_for_var(var) == del_id;
+
+    // Ignore the deletion of the clause if it is a(n implied) unit.
+    if (is_a_derived_unit
         && (ignore_implied_unit_deletions
           || (ignore_unit_deletions && clause_size == 1))) {
       logv("[line %lld] Ignoring deletion of (implied) unit clause %lld.",
@@ -3675,6 +3718,11 @@ static void remove_wps_from_user_deleted_clauses(srid_t clause_id) {
 
     lit_occ_delete_clause(&lit_occ, del_id);
     soft_delete_clause(del_id);
+
+    // Remove this unit from the set of global units
+    if (is_a_derived_unit) {
+      unassign_global_units_due_to_deletion(get_unit_index_for_var(var));
+    }
   }
 }
 
@@ -3695,6 +3743,8 @@ static void restore_wps_for_user_deleted_clauses(srid_t clause_id) {
       if (clause_size > 1) {
         add_wp_for_lit(del_clause[0], del_id);
         add_wp_for_lit(del_clause[1], del_id);
+      } else {
+        restore_true_unit_clause(del_clause[0], del_id);
       }
     }
   }

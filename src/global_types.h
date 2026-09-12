@@ -16,12 +16,14 @@
 #define MIN(x, y)             (((x) < (y)) ? (x) : (y))
 #define SET_MIN(x, y, z)      ((x) = MIN((y), (z)))
 #define SET_MIN_LEFT(x, y)    SET_MIN(x, x, y)
+#define SET_MIN_RIGHT(x, y)   SET_MIN(y, y, x)
 #endif
 
 #ifndef MAX
 #define MAX(x, y)             (((x) > (y)) ? (x) : (y))
 #define SET_MAX(x, y, z)      ((x) = MAX((y), (z)))
 #define SET_MAX_LEFT(x, y)    SET_MAX(x, x, y)
+#define SET_MAX_RIGHT(x, y)   SET_MAX(y, y, x)
 #endif
 
 #ifndef MSB
