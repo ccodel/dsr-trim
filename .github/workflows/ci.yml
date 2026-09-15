@@ -41,6 +41,6 @@ jobs:
       - name: Check CaDiCaL
         run: cadical --version
 
-      - name: Test
+      - name: Test GBD
         working-directory: main
-        run: ./test/test.sh
+        run: ./test/gbd/test_gbd_benchmarks.sh
