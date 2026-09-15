@@ -1323,8 +1323,9 @@ static void print_valid_formula_if_requested(void) {
 }
 
 static void print_unsat_core_if_requested(void) {
-  // Only emit the core if UNSAT was derived
-  if (!derived_empty_clause) return;
+  // Only emit the core if UNSAT was derived in backwards mode.
+  // TODO: Track the core in forwards mode as well (see `main()`).
+  if (!derived_empty_clause || ch_mode != BACKWARDS_CHECKING_MODE) return;
 
   // Count the number of UNSAT core clauses
   srid_t num_unsat_core_clauses = 0;
@@ -4060,6 +4061,12 @@ int main(int argc, char **argv) {
     log_fatal_err("Forwards checking and eager parsing not implemented.");
   }
 
+  // TODO: Implement this functionality for forwards checking as well
+  if (ch_mode == FORWARDS_CHECKING_MODE && print_unsat_core_flag) {
+    log_fatal_err("Cannot emit an UNSAT core (`-C`) during forwards checking, "
+      "as clause usage is only tracked when checking backwards.");
+  }
+
   if (lsr_file != NULL) {
     if (compress_set == 1) {
       write_binary = 1;
@@ -4088,15 +4095,6 @@ int main(int argc, char **argv) {
   parse_cnf(cnf_file, DELETE_TAUTOLOGIES);
   timer_print_elapsed(&timer, TIMER_LOCAL, "Parsing the CNF");
 
-  int input_proof_is_in_binary = configure_proof_file_parsing(dsr_file);
-  if (input_proof_is_in_binary) {
-    logc("Detected that the DSR proof is in binary format.");
-    if (write_binary == 0 && compress_set == 0 && lsr_file != NULL) {
-      logc("The emitted LSR proof will also be in binary format.");
-      write_binary = 1;
-    }
-  }
-
   // In rare cases, the input CNF formula might be trivially unsatisfiable.
   // This means the formula contains the empty clause.
   // Since the caller might expect a trivial proof to be emitted,
@@ -4111,6 +4109,15 @@ int main(int argc, char **argv) {
     }
 
     return 0;
+  }
+
+  int input_proof_is_in_binary = configure_proof_file_parsing(dsr_file);
+  if (input_proof_is_in_binary) {
+    logc("Detected that the DSR proof is in binary format.");
+    if (write_binary == 0 && compress_set == 0 && lsr_file != NULL) {
+      logc("The emitted LSR proof will also be in binary format.");
+      write_binary = 1;
+    }
   }
 
   prepare_dsr_trim_data();
