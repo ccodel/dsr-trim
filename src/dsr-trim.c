@@ -3858,19 +3858,26 @@ static void add_wps_and_up_initial_clauses(void) {
    */
   c--;
 
-  logc("The empty clause was derived after clause %lld (add'n line %lld).",
-      TO_DIMACS_CLAUSE(c), TO_DIMACS_LINE(LINE_NUM_FROM_CLAUSE_ID(c)));
+  logc_raw("c The empty clause was derived ");
+  if (c < num_cnf_clauses) {
+    logc_raw("by unit propagation on the CNF alone, after clause %lld.\n",
+        TO_DIMACS_CLAUSE(c)); 
+  } else {
+    logc_raw("after adding clause %lld (add'n line %lld).\n",
+        TO_DIMACS_CLAUSE(c), TO_DIMACS_LINE(LINE_NUM_FROM_CLAUSE_ID(c)));
+  }
 
   // If we derived the empty clause before the last addition clause,
   // we can discard the rest of the formula
   if (c < end_of_formula - 1) {
-    discard_formula_after_clause(c);
+    discard_formula_after_clause(MAX(c, num_cnf_clauses - 1));
 
     // Because `UP_HINTS_IDX` is based on `num_parsed_add_lines`,
     // we need to manually adjust this value to be as if we parsed up
-    // to `c` and then the empty clause. Since `c` is 0-indexed, we add 2
+    // to `c` and then the empty clause. Since `c` is 0-indexed, we add 2.
+    // If the formula was UNSAT via only UP, then we "parse" an empty clause.
     // TODO: Base it on `formula_size` instead
-    num_parsed_add_lines = LINE_NUM_FROM_CLAUSE_ID(c) + 2;
+    num_parsed_add_lines = MAX(1, LINE_NUM_FROM_CLAUSE_ID(c) + 2);
   } else if (!parsed_empty_clause) {
     /*
      * We derived the empty clause, but we didn't originally parse it.
@@ -3895,7 +3902,7 @@ static void add_wps_and_up_initial_clauses(void) {
    * `current_line`, we need to set `current_line` equal to the empty
    * clause, rather than the clause before it.
    */
-  current_line = num_parsed_add_lines - 1;
+  current_line = MAX(0, num_parsed_add_lines - 1);
   discard_bcu_deletions_after_empty_clause(current_line);
 }
 

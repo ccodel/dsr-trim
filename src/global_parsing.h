@@ -69,15 +69,16 @@
 
 // Uses `fscanf()` to read a single `int` token from `f`.
 // Does not consume any trailing newlines.
-#define READ_INT_TOKEN(res, f, ptr)             do {                           \
+#define READ_INT_TOKEN(res, f, ptr, eof_msg)    do {                           \
     res = fscanf(f, "%d[^\n]", ptr);                                           \
     FATAL_ERR_IF(res == 0, "Token was expected to be a number.");              \
-    FATAL_ERR_IF(res == EOF, "EOF unexpectedly reached.");                     \
+    FATAL_ERR_IF(res == EOF, eof_msg);                                         \
     FATAL_ERR_IF(res < 0, "Other error encountered while parsing.");           \
   } while (0)
 
 // Reads a literal from `f`. Literals are assumed to always fit in an `int`.
-#define READ_LIT            READ_INT_TOKEN
+#define READ_LIT(res, f, ptr) \
+    READ_INT_TOKEN(res, f, ptr, "Unexpected EOF while parsing a literal.")
 
 #ifdef LONGTYPE
 // The kind of numeric token we read by default.
@@ -90,7 +91,8 @@
 #define FULL_CNF_HEADER_STR ("p cnf %d %lld\n")
 #else
 // The kind of numeric token we read by default.
-#define READ_CLAUSE_ID      READ_INT_TOKEN
+#define READ_CLAUSE_ID(res, f, ptr) \
+    READ_INT_TOKEN(res, f, ptr, "Unexpected EOF while parsing a clause ID.")
 
 #define SRID_FORMAT_STR     ("%d")
 
