@@ -77,10 +77,17 @@ static void prepare_hints_for_next_addition_line(void) {
     ra_commit_empty_ranges_until(&hints, current_line);
     RECALLOC_ARR(line_num_RAT_hints, line_num_RAT_hints_alloc_size, 
       current_line, sizeof(uint));
-    
   } else {
     ra_reset(&hints);
     num_RAT_hints = 0;
+  }
+}
+
+static inline void increment_num_RAT_hint_groups(void) {
+  if (p_strategy == PS_EAGER) {
+    line_num_RAT_hints[current_line]++;
+  } else {
+    num_RAT_hints++;
   }
 }
 
@@ -147,25 +154,32 @@ static void store_deletion(srid_t clause_id) {
  * of a new hint group.)
  * 
  * @param clause_id The 1-indexed clause ID (in DIMACS form).
+ *                  Must not be the value `0`.
  */
 static void insert_hint(srid_t clause_id) {
-  srid_t id = CLAUSE_ABS(clause_id);
-  id = FROM_DIMACS_CLAUSE(id);
-  srid_t current_line_id = LINE_ID_FROM_LINE_NUM(current_line);
-  FATAL_ERR_IF(id > current_line_id || is_clause_deleted(id),
-    "[line %lld | id %lld] Clause %lld is out of bounds or is deleted.",
-    num_parsed_lines, current_line_id, TO_DIMACS_CLAUSE(id));
+  srid_t id = CLAUSE_ABS(clause_id); // 1-indexed, non-negative
+  srid_t current_line_id = LINE_ID_FROM_LINE_NUM(current_line); // 1-indexed
+
+  // Generally, a clause hint is invalid if the clause has already been
+  // deleted, or if the ID is out of bounds. The one exception is if `id` 
+  // is the ID of the current line; in SR proofs, the current clause's
+  // ID is allowed to start a new hint group, but cannot appear as a 
+  // unit-propagation hint, since its negation has been added to the truth
+  // assignment and is otherwise not yet a part of the formula.
+  // This occurs when the SR substitution witness reduces but does not
+  // satisfy the clause to be added, so we must check a UP refutation,
+  // the same as any other RAT clause in the formula.
+  FATAL_ERR_IF(is_clause_deleted(FROM_DIMACS_CLAUSE(id))
+      || id > current_line_id
+      || (clause_id == current_line_id),
+     "[line %lld | id %lld] Clause hint %lld is out of bounds or is deleted.",
+    num_parsed_lines, current_line_id, clause_id);   
 
   ra_insert_srid_elt(&hints, clause_id);
 
-  // If the clause starts a new RAT hint group, increment the
-  // number of RAT hint groups according to our parsing strategy
+  // A negative clause ID marks the start of a new RAT hint group
   if (clause_id < 0) {
-    if (p_strategy == PS_EAGER) {
-      line_num_RAT_hints[current_line]++;
-    } else {
-      num_RAT_hints++;
-    }
+    increment_num_RAT_hint_groups(); 
   }
 }
 

@@ -99,7 +99,7 @@
 // Problem header format string for CNFs.
 #define CNF_HEADER_STR      (" cnf %d %d\n")
 #define FULL_CNF_HEADER_STR ("p cnf %d %d\n")
-#endif
+#endif /* LONGTYPE */
 
 ////////////////////////////////////////////////////////////////////////////////
 
