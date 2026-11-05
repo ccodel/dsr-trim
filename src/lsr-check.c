@@ -322,6 +322,69 @@ static int check_only_hints(srid_t *hints_iter, srid_t *hints_end, int pivot) {
   return (occs == goal_occs);
 }
 
+// Checks only the RAT/PR/SR hints mentioned. Must call `assume_subst()` before.
+// Returns `1` if the expected number of RAT clauses was checked, 0 otherwise.
+static int check_only_hints2(srid_t *hints_iter, srid_t *hints_end) {
+  log_msg(VL_VERBOSE, "[line %lld | id %lld] Checking only negative hints",
+    get_line_id_for_line_num(current_line),
+    LINE_ID_FROM_LINE_NUM(current_line));
+
+  // 1. Sum all literal occurrences we need to see.
+  // This includes any negated literals in the T/F portion of the witness,
+  // and *any* literal or negation in the substitution portion
+  srid_t goal_occs = count_occs_for_subst(current_line, &lit_occ);
+  srid_t occs = 0;
+  srid_t max_clause = -1; // Assume increasing hint groups
+  while (hints_iter < hints_end) {
+    srid_t c = FROM_RAT_HINT(*hints_iter);
+    FATAL_ERR_IF(c <= max_clause, "Not increasing IDs");
+    max_clause = c;
+
+    switch (reduce_clause_under_subst_with_occs(c, &occs)) {
+      case NOT_REDUCED:
+        log_fatal_err("[line %lld | id %lld] "
+          "Purported RAT clause %lld is not RAT/PR/SR",
+          get_line_id_for_line_num(current_line),
+          LINE_ID_FROM_LINE_NUM(current_line),
+          TO_DIMACS_CLAUSE(c));
+      case SATISFIED_OR_MUL:
+        hints_iter++;
+        SKIP_REMAINING_UP_HINTS(hints_iter, hints_end);
+        alpha_generation += GEN_INC;
+        break;
+      case REDUCED:;
+        hints_iter++;
+        int neg_res = assume_negated_clause_under_subst(c, alpha_generation);
+        if (neg_res == SATISFIED_OR_MUL) {
+          SKIP_REMAINING_UP_HINTS(hints_iter, hints_end);
+        } else {
+          if (unit_prop(&hints_iter, hints_end, alpha_generation)
+              != CONTRADICTION) {
+            lsr_err_no_up_contradiction(c, *(hints_iter - 1));
+          }
+        }
+
+        alpha_generation += GEN_INC;
+        break;
+      case CONTRADICTION:
+        log_fatal_err("[line %lld | id %lld] "
+          "Reduced clause %lld claims contradiction.",
+          get_line_id_for_line_num(current_line),
+          LINE_ID_FROM_LINE_NUM(current_line),
+          TO_DIMACS_CLAUSE(c));
+      default: 
+        log_fatal_err("[line %lld | id %lld] "
+          "Clause %lld corrupted reduction value %d.",
+          get_line_id_for_line_num(current_line),
+          LINE_ID_FROM_LINE_NUM(current_line),
+          TO_DIMACS_CLAUSE(c),
+          reduce_clause_under_subst(c)); 
+    }
+  }
+
+  return (occs == goal_occs);
+}
+
 static void check_SR_clause(srid_t i, srid_t **iter_ptr,
                              srid_t *hints_start, srid_t *hints_end) {
   srid_t *hints_iter = *iter_ptr;
@@ -436,19 +499,33 @@ static void check_line(void) {
       get_line_id_for_line_num(current_line),
       LINE_ID_FROM_LINE_NUM(current_line));
 
-  // If the witness is a single literal, then we may check only the RAT clauses
+  // Next, we try to validate the line by checking only the hints mentioned.
+  // If all reduced clauses are mentioned in a hint, then all remaining clauses
+  // are not reduced by the witness, and thus the line is valid.
+
+  // If the witness is a single literal, then we check only the RAT clauses
+  ullong orig_gen = alpha_generation;
   if (get_witness_size(current_line) <= 1) {
     if (check_only_hints(hints_iter, hints_end, pivot)) {
       goto finish_line;
     }
-
-    // If the check fails, we do it the old-fashioned way.
-    // This *should* result in an error on some RAT clause without a hint group
+    alpha_generation = orig_gen;
   }
+
+  // If instead the witness is PR/SR, then we call a slightly slower function
+  // that checks only the hints mentioned in the line.
+  assume_subst(current_line);
+  if (get_witness_size(current_line) > 1
+        && check_only_hints2(hints_iter, hints_end)) {
+    goto finish_line;
+  }
+
+  // If the check fails, we do it the old-fashioned way.
+  // This *should* result in an error on some RAT clause without a hint group.
   
   fl_clause_t check_range;
-  assume_subst(current_line);
   get_fl_clause_for_subst(current_line, &lit_occ, &check_range);
+  alpha_generation = orig_gen;
 
   logv("[line %lld | id %lld] Checking clauses %lld to %lld", 
       get_line_id_for_line_num(current_line),
@@ -460,7 +537,6 @@ static void check_line(void) {
   //   - Satisfied or not reduced by the witness
   //   - A reduced clause, whose hints derive contradiction
   srid_t *hints_start = hints_iter;
-  srid_t *up_iter;
   for (srid_t i = check_range.first_clause; i <= check_range.last_clause; i++) {
     if (is_clause_deleted(i)) continue;
     check_SR_clause(i, &hints_iter, hints_start, hints_end);

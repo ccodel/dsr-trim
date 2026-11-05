@@ -3540,10 +3540,15 @@ static void emit_RAT_UP_failure_error(srid_t clause_index) {
  * @param clause_index The ID of the clause to check.
  */
 static void check_reduced_clause(srid_t clause_index) {
-  switch (reduce_clause_under_subst(clause_index)) {
+  srid_t occs = 0;
+  switch (reduce_clause_under_subst_with_occs(clause_index, &occs)) {
     case SATISFIED_OR_MUL:
+      if (occs > 0) {
+        add_RAT_clause_hint(clause_index);
+      }
       increment_num_reduced_clauses(current_line);
-    case NOT_REDUCED: // fallthrough
+      break;
+    case NOT_REDUCED:
       break;
     case CONTRADICTION:
       // Emit additional information if the clause is a true unit

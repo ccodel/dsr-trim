@@ -565,7 +565,6 @@ void get_fl_clause_for_subst(srid_t line_num, lit_occ_t *lc, fl_clause_t *fl) {
     int lit = *witness_iter;
     if (lit == WITNESS_TERM) break;
     int neg_lit = NEGATE_LIT(lit);
-    int var = VAR_FROM_LIT(lit);
 
     if (!seen_pivot_divider) {
       if (lit == pivot) {
@@ -579,6 +578,46 @@ void get_fl_clause_for_subst(srid_t line_num, lit_occ_t *lc, fl_clause_t *fl) {
       add_fl_for_lit(neg_lit, lc, fl);
     }
   }
+}
+
+
+srid_t count_occs_for_subst(srid_t line_num, lit_occ_t *lc) {
+  int *witness_iter = get_witness_start(line_num);
+  int *witness_end = get_witness_end(line_num);
+
+  int occs = 0;
+  int seen_pivot_divider = 0; // 1 for seen, 2 for ignore occs
+  int pivot = witness_iter[0];
+  witness_iter++; // Skip pivot, add its occurrences at the end
+
+  for (; witness_iter < witness_end; witness_iter++) {
+    int lit = *witness_iter;
+    if (lit == WITNESS_TERM) break;
+    int neg_lit = NEGATE_LIT(lit);
+
+    if (!seen_pivot_divider) {
+      if (lit == pivot) {
+        seen_pivot_divider = 1;
+      } else {
+        occs += get_lit_occurrences(lc, neg_lit);
+      }
+    } else {
+      witness_iter++;
+      int mapped_lit = *witness_iter;
+      if (lit == pivot && mapped_lit == pivot) {
+        seen_pivot_divider = 2;
+      } else if (lit != mapped_lit) {
+        occs += get_lit_occurrences(lc, lit);
+        occs += get_lit_occurrences(lc, neg_lit);  
+      }
+    }
+  }
+
+  if (seen_pivot_divider != 2) {
+    occs += get_lit_occurrences(lc, NEGATE_LIT(pivot));
+  }
+
+  return occs;
 }
 
 // Returns the `pivot` literal of the clause (if nonempty), or `-1` if empty.
@@ -656,18 +695,22 @@ int assume_negated_clause_under_subst(srid_t clause_index, ullong gen) {
   return 0;
 }
 
+static inline void err_if_clause_is_deleted(srid_t clause_index, char *func) {
+  FATAL_ERR_IF(is_clause_deleted(clause_index),
+    "%s(), Trying to reduce a deleted clause (%lld).",
+    func, TO_DIMACS_CLAUSE(clause_index));
+}
+
 // Evaluate the clause under the substitution.
 // A return value of `SATISFIED_OR_MUL` means the clause is satisfied only.
 int reduce_clause_under_subst(srid_t clause_index) {
-  FATAL_ERR_IF(is_clause_deleted(clause_index),
-    "Trying to reduce a deleted clause (%lld).",
-    TO_DIMACS_CLAUSE(clause_index));
+  err_if_clause_is_deleted(clause_index, "reduce_clause_under_subst");
 
-  uint id_mapped_lits = 0;
-  uint falsified_lits = 0;
   int *iter = get_clause_start_unsafe(clause_index);
   int *end = get_clause_end(clause_index);
   int clause_size = end - iter;
+  uint id_mapped_lits = 0;
+  uint falsified_lits = 0;
 
   // Evaluate the literals under the substitution first
   // If the witness is a substitution, tautologies can be produced. But we don't
@@ -686,6 +729,7 @@ int reduce_clause_under_subst(srid_t clause_index) {
         if (mapped_lit == lit) {
           id_mapped_lits++;
         }
+        break;
     }
   }
 
@@ -698,10 +742,61 @@ int reduce_clause_under_subst(srid_t clause_index) {
   }
 }
 
+/**
+ * @brief Reduces the clause under the substitution, while also counting
+ *        the number of times each literal is reduced by the witness.
+ * 
+ * This helps implement a trick for LSR proof checking, where by counting
+ * the number of times a literal is reduced by a clause in any negative
+ * clause hint, we can prove that no other formula clause needs to be checked.
+ * 
+ * @param occs A non-NULL pointer to a counter that gets incremented by this function.
+ * @return The result of evaluating the clause under the substitution.
+ *         This is the same as calling `reduce_clause_under_subst()`.
+ */
+int reduce_clause_under_subst_with_occs(srid_t clause_index, srid_t *occs) {
+  FATAL_ERR_IF(occs == NULL, "r_c_u_s_w_occs(): NULL arg.");
+  err_if_clause_is_deleted(clause_index, "reduce_clause_under_subst_with_occs");
+
+  int *iter = get_clause_start_unsafe(clause_index);
+  int *end = get_clause_end(clause_index);
+  int clause_size = end - iter;
+  int res = REDUCED;
+  uint id_mapped_lits = 0;
+  uint falsified_lits = 0;
+
+  for (; iter < end; iter++) {
+    int lit = *iter;
+    int mapped_lit = map_lit_under_subst(lit);
+    switch (mapped_lit) {
+      case SUBST_TT:
+        res = SATISFIED_OR_MUL;
+        break;
+      case SUBST_FF:
+        falsified_lits++;
+        *occs += 1;
+        break;
+      default:
+        if (mapped_lit == lit) {
+          id_mapped_lits++;
+        } else {
+          *occs += 1;
+        }
+        break;
+    }
+  }
+
+  if (falsified_lits == clause_size) {
+    return CONTRADICTION;
+  } else if (id_mapped_lits == clause_size) {
+    return NOT_REDUCED;
+  } else {
+    return res;
+  }
+}
+
 int reduce_clause_under_pivot(srid_t clause_index, int pivot) {
-  FATAL_ERR_IF(is_clause_deleted(clause_index),
-    "Trying to reduce supposed RAT clause %lld, but it has been deleted.",
-    TO_DIMACS_CLAUSE(clause_index));
+  err_if_clause_is_deleted(clause_index, "reduce_clause_under_pivot");
 
   int *iter = get_clause_start_unsafe(clause_index);
   int *end = get_clause_end(clause_index);

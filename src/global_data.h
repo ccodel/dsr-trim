@@ -247,10 +247,12 @@ int  get_witness_size(srid_t line_num);
 
 void assume_subst(srid_t line_num);
 void get_fl_clause_for_subst(srid_t line_num, lit_occ_t *lc, fl_clause_t *fl);
+srid_t count_occs_for_subst(srid_t line_num, lit_occ_t *lc);
 
 int assume_negated_clause(srid_t clause_index, ullong gen);
 int assume_negated_clause_under_subst(srid_t clause_index, ullong gen);
 int reduce_clause_under_subst(srid_t clause_index);
+int reduce_clause_under_subst_with_occs(srid_t clause_index, srid_t *occs);
 int reduce_clause_under_pivot(srid_t clause_index, int pivot);
 
 // Prints the clause to stdout, for debugging purposes.
