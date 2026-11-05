@@ -347,14 +347,15 @@ static void dbg_print_unit_literals(void);
 
 // Command-line options and the printing of help messages
 
-#define FORWARD_OPT          ('f')
-#define COMPRESS_PROOF_OPT   ('c')
-#define DECOMPRESS_PROOF_OPT ('A')  ///< Write the proof in ASCII format
-#define PRINT_UNSAT_CORE_OPT ('C')
-#define RUP_ADDS_ONLY_OPT    ('U')
-#define EMIT_VALID_FORM_OPT  (LONG_HELP_MSG_OPT + 1)
-#define DEL_UNITS_OPT        (LONG_HELP_MSG_OPT + 2)
-#define DEL_IMPL_UNITS_OPT   (LONG_HELP_MSG_OPT + 3)
+#define FORWARD_OPT             ('f')
+#define COMPRESS_PROOF_OPT      ('c')
+#define DECOMPRESS_PROOF_OPT    ('A')  ///< Write the proof in ASCII format
+#define PRINT_UNSAT_CORE_OPT    ('C')
+#define RUP_ADDS_ONLY_OPT       ('U')
+#define EMIT_VALID_FORM_OPT     (LONG_HELP_MSG_OPT + 1)
+#define DEL_UNITS_OPT           (LONG_HELP_MSG_OPT + 2)
+#define DEL_IMPL_UNITS_OPT      (LONG_HELP_MSG_OPT + 3)
+#define NO_DELS_AFTER_RAT_OPT   (LONG_HELP_MSG_OPT + 4)
 
 #define OPT_STR             ("cfAC:U" BASE_CLI_OPT_STR)
 
@@ -383,6 +384,7 @@ static int ignore_implied_unit_deletions = 1;
 
 // If set, throw an error if the proof has any non-RUP addition steps.
 static int rup_additions_only = 0;
+static int no_deletions_after_final_rat = 0;
 
 // The set of "long options" for CLI argument parsing. Used by `getopt_long()`.
 static struct option const longopts[] = {
@@ -394,6 +396,7 @@ static struct option const longopts[] = {
   { "delete-implied-units",        no_argument, NULL, DEL_IMPL_UNITS_OPT },
   { "unsat-core",            required_argument, NULL, PRINT_UNSAT_CORE_OPT },
   { "rup-only",                    no_argument, NULL, RUP_ADDS_ONLY_OPT },
+  { "no-dels-after-rat",           no_argument, NULL, NO_DELS_AFTER_RAT_OPT },
   BASE_LONG_OPTS_ARRAY
 };
 
@@ -428,6 +431,7 @@ static void print_long_help_msg(FILE *f) {
   "\n"
   "   --delete-units             Allow deletions of true and implied units.\n"
   "   --delete-implied-units     Allow deletions of implied units.\n"
+  "   --no-dels-after-rat        Don't print deletions after the final RAT line.\n"
   "\n";
   fprintf(f, "%s", usage_str);
 }
@@ -2297,9 +2301,9 @@ static void print_stored_lsr_proof(void) {
       printed_line_id++;
     }
 
-    // Only print deletions if there's a later RAT line
-    // Deletions don't speed up RUP-only lines
-    if (line < max_RAT_line && get_num_deletions(line) > 0) {
+    // Print deletions, as long as we aren't past the final RAT line
+    if (get_num_deletions(line) > 0
+      && !(line >= max_RAT_line && no_deletions_after_final_rat)) {
       if (!is_active_deletion_line) {
         is_active_deletion_line = 1;
         write_lsr_deletion_line_start(lsr_file, printed_line_id - 1);
@@ -4012,6 +4016,10 @@ int main(int argc, char **argv) {
       FATAL_ERR_IF(rup_additions_only, "Cannot set `-U` or `--rup-only` twice.");
       rup_additions_only = 1;
       break;
+    case NO_DELS_AFTER_RAT_OPT:
+      FATAL_ERR_IF(no_deletions_after_final_rat, "Cannot set `--no-dels-after-rat` twice.");
+      no_deletions_after_final_rat = 1;
+      break;
     default:
       cli_res = cli_handle_opt(&cli, ch, optopt, argv[optind - 1], optarg);
       switch (cli_res) {
@@ -4103,6 +4111,10 @@ int main(int argc, char **argv) {
   if (del_impl_units_set && ignore_implied_unit_deletions) {
     ignore_implied_unit_deletions = 0;
     logc("Will delete implied units from DSR deletions.");
+  }
+
+  if (no_deletions_after_final_rat && lsr_file != NULL) {
+    logc("Will not print any deletions after the final RAT clause.");
   }
 
   timer_init(&timer);
