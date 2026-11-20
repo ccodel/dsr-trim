@@ -19,6 +19,10 @@
 /** DIMACS character that starts a problem line. */
 #define DIMACS_PROBLEM_LINE ('p')
 
+/** Consumes the file stream `f` until a newline or EOF is found. */
+#define CONSUME_LINE(f, c) \
+  do {} while ((c = getc_unlocked(f)) != '\n' && c != EOF)
+
 // We make the addition and deletion characters unprintable so we are able to
 // differentiate binary and textual proof files with the first character.
 // We also differentiate DSR and LSR lines, so that the (de)compression tool
@@ -178,9 +182,10 @@ void write_lsr_deletion_line_start(FILE *f, srid_t line_id);
 void write_sr_line_end(FILE *f);
 
 // Determines if there is potentially another line in the FILE.
-// If not binary, ignores whitespace until the start of the line is found.
+// If in ASCII mode, ignores whitespace until the start of the line is found.
 // Returns 1 if another line could exist, and `f` points to the start of the line.
 // Returns 0 if EOF encountered.
+// In ASCII mode, any comment lines are consumed and ignored.
 // Errors and exits if an unexpected character is found.
 int has_another_line(FILE *f);
 

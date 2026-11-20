@@ -384,12 +384,14 @@ int has_another_line(FILE *f) {
       log_fatal_err("Unexpected binary character found: %c.", c);
     }
   } else {
-    // Ignore whitespace until a digit is found. Error if non-digit found.
+    // Ignore whitespace until a digit, 'd', or 'c' is found. Error otherwise.
     while ((c = getc_unlocked(f)) != EOF) {
       if (!isspace(c)) {
         if (IS_HUMAN_READABLE_PROOF_CHAR(c)) {
           ungetc(c, f);
           return 1;
+        } else if (c == DIMACS_COMMENT_LINE) {
+          CONSUME_LINE(f, c);
         } else {
           log_fatal_err("Found a non-digit at start of line.");
         }

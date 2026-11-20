@@ -77,7 +77,7 @@ void parse_cnf(FILE *f, int delete_tautologies) {
     switch ((c = getc_unlocked(f))) {
       case DIMACS_COMMENT_LINE:
         // Read to the end of the line, discarding the comment
-        while (getc_unlocked(f) != '\n') {}
+        CONSUME_LINE(f, c);
         break;
       case DIMACS_PROBLEM_LINE:
         found_problem_line = 1;
@@ -85,7 +85,11 @@ void parse_cnf(FILE *f, int delete_tautologies) {
         FATAL_ERR_IF(res < 0, "Read error on problem header line.");
         break;
       default:
-        log_fatal_err("Char %c wasn't a comment or a problem line.", c);
+        if (c == EOF) {
+          log_fatal_err("EOF reached before problem header line was finished.");
+        } else {
+          log_fatal_err("Char '%c' wasn't a comment or a problem line.", c);
+        }
     }
   }
 
